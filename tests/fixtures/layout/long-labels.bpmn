@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Definitions_LongLabels" targetNamespace="http://mcp-bpmn.test/layout">
+  <bpmn:process id="Process_LongLabels" isExecutable="false">
+    <bpmn:documentation>Long node and connection labels require collision-free label bounds.</bpmn:documentation>
+    <bpmn:startEvent id="Start_LongLabels" name="A customer request arrives from the international support channel"><bpmn:outgoing>Flow_LongLabels_1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:userTask id="Task_LongLabels" name="Review every submitted document and request any missing supporting information"><bpmn:incoming>Flow_LongLabels_1</bpmn:incoming><bpmn:outgoing>Flow_LongLabels_2</bpmn:outgoing></bpmn:userTask>
+    <bpmn:endEvent id="End_LongLabels" name="The fully reviewed customer request is ready for downstream processing"><bpmn:incoming>Flow_LongLabels_2</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_LongLabels_1" name="documents are available and the initial validation succeeded" sourceRef="Start_LongLabels" targetRef="Task_LongLabels" />
+    <bpmn:sequenceFlow id="Flow_LongLabels_2" name="all required evidence has been reviewed and accepted" sourceRef="Task_LongLabels" targetRef="End_LongLabels" />
+  </bpmn:process>
+</bpmn:definitions>

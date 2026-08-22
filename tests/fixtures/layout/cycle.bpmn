@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Definitions_Cycle" targetNamespace="http://mcp-bpmn.test/layout">
+  <bpmn:process id="Process_Cycle" isExecutable="false">
+    <bpmn:documentation>A review loop returns from a gateway to an earlier activity.</bpmn:documentation>
+    <bpmn:startEvent id="Start_Cycle"><bpmn:outgoing>Flow_Cycle_1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:task id="Task_Draft" name="Draft"><bpmn:incoming>Flow_Cycle_1</bpmn:incoming><bpmn:incoming>Flow_Cycle_Back</bpmn:incoming><bpmn:outgoing>Flow_Cycle_2</bpmn:outgoing></bpmn:task>
+    <bpmn:task id="Task_Check" name="Check"><bpmn:incoming>Flow_Cycle_2</bpmn:incoming><bpmn:outgoing>Flow_Cycle_3</bpmn:outgoing></bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_Cycle" name="Correct?" gatewayDirection="Diverging"><bpmn:incoming>Flow_Cycle_3</bpmn:incoming><bpmn:outgoing>Flow_Cycle_Back</bpmn:outgoing><bpmn:outgoing>Flow_Cycle_End</bpmn:outgoing></bpmn:exclusiveGateway>
+    <bpmn:endEvent id="End_Cycle"><bpmn:incoming>Flow_Cycle_End</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_Cycle_1" sourceRef="Start_Cycle" targetRef="Task_Draft" />
+    <bpmn:sequenceFlow id="Flow_Cycle_2" sourceRef="Task_Draft" targetRef="Task_Check" />
+    <bpmn:sequenceFlow id="Flow_Cycle_3" sourceRef="Task_Check" targetRef="Gateway_Cycle" />
+    <bpmn:sequenceFlow id="Flow_Cycle_Back" name="no" sourceRef="Gateway_Cycle" targetRef="Task_Draft" />
+    <bpmn:sequenceFlow id="Flow_Cycle_End" name="yes" sourceRef="Gateway_Cycle" targetRef="End_Cycle" />
+  </bpmn:process>
+</bpmn:definitions>

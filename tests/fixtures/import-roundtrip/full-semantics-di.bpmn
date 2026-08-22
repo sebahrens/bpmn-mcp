@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:roundtrip="urn:mcp-bpmn:roundtrip"
+  id="Definitions_RoundTrip"
+  targetNamespace="urn:mcp-bpmn:roundtrip">
+  <bpmn:itemDefinition id="ItemDefinition_Request" />
+  <bpmn:message id="Message_Notice" name="Completion notice" />
+  <bpmn:process id="Process_RoundTrip" name="Preserved process" isExecutable="true">
+    <bpmn:extensionElements>
+      <roundtrip:metadata key="process-extension" value="keep-me" />
+    </bpmn:extensionElements>
+    <bpmn:laneSet id="LaneSet_RoundTrip">
+      <bpmn:lane id="Lane_Reviewer" name="Reviewer lane">
+        <bpmn:flowNodeRef>Start_RoundTrip</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_Unrelated</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Gateway_Decision</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>SubProcess_Preserved</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>End_RoundTrip</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="Start_RoundTrip" name="Start">
+      <bpmn:messageEventDefinition id="MessageEventDefinition_Start" messageRef="Message_Notice" />
+    </bpmn:startEvent>
+    <bpmn:userTask id="Task_Unrelated" name="Review request">
+      <bpmn:extensionElements>
+        <roundtrip:metadata key="task-extension" value="still-here" />
+      </bpmn:extensionElements>
+      <bpmn:ioSpecification>
+        <bpmn:dataInput id="DataInput_Request" name="Request data" />
+        <bpmn:inputSet id="InputSet_Request"><bpmn:dataInputRefs>DataInput_Request</bpmn:dataInputRefs></bpmn:inputSet>
+        <bpmn:outputSet id="OutputSet_Request" />
+      </bpmn:ioSpecification>
+      <bpmn:dataInputAssociation id="DataInputAssociation_Request">
+        <bpmn:sourceRef>DataObjectReference_Request</bpmn:sourceRef>
+        <bpmn:targetRef>DataInput_Request</bpmn:targetRef>
+      </bpmn:dataInputAssociation>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_Decision" name="Approved?" />
+    <bpmn:subProcess id="SubProcess_Preserved" name="Nested work">
+      <bpmn:startEvent id="Nested_Start" name="Nested start" />
+      <bpmn:serviceTask id="Nested_Task" name="Notify system" />
+      <bpmn:endEvent id="Nested_End" name="Nested end" />
+      <bpmn:sequenceFlow id="Nested_Flow_1" sourceRef="Nested_Start" targetRef="Nested_Task" />
+      <bpmn:sequenceFlow id="Nested_Flow_2" sourceRef="Nested_Task" targetRef="Nested_End" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="End_RoundTrip" name="End" />
+    <bpmn:dataObject id="DataObject_Request" name="Request object" isCollection="true" itemSubjectRef="ItemDefinition_Request" />
+    <bpmn:dataObjectReference id="DataObjectReference_Request" name="Request reference" dataObjectRef="DataObject_Request" />
+    <bpmn:sequenceFlow id="Flow_Start_Task" sourceRef="Start_RoundTrip" targetRef="Task_Unrelated" />
+    <bpmn:sequenceFlow id="Flow_Task_Gateway" sourceRef="Task_Unrelated" targetRef="Gateway_Decision" />
+    <bpmn:sequenceFlow id="Flow_Approved" name="approved" sourceRef="Gateway_Decision" targetRef="SubProcess_Preserved">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression"><![CDATA[${approved = true}]]></bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_To_End" sourceRef="SubProcess_Preserved" targetRef="End_RoundTrip" />
+    <bpmn:association id="Association_Lane_Task" sourceRef="Lane_Reviewer" targetRef="Task_Unrelated" />
+  </bpmn:process>
+  <bpmn:collaboration id="Collaboration_RoundTrip" name="Preserved collaboration">
+    <bpmn:participant id="Participant_Internal" name="Internal pool" processRef="Process_RoundTrip" />
+    <bpmn:participant id="Participant_External" name="External pool" />
+    <bpmn:messageFlow id="MessageFlow_Notice" name="notice" sourceRef="Task_Unrelated" targetRef="Participant_External" messageRef="Message_Notice" />
+  </bpmn:collaboration>
+  <bpmndi:BPMNDiagram id="Diagram_RoundTrip" name="Preserved diagram">
+    <bpmndi:BPMNPlane id="Plane_RoundTrip" bpmnElement="Collaboration_RoundTrip">
+      <bpmndi:BPMNShape id="Participant_Internal_CustomDI" bpmnElement="Participant_Internal" isHorizontal="true">
+        <dc:Bounds x="40" y="40" width="920" height="360" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Participant_External_CustomDI" bpmnElement="Participant_External" isHorizontal="true">
+        <dc:Bounds x="40" y="440" width="920" height="180" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lane_Reviewer_CustomDI" bpmnElement="Lane_Reviewer" isHorizontal="true">
+        <dc:Bounds x="70" y="40" width="890" height="360" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Start_RoundTrip_CustomDI" bpmnElement="Start_RoundTrip">
+        <dc:Bounds x="110" y="190" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="105" y="232" width="46" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Unrelated_CustomDI" bpmnElement="Task_Unrelated">
+        <dc:Bounds x="210" y="168" width="110" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Decision_CustomDI" bpmnElement="Gateway_Decision" isMarkerVisible="true">
+        <dc:Bounds x="380" y="183" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="SubProcess_Preserved_CustomDI" bpmnElement="SubProcess_Preserved" isExpanded="true">
+        <dc:Bounds x="490" y="100" width="300" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Nested_Start_CustomDI" bpmnElement="Nested_Start">
+        <dc:Bounds x="520" y="190" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Nested_Task_CustomDI" bpmnElement="Nested_Task">
+        <dc:Bounds x="590" y="168" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Nested_End_CustomDI" bpmnElement="Nested_End">
+        <dc:Bounds x="720" y="190" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_RoundTrip_CustomDI" bpmnElement="End_RoundTrip">
+        <dc:Bounds x="860" y="190" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="DataObjectReference_Request_CustomDI" bpmnElement="DataObjectReference_Request">
+        <dc:Bounds x="250" y="280" width="36" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Start_Task_CustomDI" bpmnElement="Flow_Start_Task">
+        <di:waypoint x="146" y="208" /><di:waypoint x="210" y="208" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Task_Gateway_CustomDI" bpmnElement="Flow_Task_Gateway">
+        <di:waypoint x="320" y="208" /><di:waypoint x="380" y="208" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Approved_CustomDI" bpmnElement="Flow_Approved">
+        <di:waypoint x="430" y="208" /><di:waypoint x="490" y="208" />
+        <bpmndi:BPMNLabel><dc:Bounds x="444" y="186" width="62" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_To_End_CustomDI" bpmnElement="Flow_To_End">
+        <di:waypoint x="790" y="208" /><di:waypoint x="860" y="208" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Nested_Flow_1_CustomDI" bpmnElement="Nested_Flow_1">
+        <di:waypoint x="556" y="208" /><di:waypoint x="590" y="208" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Nested_Flow_2_CustomDI" bpmnElement="Nested_Flow_2">
+        <di:waypoint x="690" y="208" /><di:waypoint x="720" y="208" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MessageFlow_Notice_CustomDI" bpmnElement="MessageFlow_Notice">
+        <di:waypoint x="265" y="248" /><di:waypoint x="265" y="500" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Association_Lane_Task_CustomDI" bpmnElement="Association_Lane_Task">
+        <di:waypoint x="70" y="208" /><di:waypoint x="210" y="208" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

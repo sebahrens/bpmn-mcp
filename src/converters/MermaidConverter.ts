@@ -1,10 +1,72 @@
 import { MermaidParser } from './MermaidParser.js';
 import { SimpleBpmnGenerator } from '../core/SimpleBpmnGenerator.js';
-import { LayoutEngine } from '../core/LayoutEngine.js';
+import { BpmnDocumentSerializer } from '../core/BpmnDocument.js';
+import { config } from '../config/index.js';
+import type { ResourceLimits } from '../config/index.js';
+import {
+  assertLayoutComplexity,
+  BpmnAutoLayoutV2Adapter,
+  formatBpmnLayoutDiagnostic,
+  type BpmnLayoutAdapter
+} from '../core/layout/BpmnLayoutAdapter.js';
 import type { ConversionResult } from './types.js';
 import type { 
-  MermaidAST
+  MermaidAST,
+  ParseResult
 } from './ASTTypes.js';
+
+const MAX_MERMAID_DIAGNOSTICS = 20;
+const MAX_MERMAID_DIAGNOSTIC_MESSAGE_LENGTH = 240;
+
+interface FormattedMermaidDiagnostics {
+  all: string[];
+  errors: string[];
+  warnings: string[];
+}
+
+function formatMermaidDiagnostics(parseResult: ParseResult): FormattedMermaidDiagnostics {
+  const orderedDiagnostics = [...parseResult.errors, ...parseResult.warnings].sort((left, right) =>
+    left.line - right.line
+    || left.column - right.column
+    || left.severity.localeCompare(right.severity)
+    || left.code.localeCompare(right.code)
+    || left.message.localeCompare(right.message)
+  );
+  const totals = {
+    error: parseResult.errors.length,
+    warning: parseResult.warnings.length
+  };
+  const seen = { error: 0, warning: 0 };
+  const entries: Array<{ severity: 'error' | 'warning'; text: string }> = [];
+
+  for (const diagnostic of orderedDiagnostics) {
+    const severityIndex = seen[diagnostic.severity]++;
+    if (severityIndex === MAX_MERMAID_DIAGNOSTICS) {
+      const omittedCount = totals[diagnostic.severity] - MAX_MERMAID_DIAGNOSTICS;
+      entries.push({
+        severity: diagnostic.severity,
+        text: `${diagnostic.line}:${diagnostic.column} [DIAGNOSTICS_TRUNCATED] `
+          + `${omittedCount} additional ${diagnostic.severity} diagnostics omitted`
+      });
+    }
+    if (severityIndex >= MAX_MERMAID_DIAGNOSTICS) continue;
+
+    const singleLineMessage = diagnostic.message.replace(/\s+/g, ' ').trim();
+    const message = singleLineMessage.length > MAX_MERMAID_DIAGNOSTIC_MESSAGE_LENGTH
+      ? `${singleLineMessage.slice(0, MAX_MERMAID_DIAGNOSTIC_MESSAGE_LENGTH - 3)}...`
+      : singleLineMessage;
+    entries.push({
+      severity: diagnostic.severity,
+      text: `${diagnostic.line}:${diagnostic.column} [${diagnostic.code}] ${message}`
+    });
+  }
+
+  return {
+    all: entries.map(entry => entry.text),
+    errors: entries.filter(entry => entry.severity === 'error').map(entry => entry.text),
+    warnings: entries.filter(entry => entry.severity === 'warning').map(entry => entry.text)
+  };
+}
 
 export interface ConversionOptions {
   autoLayout?: boolean;
@@ -16,6 +78,7 @@ export interface ConversionOptions {
 export interface ValidationResult {
   valid: boolean;
   errors: string[];
+  warnings: string[];
   suggestions?: string[];
   supportedFeatures?: string[];
   unsupportedFeatures?: string[];
@@ -25,9 +88,12 @@ export interface AnalysisResult {
   nodeCount: number;
   edgeCount: number;
   subgraphCount: number;
+  warnings: string[];
   complexity: 'simple' | 'medium' | 'complex';
   estimatedBpmnElements: {
     tasks: number;
+    subprocesses: number;
+    dataObjects: number;
     gateways: number;
     events: number;
     pools: number;
@@ -38,12 +104,23 @@ export interface AnalysisResult {
 export class MermaidConverter {
   private parser: MermaidParser;
   private simpleGenerator: SimpleBpmnGenerator;
-  private layoutEngine: LayoutEngine;
+  private layoutAdapter: BpmnLayoutAdapter;
+  private documentSerializer: BpmnDocumentSerializer;
+  private resourceLimits: ResourceLimits;
 
-  constructor() {
+  constructor(
+    layoutAdapter: BpmnLayoutAdapter = new BpmnAutoLayoutV2Adapter(
+      undefined,
+      config.resourceLimits.layoutTimeoutMs,
+      config.resourceLimits.maxConcurrentLayouts
+    ),
+    resourceLimits: ResourceLimits = config.resourceLimits
+  ) {
     this.parser = new MermaidParser();
     this.simpleGenerator = new SimpleBpmnGenerator();
-    this.layoutEngine = new LayoutEngine();
+    this.layoutAdapter = layoutAdapter;
+    this.documentSerializer = new BpmnDocumentSerializer();
+    this.resourceLimits = { ...resourceLimits };
   }
 
   async convert(
@@ -53,24 +130,48 @@ export class MermaidConverter {
     const warnings: string[] = [];
 
     const parseResult = this.parser.parse(mermaidCode);
+    const diagnostics = formatMermaidDiagnostics(parseResult);
     
     if (!parseResult.ast) {
-      throw new Error(`Failed to parse Mermaid diagram: ${parseResult.errors.map(e => e.message).join(', ')}`);
+      throw this.parseFailure(diagnostics.all);
     }
 
-    warnings.push(...parseResult.warnings);
+    warnings.push(...diagnostics.warnings);
 
     const ast = parseResult.ast;
     const processName = this.generateProcessName(ast);
 
-    // Always use simple generator for direct XML generation
-    const layout = options.autoLayout !== false 
-      ? ast.subgraphs.length > 0 
-        ? this.layoutEngine.layoutWithPools(ast) 
-        : this.layoutEngine.layout(ast)
-      : undefined;
-    
-    const result = this.simpleGenerator.generateBpmn(ast, processName, layout);
+    if (options.autoLayout !== false) {
+      assertLayoutComplexity(
+        ast.nodes.length,
+        ast.edges.length,
+        0,
+        this.resourceLimits
+      );
+    }
+
+    // Generate semantic BPMN once, then route both live auto-layout paths
+    // through the selected XML adapter. The generator's canonical geometry is
+    // retained only when callers explicitly opt out of automatic layout.
+    const result = await this.simpleGenerator.generateBpmn(ast, processName);
+    if (options.autoLayout !== false) {
+      assertLayoutComplexity(
+        ast.nodes.length,
+        ast.edges.length,
+        Buffer.byteLength(result.xml, 'utf8'),
+        this.resourceLimits
+      );
+      const layout = await this.layoutAdapter.layout(result.xml);
+      const laidOut = await this.documentSerializer.parse(layout.xml, config.bpmnImportLimits);
+      result.xml = layout.xml;
+      for (const element of result.elements) {
+        const laidOutElement = laidOut.elements.get(element.id);
+        if (!laidOutElement) continue;
+        element.x = laidOutElement.position.x;
+        element.y = laidOutElement.position.y;
+      }
+      result.warnings.push(...layout.warnings.map(formatBpmnLayoutDiagnostic));
+    }
     result.warnings.push(...warnings);
     
     if (options.validateOutput) {
@@ -95,11 +196,13 @@ export class MermaidConverter {
   async canConvert(mermaidCode: string): Promise<ValidationResult> {
     try {
       const parseResult = this.parser.parse(mermaidCode);
+      const diagnostics = formatMermaidDiagnostics(parseResult);
       
       if (!parseResult.ast) {
         return {
           valid: false,
-          errors: parseResult.errors.map(e => e.message),
+          errors: diagnostics.errors,
+          warnings: diagnostics.warnings,
           suggestions: [
             'Check Mermaid syntax',
             'Ensure all nodes are properly defined',
@@ -114,6 +217,7 @@ export class MermaidConverter {
       return {
         valid: true,
         errors: [],
+        warnings: diagnostics.warnings,
         supportedFeatures,
         unsupportedFeatures,
         suggestions: unsupportedFeatures.length > 0 
@@ -124,6 +228,7 @@ export class MermaidConverter {
       return {
         valid: false,
         errors: [error instanceof Error ? error.message : 'Unknown error'],
+        warnings: [],
         suggestions: ['Ensure valid Mermaid flowchart syntax']
       };
     }
@@ -131,9 +236,10 @@ export class MermaidConverter {
 
   async analyze(mermaidCode: string): Promise<AnalysisResult> {
     const parseResult = this.parser.parse(mermaidCode);
+    const diagnostics = formatMermaidDiagnostics(parseResult);
     
     if (!parseResult.ast) {
-      throw new Error('Failed to parse Mermaid diagram');
+      throw this.parseFailure(diagnostics.all);
     }
 
     const ast = parseResult.ast;
@@ -148,23 +254,14 @@ export class MermaidConverter {
       nodeCount,
       edgeCount,
       subgraphCount,
+      warnings: diagnostics.warnings,
       complexity,
       estimatedBpmnElements: {
-        // Count process/subprocess nodes (excluding unlabeled starting nodes) plus end nodes with specific labels as tasks
-        tasks: ast.nodes.filter(n => {
-          if (n.type === 'process' || n.type === 'subprocess') {
-            // Don't count unlabeled nodes that are likely start events
-            if (n.label === n.id && ast.edges.filter(e => e.target === n.id).length === 0) {
-              return false;
-            }
-            return true;
-          }
-          // Count end nodes with specific labels (not generic "end") as tasks
-          if (n.type === 'end' && !n.label.toLowerCase().match(/^(end|stop|finish)$/)) {
-            return true;
-          }
-          return false;
-        }).length,
+        // Final parser types are mutually exclusive, so every node contributes
+        // to at most one semantic category.
+        tasks: ast.nodes.filter(n => n.type === 'process').length,
+        subprocesses: ast.nodes.filter(n => n.type === 'subprocess').length,
+        dataObjects: ast.nodes.filter(n => n.type === 'data').length,
         gateways: decisionNodes,
         events: ast.nodes.filter(n => ['start', 'end', 'terminator'].includes(n.type)).length,
         pools: subgraphCount,
@@ -184,6 +281,10 @@ export class MermaidConverter {
     return 'Converted Process';
   }
 
+  private parseFailure(errors: readonly string[]): Error {
+    return new Error(`Failed to parse Mermaid diagram:\n${errors.join('\n')}`);
+  }
+
 
   private calculateComplexity(
     nodeCount: number,
@@ -200,14 +301,12 @@ export class MermaidConverter {
   private identifySupportedFeatures(ast: MermaidAST): string[] {
     const features: string[] = [];
     
-    // Tasks: Any node can represent a task in the converted BPMN
-    // Even start/end nodes with rectangular shapes in Mermaid can be tasks
-    if (ast.nodes.length > 0) {
-      features.push('Tasks');
-    }
+    if (ast.nodes.some(n => n.type === 'process')) features.push('Tasks');
+    if (ast.nodes.some(n => n.type === 'subprocess')) features.push('Subprocesses');
+    if (ast.nodes.some(n => n.type === 'data')) features.push('Data objects');
     if (ast.nodes.some(n => n.type === 'decision')) features.push('Gateways');
     if (ast.nodes.some(n => ['start', 'end', 'terminator'].includes(n.type))) features.push('Events');
-    if (ast.subgraphs.length > 0) features.push('Pools/Swimlanes');
+    if (ast.subgraphs.length > 0) features.push('Pools');
     if (ast.edges.some(e => e.label)) features.push('Labeled flows');
     
     return features;
@@ -220,6 +319,7 @@ export class MermaidConverter {
     if (mermaidCode.includes('click')) unsupported.push('Click events');
     if (mermaidCode.includes(':::')) unsupported.push('CSS classes');
     if (mermaidCode.includes('style ')) unsupported.push('Inline styles');
+    if (mermaidCode.includes('-.->')) unsupported.push('Dotted edge styles');
     
     return unsupported;
   }

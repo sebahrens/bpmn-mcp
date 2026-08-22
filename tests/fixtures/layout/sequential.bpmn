@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Definitions_Sequential" targetNamespace="http://mcp-bpmn.test/layout">
+  <bpmn:process id="Process_Sequential" isExecutable="false">
+    <bpmn:documentation>Sequential happy path with two activities.</bpmn:documentation>
+    <bpmn:startEvent id="Start_Sequential" name="Request received"><bpmn:outgoing>Flow_Sequential_1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:userTask id="Task_Review" name="Review request"><bpmn:incoming>Flow_Sequential_1</bpmn:incoming><bpmn:outgoing>Flow_Sequential_2</bpmn:outgoing></bpmn:userTask>
+    <bpmn:serviceTask id="Task_Archive" name="Archive result"><bpmn:incoming>Flow_Sequential_2</bpmn:incoming><bpmn:outgoing>Flow_Sequential_3</bpmn:outgoing></bpmn:serviceTask>
+    <bpmn:endEvent id="End_Sequential" name="Complete"><bpmn:incoming>Flow_Sequential_3</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_Sequential_1" sourceRef="Start_Sequential" targetRef="Task_Review" />
+    <bpmn:sequenceFlow id="Flow_Sequential_2" sourceRef="Task_Review" targetRef="Task_Archive" />
+    <bpmn:sequenceFlow id="Flow_Sequential_3" sourceRef="Task_Archive" targetRef="End_Sequential" />
+  </bpmn:process>
+</bpmn:definitions>

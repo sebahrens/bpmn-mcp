@@ -35,6 +35,7 @@ describe('TypeMappings', () => {
         { input: 'receiveTask', expected: 'bpmn:ReceiveTask' },
         { input: 'sendTask', expected: 'bpmn:SendTask' },
         { input: 'subProcess', expected: 'bpmn:SubProcess' },
+        { input: 'transaction', expected: 'bpmn:Transaction' },
         { input: 'callActivity', expected: 'bpmn:CallActivity' },
       ];
 

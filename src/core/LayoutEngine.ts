@@ -1,88 +1,65 @@
 import type { MermaidAST, MermaidNode } from '../converters/ASTTypes.js';
+import {
+  MERMAID_NODE_SIZES,
+  MermaidAstLayoutAdapter
+} from './layout/adapters/MermaidAstLayoutAdapter.js';
+import { compareLayoutIds, refreshLayoutGeometry, type LayoutModel } from './layout/LayoutModel.js';
 
-export interface Position {
-  x: number;
-  y: number;
-}
-
-export interface LayoutNode {
-  id: string;
-  position: Position;
-  width: number;
-  height: number;
-}
-
-export interface LayoutResult {
-  nodes: Map<string, LayoutNode>;
-  bounds: {
-    minX: number;
-    minY: number;
-    maxX: number;
-    maxY: number;
-  };
-}
+export type LayoutResult = LayoutModel;
+export type { LayoutModel, LayoutNode } from './layout/LayoutModel.js';
 
 export class LayoutEngine {
   private readonly DEFAULT_SPACING = {
     horizontal: 150,
     vertical: 100,
-    laneVertical: 150,
-    poolHorizontal: 50,
-    gatewayBranchOffset: 80
-  };
-
-  private readonly ELEMENT_SIZES = {
-    'start': { width: 36, height: 36 },
-    'end': { width: 36, height: 36 },
-    'process': { width: 100, height: 80 },
-    'decision': { width: 50, height: 50 },
-    'subprocess': { width: 150, height: 100 },
-    'data': { width: 36, height: 50 },
-    'terminator': { width: 36, height: 36 }
+    poolHorizontal: 50
   };
 
   layout(ast: MermaidAST): LayoutResult {
-    const layoutNodes = new Map<string, LayoutNode>();
+    const layoutResult = MermaidAstLayoutAdapter.toLayoutModel(ast);
     const levels = this.computeLevels(ast);
-    const gatewayBranches = this.identifyGatewayBranches(ast);
     const spacing = this.calculateDynamicSpacing(ast);
-    
-    let maxY = 100;
-    
-    levels.forEach((level, depth) => {
-      const baseY = 100 + depth * spacing.vertical;
-      const totalWidth = this.calculateLevelWidth(level);
-      let currentX = (800 - totalWidth) / 2;
-      
-      level.forEach((node, _nodeIndex) => {
-        const size = this.ELEMENT_SIZES[node.type] || this.ELEMENT_SIZES.process;
-        let y = baseY;
-        
-        // Handle gateway branch positioning with better spacing
-        if (this.isGatewayBranchNode(node, gatewayBranches, ast)) {
-          const branchInfo = this.getGatewayBranchInfo(node, gatewayBranches, ast);
-          if (branchInfo) {
-            // Use larger offset for gateway branches to prevent overlap
-            const branchOffset = spacing.gatewayBranchOffset;
-            y = baseY + (branchInfo.branchIndex - branchInfo.totalBranches / 2 + 0.5) * branchOffset;
-          }
-        }
-        
-        layoutNodes.set(node.id, {
-          id: node.id,
-          position: { x: currentX + size.width / 2, y },
-          width: size.width,
-          height: size.height
-        });
-        
-        currentX += size.width + spacing.horizontal;
-        maxY = Math.max(maxY, y);
-      });
-    });
+    const orderedLevels = [...levels.entries()].sort(([left], [right]) => left - right);
+    const maxDepth = orderedLevels.length === 0 ? 0 : Math.max(...orderedLevels.map(([depth]) => depth));
+    const horizontal = layoutResult.direction === 'left-to-right'
+      || layoutResult.direction === 'right-to-left';
+    const reverse = layoutResult.direction === 'right-to-left'
+      || layoutResult.direction === 'bottom-to-top';
 
-    const bounds = this.calculateBounds(layoutNodes);
-    
-    return { nodes: layoutNodes, bounds };
+    for (const [depth, level] of orderedLevels) {
+      const rank = reverse ? maxDepth - depth : depth;
+      if (horizontal) {
+        const totalHeight = this.calculateLevelHeight(level, spacing.vertical);
+        let currentY = (600 - totalHeight) / 2;
+        for (const node of level) {
+          const size = MERMAID_NODE_SIZES[node.type];
+          layoutResult.nodes.get(node.id)!.bounds = {
+            x: 100 + rank * (spacing.horizontal + 100),
+            y: currentY,
+            width: size.width,
+            height: size.height
+          };
+          currentY += size.height + spacing.vertical;
+        }
+      } else {
+        const totalWidth = this.calculateLevelWidth(level, spacing.horizontal);
+        let currentX = (800 - totalWidth) / 2;
+        for (const node of level) {
+          const size = MERMAID_NODE_SIZES[node.type];
+          layoutResult.nodes.get(node.id)!.bounds = {
+            x: currentX,
+            y: 100 + rank * (spacing.vertical + 100),
+            width: size.width,
+            height: size.height
+          };
+          currentX += size.width + spacing.horizontal;
+        }
+      }
+    }
+
+    this.updateContainerBounds(layoutResult, ast);
+    this.resetEdgeGeometry(layoutResult);
+    return refreshLayoutGeometry(layoutResult);
   }
 
   layoutWithPools(ast: MermaidAST): LayoutResult {
@@ -92,43 +69,56 @@ export class LayoutEngine {
       return layoutResult;
     }
 
-    const poolLayouts: Map<string, { nodes: string[]; bounds: any }> = new Map();
-    
-    ast.subgraphs.forEach((subgraph) => {
+    const poolLayouts = [...ast.subgraphs]
+      .sort((left, right) => compareLayoutIds(left.id, right.id))
+      .map(subgraph => {
       const subgraphNodes = subgraph.nodes
         .map(nodeId => layoutResult.nodes.get(nodeId))
-        .filter(node => node !== undefined) as LayoutNode[];
+        .filter(node => node !== undefined);
       
-      if (subgraphNodes.length === 0) return;
+      if (subgraphNodes.length === 0) return undefined;
       
       const bounds = {
-        minX: Math.min(...subgraphNodes.map(n => n.position.x - n.width / 2)) - 20,
-        maxX: Math.max(...subgraphNodes.map(n => n.position.x + n.width / 2)) + 20,
-        minY: Math.min(...subgraphNodes.map(n => n.position.y - n.height / 2)) - 40,
-        maxY: Math.max(...subgraphNodes.map(n => n.position.y + n.height / 2)) + 20
+        x: Math.min(...subgraphNodes.map(node => node.bounds.x)) - 20,
+        y: Math.min(...subgraphNodes.map(node => node.bounds.y)) - 40,
+        width: Math.max(...subgraphNodes.map(node => node.bounds.x + node.bounds.width))
+          - Math.min(...subgraphNodes.map(node => node.bounds.x)) + 40,
+        height: Math.max(...subgraphNodes.map(node => node.bounds.y + node.bounds.height))
+          - Math.min(...subgraphNodes.map(node => node.bounds.y)) + 60
       };
-      
-      poolLayouts.set(subgraph.id, {
+
+      return {
+        id: subgraph.id,
         nodes: subgraph.nodes,
         bounds
-      });
-    });
+      };
+    }).filter(pool => pool !== undefined);
 
-    let currentY = 100;
-    poolLayouts.forEach((pool) => {
-      const height = pool.bounds.maxY - pool.bounds.minY;
-      
+    const horizontal = layoutResult.direction === 'left-to-right'
+      || layoutResult.direction === 'right-to-left';
+    let currentCrossAxis = 100;
+    for (const pool of poolLayouts) {
+      const delta = currentCrossAxis - (horizontal ? pool.bounds.y : pool.bounds.x);
       pool.nodes.forEach(nodeId => {
         const node = layoutResult.nodes.get(nodeId);
         if (node) {
-          node.position.y = currentY + (node.position.y - pool.bounds.minY);
+          if (horizontal) node.bounds.y += delta;
+          else node.bounds.x += delta;
         }
       });
-      
-      currentY += height + this.DEFAULT_SPACING.poolHorizontal;
-    });
+      const container = layoutResult.containers.get(pool.id);
+      if (container) {
+        container.bounds = horizontal
+          ? { ...pool.bounds, y: currentCrossAxis }
+          : { ...pool.bounds, x: currentCrossAxis };
+      }
+      currentCrossAxis += (horizontal ? pool.bounds.height : pool.bounds.width)
+        + this.DEFAULT_SPACING.poolHorizontal;
+    }
 
-    return layoutResult;
+    this.updateContainerBounds(layoutResult, ast);
+    this.resetEdgeGeometry(layoutResult);
+    return refreshLayoutGeometry(layoutResult);
   }
 
   private computeLevels(ast: MermaidAST): Map<number, MermaidNode[]> {
@@ -139,22 +129,23 @@ export class LayoutEngine {
     const adjacencyList = this.buildAdjacencyList(ast);
     const startNodes = this.findStartNodes(ast);
     
-    if (startNodes.length === 0 && ast.nodes.length > 0) {
-      startNodes.push(ast.nodes[0]);
+    const sortedNodes = [...ast.nodes].sort((left, right) => compareLayoutIds(left.id, right.id));
+    if (startNodes.length === 0 && sortedNodes.length > 0) {
+      startNodes.push(sortedNodes[0]);
     }
     
     startNodes.forEach(startNode => {
       this.assignLevels(startNode, 0, adjacencyList, nodeLevel, visited, ast);
     });
     
-    ast.nodes.forEach(node => {
+    sortedNodes.forEach(node => {
       if (!visited.has(node.id)) {
         const minLevel = this.findMinPossibleLevel(node, adjacencyList, nodeLevel, ast);
         this.assignLevels(node, minLevel, adjacencyList, nodeLevel, visited, ast);
       }
     });
     
-    ast.nodes.forEach(node => {
+    [...ast.nodes].sort((left, right) => compareLayoutIds(left.id, right.id)).forEach(node => {
       const level = nodeLevel.get(node.id) || 0;
       if (!levels.has(level)) {
         levels.set(level, []);
@@ -190,13 +181,14 @@ export class LayoutEngine {
   private buildAdjacencyList(ast: MermaidAST): Map<string, string[]> {
     const adjacencyList = new Map<string, string[]>();
     
-    ast.nodes.forEach(node => {
+    [...ast.nodes].sort((left, right) => compareLayoutIds(left.id, right.id)).forEach(node => {
       adjacencyList.set(node.id, []);
     });
     
-    ast.edges.forEach(edge => {
+    [...ast.edges].sort((left, right) => compareLayoutIds(left.id, right.id)).forEach(edge => {
       const sourceList = adjacencyList.get(edge.source) || [];
       sourceList.push(edge.target);
+      sourceList.sort(compareLayoutIds);
       adjacencyList.set(edge.source, sourceList);
     });
     
@@ -209,7 +201,7 @@ export class LayoutEngine {
     
     const startNodes = ast.nodes.filter(node => 
       !hasIncoming.has(node.id) || node.type === 'start'
-    );
+    ).sort((left, right) => compareLayoutIds(left.id, right.id));
     
     return startNodes.length > 0 ? startNodes : [];
   }
@@ -234,53 +226,14 @@ export class LayoutEngine {
     return maxIncomingLevel + 1;
   }
 
-  private calculateLevelWidth(nodes: MermaidNode[]): number {
+  private calculateLevelWidth(nodes: MermaidNode[], spacing: number): number {
     return nodes.reduce((width, node) => {
-      const size = this.ELEMENT_SIZES[node.type] || this.ELEMENT_SIZES.process;
-      return width + size.width + this.DEFAULT_SPACING.horizontal;
-    }, -this.DEFAULT_SPACING.horizontal);
+      return width + MERMAID_NODE_SIZES[node.type].width + spacing;
+    }, -spacing);
   }
 
-  private identifyGatewayBranches(ast: MermaidAST): Map<string, string[]> {
-    const gatewayBranches = new Map<string, string[]>();
-    
-    ast.nodes.forEach(node => {
-      if (node.type === 'decision') {
-        // Find all outgoing edges from this gateway
-        const outgoingTargets = ast.edges
-          .filter(edge => edge.source === node.id)
-          .map(edge => edge.target);
-        
-        if (outgoingTargets.length > 1) {
-          gatewayBranches.set(node.id, outgoingTargets);
-        }
-      }
-    });
-    
-    return gatewayBranches;
-  }
-
-  private isGatewayBranchNode(node: MermaidNode, gatewayBranches: Map<string, string[]>, _ast: MermaidAST): boolean {
-    // Check if this node is a direct target of a gateway with multiple branches
-    for (const [_gatewayId, targets] of gatewayBranches) {
-      if (targets.includes(node.id) && targets.length > 1) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private getGatewayBranchInfo(node: MermaidNode, gatewayBranches: Map<string, string[]>, _ast: MermaidAST): { branchIndex: number; totalBranches: number } | null {
-    for (const [_gatewayId, targets] of gatewayBranches) {
-      if (targets.includes(node.id) && targets.length > 1) {
-        const branchIndex = targets.indexOf(node.id);
-        return {
-          branchIndex,
-          totalBranches: targets.length
-        };
-      }
-    }
-    return null;
+  private calculateLevelHeight(nodes: MermaidNode[], spacing: number): number {
+    return nodes.reduce((height, node) => height + MERMAID_NODE_SIZES[node.type].height + spacing, -spacing);
   }
 
   private calculateDynamicSpacing(ast: MermaidAST): typeof this.DEFAULT_SPACING {
@@ -289,32 +242,47 @@ export class LayoutEngine {
     
     // Calculate complexity metrics
     const nodeCount = ast.nodes.length;
-    const gatewayCount = ast.nodes.filter(n => n.type === 'decision').length;
-    
     // Adjust spacing based on complexity
     const baseHorizontal = Math.max(150, maxLabelLength * 7);
     const baseVertical = nodeCount > 10 ? 120 : 100;
-    const gatewayOffset = gatewayCount > 3 ? 100 : 80;
     
     return {
       horizontal: baseHorizontal,
       vertical: baseVertical,
-      laneVertical: 150,
-      poolHorizontal: 50,
-      gatewayBranchOffset: gatewayOffset
+      poolHorizontal: 50
     };
   }
 
-  private calculateBounds(nodes: Map<string, LayoutNode>): LayoutResult['bounds'] {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    
-    nodes.forEach(node => {
-      minX = Math.min(minX, node.position.x - node.width / 2);
-      minY = Math.min(minY, node.position.y - node.height / 2);
-      maxX = Math.max(maxX, node.position.x + node.width / 2);
-      maxY = Math.max(maxY, node.position.y + node.height / 2);
-    });
-    
-    return { minX, minY, maxX, maxY };
+  private updateContainerBounds(layout: LayoutModel, ast: MermaidAST): void {
+    const update = (subgraph: MermaidAST['subgraphs'][number]): void => {
+      for (const child of subgraph.subgraphs || []) update(child);
+      const memberBounds = [
+        ...subgraph.nodes.map(nodeId => layout.nodes.get(nodeId)?.bounds),
+        ...(subgraph.subgraphs || []).map(child => layout.containers.get(child.id)?.bounds)
+      ].filter(bounds => bounds !== undefined);
+      if (memberBounds.length === 0) return;
+      const minX = Math.min(...memberBounds.map(bounds => bounds.x));
+      const minY = Math.min(...memberBounds.map(bounds => bounds.y));
+      const maxX = Math.max(...memberBounds.map(bounds => bounds.x + bounds.width));
+      const maxY = Math.max(...memberBounds.map(bounds => bounds.y + bounds.height));
+      const container = layout.containers.get(subgraph.id);
+      if (container) {
+        container.bounds = {
+          x: minX - 20,
+          y: minY - 40,
+          width: maxX - minX + 40,
+          height: maxY - minY + 60
+        };
+      }
+    };
+    for (const subgraph of ast.subgraphs) update(subgraph);
   }
+
+  private resetEdgeGeometry(layout: LayoutModel): void {
+    for (const edge of layout.edges.values()) {
+      edge.waypoints = [];
+      edge.segments = [];
+    }
+  }
+
 }

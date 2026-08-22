@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  id="Definitions_TwoPool"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:process id="Process_Buyer" name="Buyer" isExecutable="true">
+    <bpmn:startEvent id="Buyer_Start" />
+    <bpmn:sendTask id="Buyer_Send" name="Send order" />
+    <bpmn:sequenceFlow id="Buyer_Flow" sourceRef="Buyer_Start" targetRef="Buyer_Send" />
+  </bpmn:process>
+  <bpmn:process id="Process_Seller" name="Seller" isExecutable="true">
+    <bpmn:receiveTask id="Seller_Receive" name="Receive order" />
+    <bpmn:endEvent id="Seller_End" />
+    <bpmn:sequenceFlow id="Seller_Flow" sourceRef="Seller_Receive" targetRef="Seller_End" />
+  </bpmn:process>
+  <bpmn:collaboration id="Collaboration_TwoPool" name="Order collaboration">
+    <bpmn:participant id="Participant_Buyer" name="Buyer" processRef="Process_Buyer" />
+    <bpmn:participant id="Participant_Seller" name="Seller" processRef="Process_Seller" />
+    <bpmn:messageFlow id="Message_Order" name="Order" sourceRef="Buyer_Send" targetRef="Seller_Receive" />
+  </bpmn:collaboration>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_TwoPool">
+    <bpmndi:BPMNPlane id="BPMNPlane_TwoPool" bpmnElement="Collaboration_TwoPool">
+      <bpmndi:BPMNShape id="Participant_Buyer_di" bpmnElement="Participant_Buyer" isHorizontal="true">
+        <dc:Bounds x="40" y="40" width="720" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Participant_Seller_di" bpmnElement="Participant_Seller" isHorizontal="true">
+        <dc:Bounds x="40" y="300" width="720" height="260" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Buyer_Start_di" bpmnElement="Buyer_Start">
+        <dc:Bounds x="100" y="130" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Buyer_Send_di" bpmnElement="Buyer_Send">
+        <dc:Bounds x="240" y="108" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Seller_Receive_di" bpmnElement="Seller_Receive">
+        <dc:Bounds x="440" y="388" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Seller_End_di" bpmnElement="Seller_End">
+        <dc:Bounds x="650" y="410" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Buyer_Flow_di" bpmnElement="Buyer_Flow">
+        <di:waypoint x="136" y="148" />
+        <di:waypoint x="240" y="148" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Seller_Flow_di" bpmnElement="Seller_Flow">
+        <di:waypoint x="540" y="428" />
+        <di:waypoint x="650" y="428" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Message_Order_di" bpmnElement="Message_Order">
+        <di:waypoint x="290" y="188" />
+        <di:waypoint x="490" y="388" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

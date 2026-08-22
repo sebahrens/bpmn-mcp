@@ -6,7 +6,7 @@ export interface ConversionResult {
   elements: Array<{
     id: string;
     type: string;
-    businessObject?: any;
+    businessObject?: Record<string, unknown>;
     x?: number;
     y?: number;
   }>;
@@ -19,9 +19,9 @@ export interface ConversionResult {
   pools: Array<{
     id: string;
     name: string;
-    lanes: any[];
+    lanes: Array<Record<string, unknown>>;
   }>;
-  lanes: any[];
+  lanes: Array<Record<string, unknown>>;
   statistics: {
     totalElements: number;
     tasks: number;

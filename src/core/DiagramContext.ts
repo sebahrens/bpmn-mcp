@@ -1,4 +1,4 @@
-import { ProcessContext } from '../types/index.js';
+import { BpmnExtensionProfile, ProcessContext } from '../types/index.js';
 
 export interface DiagramInfo {
   name: string;
@@ -7,20 +7,19 @@ export interface DiagramInfo {
   elementCount: number;
   connectionCount: number;
   type: 'process' | 'collaboration';
+  extensionProfile: BpmnExtensionProfile;
 }
 
 export class DiagramContext {
   private currentContext: ProcessContext | null = null;
   private currentName: string | null = null;
-  private currentFilename: string | null = null;
 
   /**
    * Set the current diagram context
    */
-  setCurrent(context: ProcessContext, name: string, filename?: string): void {
+  setCurrent(context: ProcessContext, name: string): void {
     this.currentContext = context;
     this.currentName = name;
-    this.currentFilename = filename || null;
   }
 
   /**
@@ -49,11 +48,12 @@ export class DiagramContext {
 
     return {
       name: this.currentName,
-      filename: this.currentFilename || undefined,
+      filename: this.currentContext.filename,
       processId: this.currentContext.id,
       elementCount: this.currentContext.elements.size,
       connectionCount: this.currentContext.connections.size,
-      type: this.currentContext.type
+      type: this.currentContext.type,
+      extensionProfile: this.currentContext.extensionProfile
     };
   }
 
@@ -63,7 +63,6 @@ export class DiagramContext {
   clear(): void {
     this.currentContext = null;
     this.currentName = null;
-    this.currentFilename = null;
   }
 
   /**
@@ -73,12 +72,6 @@ export class DiagramContext {
     return this.currentContext !== null;
   }
 
-  /**
-   * Update the filename (for save_as operations)
-   */
-  updateFilename(filename: string): void {
-    this.currentFilename = filename;
-  }
 }
 
 // Singleton instance

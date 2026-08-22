@@ -2,22 +2,37 @@
   "name": "mcp-bpmn-server",
   "version": "0.2.0",
   "description": "MCP server for AI-powered BPMN diagram creation with Mermaid-to-BPMN conversion",
-  "main": "dist/index.js",
+  "main": "./dist/server/index.js",
+  "exports": {
+    ".": "./dist/server/index.js"
+  },
+  "bin": {
+    "mcp-bpmn-server": "./dist/server/index.js"
+  },
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "scripts": {
     "build": "tsc",
     "build:bundle": "node build-cjs.js",
     "build:watch": "tsc --watch",
     "dev": "NODE_OPTIONS='--experimental-specifier-resolution=node' tsx watch src/server/index.ts",
-    "start": "NODE_OPTIONS='--experimental-specifier-resolution=node' node dist/server/index.js",
+    "start": "node dist/server/index.js",
     "start:bundle": "node dist/server/bundle.cjs",
-    "test": "jest",
+    "check": "npm run clean && npm run type-check && npm run lint && npm run test:all",
+    "test": "jest --testPathIgnorePatterns='(/tests/e2e/|/tests/integration/svg-export\\.test\\.ts$)' && npm run test:renderer",
+    "test:all": "npm run clean && npm run build && jest && npm run test:renderer",
     "test:unit": "jest tests/unit",
-    "test:integration": "jest tests/integration",
-    "test:e2e": "npm run build && jest tests/e2e",
-    "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage",
-    "lint": "eslint src --ext .ts",
+    "test:integration": "jest tests/integration && npm run test:renderer",
+    "test:e2e": "npm run clean && npm run build && jest tests/e2e",
+    "test:package": "npm run clean && npm run build && node scripts/package-smoke.mjs",
+    "test:renderer": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.puppeteer.config.js",
+    "test:watch": "jest --testPathIgnorePatterns='(/tests/e2e/|/tests/integration/svg-export\\.test\\.ts$)' --watch",
+    "test:coverage": "jest --testPathIgnorePatterns='(/tests/e2e/|/tests/integration/svg-export\\.test\\.ts$)' --coverage && npm run test:renderer",
+    "audit": "npm audit --audit-level=high",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "lint": "eslint --max-warnings 0 --ext .ts,.js,.cjs,.mjs .",
     "type-check": "tsc --noEmit",
     "clean": "rimraf dist"
   },
@@ -31,22 +46,23 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.1",
-    "bpmn-js": "^17.11.1",
+    "@modelcontextprotocol/sdk": "~1.26.0",
+    "bpmn-auto-layout": "2.0.0-alpha.2",
+    "bpmn-js": "17.11.1",
     "bpmn-moddle": "^9.0.1",
-    "diagram-js": "^14.10.0",
-    "jsdom": "^24.1.0",
-    "mermaid": "^11.3.0",
-    "uuid": "^10.0.0",
-    "zod": "^3.24.1"
+    "camunda-bpmn-moddle": "7.0.1",
+    "puppeteer": "25.8.0",
+    "uuid": "^11.1.1",
+    "zod": "^3.24.1",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@types/jest": "^29.5.13",
-    "@types/jsdom": "^21.1.7",
     "@types/node": "^22.8.1",
-    "@types/uuid": "^10.0.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
+    "bpmn-auto-layout-alpha": "npm:bpmn-auto-layout@2.0.0-alpha.2",
+    "bpmn-auto-layout-stable": "npm:bpmn-auto-layout@1.3.0",
     "esbuild": "^0.25.5",
     "esbuild-node-externals": "^1.18.0",
     "eslint": "^8.57.0",
@@ -54,9 +70,10 @@
     "rimraf": "^6.0.1",
     "ts-jest": "^29.2.5",
     "tsx": "^4.19.2",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "yet-another-bpmn-auto-layout": "2.0.0"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.12.0"
   }
 }

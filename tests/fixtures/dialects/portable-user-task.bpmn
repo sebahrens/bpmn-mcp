@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  id="Definitions_Portable_Profile"
+  targetNamespace="urn:mcp-bpmn:dialect:portable">
+  <bpmn:process id="Process_Portable_Profile" name="Portable profile">
+    <bpmn:userTask id="UserTask_Portable" name="Review request">
+      <bpmn:humanPerformer id="HumanPerformer_Portable">
+        <bpmn:resourceAssignmentExpression>
+          <bpmn:formalExpression>alice</bpmn:formalExpression>
+        </bpmn:resourceAssignmentExpression>
+      </bpmn:humanPerformer>
+      <bpmn:potentialOwner id="PotentialOwner_Portable">
+        <bpmn:resourceAssignmentExpression>
+          <bpmn:formalExpression>group(reviewers), group(operations)</bpmn:formalExpression>
+        </bpmn:resourceAssignmentExpression>
+      </bpmn:potentialOwner>
+    </bpmn:userTask>
+  </bpmn:process>
+</bpmn:definitions>

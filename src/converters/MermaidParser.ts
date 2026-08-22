@@ -1,38 +1,64 @@
-import type { 
-  MermaidAST, 
-  MermaidNode, 
-  MermaidEdge, 
+import type {
+  EdgeType,
+  MermaidAST,
+  MermaidEdge,
+  MermaidNode,
   MermaidSubgraph,
   NodeType,
-  EdgeType,
+  ParseErrorCode,
+  ParseError,
   ParseResult,
-  ParseError
+  ParseWarningCode,
+  ParseWarning
 } from './ASTTypes.js';
 
+interface SourceLocation {
+  line: number;
+  column: number;
+  source: string;
+}
+
+interface ParsedEndpoint {
+  node: MermaidNode;
+  end: number;
+  classAnnotation?: {
+    index: number;
+    name: string;
+  };
+}
+
+interface EndpointFailure {
+  code: 'MALFORMED_NODE' | 'MALFORMED_EDGE';
+  index: number;
+  message: string;
+}
+
+interface ParsedConnector {
+  type: EdgeType;
+  label?: string;
+  end: number;
+}
+
+interface ConnectorFailure {
+  index: number;
+  message: string;
+}
+
+interface OpenSubgraph {
+  id: string;
+  location: SourceLocation;
+}
+
 export class MermaidParser {
-  private nodePatterns = {
-    data: /^\[\[([^\]]+)\]\]/, // Check data first (double brackets)
-    subprocess: /^\[\/([^\/]+)\/\]/, // Then subprocess (slashes)
-    process: /^\[([^\]]+)\]/, // Then regular process
-    decision: /^\{([^}]+)\}/,
-    terminator: /^\(\(([^)]+)\)\)/
-  };
-
-  private edgePatterns = {
-    labeled: /--\|([^|]+)\|-->/,
-    dotted: /-.+->/,
-    directed: /-->/
-  };
-
-  private directionPattern = /^(graph|flowchart)\s+(TD|TB|LR|RL|BT)/i;
-  private nodeDefinitionPattern = /^(\w+)(\[|\{|\(|\[\/)/;
-  private subgraphPattern = /^subgraph\s+(\w+)\s*\[([^\]]+)\]/i;
+  private readonly directionPattern = /^(graph|flowchart)\s+(TD|TB|LR|RL|BT)\s*$/i;
+  private readonly subgraphPattern = /^subgraph\s+(\w+)\s*\[([^\]]+)\]\s*$/i;
+  private readonly unsupportedDirectivePattern = /^(classDef|class|style|linkStyle|click|direction)\b/i;
+  private readonly otherDiagramPattern = /^(sequenceDiagram|classDiagram|stateDiagram(?:-v2)?|erDiagram|journey|gantt|pie|gitGraph|mindmap|timeline|quadrantChart|xychart-beta|block-beta|packet-beta|kanban|architecture-beta|sankey-beta)\b/i;
 
   parse(mermaidCode: string): ParseResult {
     const errors: ParseError[] = [];
-    const warnings: string[] = [];
+    const warnings: ParseWarning[] = [];
     const lines = mermaidCode.split('\n');
-    
     const ast: MermaidAST = {
       type: 'flowchart',
       direction: 'TD',
@@ -40,170 +66,160 @@ export class MermaidParser {
       edges: [],
       subgraphs: []
     };
-
     const nodeMap = new Map<string, MermaidNode>();
-    const currentSubgraph: string[] = [];
-    let lineNumber = 0;
+    const nodeLocations = new Map<string, SourceLocation>();
+    const edgeLocations = new Map<MermaidEdge, SourceLocation>();
+    const edgeIdOccurrences = new Map<string, number>();
+    const subgraphLocations = new Map<MermaidSubgraph, SourceLocation>();
+    const openSubgraphs: OpenSubgraph[] = [];
+    let firstContentLocation: SourceLocation | undefined;
+    let recognizedDocumentSyntax = false;
 
-    for (const line of lines) {
-      lineNumber++;
-      const trimmed = line.trim();
-      
-      if (!trimmed || trimmed.startsWith('%%')) {
+    for (let index = 0; index < lines.length; index++) {
+      const source = lines[index];
+      const leadingWhitespace = source.length - source.trimStart().length;
+      const trimmed = source.trim();
+      const location: SourceLocation = {
+        line: index + 1,
+        column: leadingWhitespace + 1,
+        source
+      };
+
+      if (!trimmed) continue;
+
+      if (trimmed.startsWith('%%{')) {
+        warnings.push(this.warning(
+          'UNSUPPORTED_DIRECTIVE',
+          location,
+          'Unsupported Mermaid initialization directive; ignored'
+        ));
+        firstContentLocation ??= location;
+        continue;
+      }
+      if (trimmed.startsWith('%%')) continue;
+
+      firstContentLocation ??= location;
+
+      if (/^(graph|flowchart)(?:\b|TD|TB|LR|RL|BT)/i.test(trimmed)) {
+        const directionMatch = trimmed.match(this.directionPattern);
+        if (!directionMatch) {
+          errors.push(this.error(
+            'MALFORMED_HEADER',
+            this.at(location, this.headerErrorIndex(trimmed)),
+            'Expected "graph" or "flowchart" followed by TD, TB, LR, RL, or BT'
+          ));
+        } else {
+          ast.direction = directionMatch[2].toUpperCase() as MermaidAST['direction'];
+          recognizedDocumentSyntax = true;
+        }
         continue;
       }
 
-      try {
-        if (this.directionPattern.test(trimmed)) {
-          const match = trimmed.match(this.directionPattern);
-          if (match) {
-            ast.direction = match[2] as MermaidAST['direction'];
-          }
-          continue;
-        }
-
-        if (trimmed.startsWith('subgraph')) {
-          const subgraph = this.parseSubgraph(trimmed, lineNumber);
-          if (subgraph) {
-            ast.subgraphs.push(subgraph);
-            currentSubgraph.push(subgraph.id);
-          }
-          continue;
-        }
-
-        if (trimmed === 'end') {
-          currentSubgraph.pop();
-          continue;
-        }
-
-        // Check for multiple edges on the same line (e.g., A --> B --> C)
-        const multiEdgeMatch = trimmed.match(/(\w+(?:\[.+?\]|\{.+?\}|\(.+?\))?)(\s*--[>.-]+\s*\w+(?:\[.+?\]|\{.+?\}|\(.+?\))?)+/);
-        if (multiEdgeMatch) {
-          const parts = trimmed.split(/\s*--[>.-]+\s*/);
-          for (let i = 0; i < parts.length - 1; i++) {
-            const sourcePart = parts[i].trim();
-            const targetPart = parts[i + 1].trim();
-            
-            // Try to parse with shape first
-            const sourceWithShape = this.parseNodeWithShape(sourcePart);
-            const targetWithShape = this.parseNodeWithShape(targetPart);
-            
-            // Extract node IDs
-            const sourceId = sourceWithShape?.id || sourcePart.match(/^(\w+)/)?.[1];
-            const targetId = targetWithShape?.id || targetPart.match(/^(\w+)/)?.[1];
-            
-            if (sourceId && targetId) {
-              // Create nodes if they don't exist
-              if (!nodeMap.has(sourceId)) {
-                const node = sourceWithShape || this.createNodeFromId(sourceId);
-                nodeMap.set(sourceId, node);
-                ast.nodes.push(node);
-              }
-              if (!nodeMap.has(targetId)) {
-                const node = targetWithShape || this.createNodeFromId(targetId);
-                nodeMap.set(targetId, node);
-                ast.nodes.push(node);
-              }
-              
-              // Create edge
-              ast.edges.push({
-                id: `${sourceId}_to_${targetId}`,
-                source: sourceId,
-                target: targetId,
-                type: 'directed'
-              });
-              
-              // Handle subgraph membership
-              if (currentSubgraph.length > 0) {
-                const subgraph = ast.subgraphs.find(s => s.id === currentSubgraph[currentSubgraph.length - 1]);
-                if (subgraph) {
-                  if (!subgraph.nodes.includes(sourceId)) subgraph.nodes.push(sourceId);
-                  if (!subgraph.nodes.includes(targetId)) subgraph.nodes.push(targetId);
-                }
-              }
-            }
-          }
-          continue;
-        }
-        
-        const edgeMatch = this.parseEdge(trimmed);
-        if (edgeMatch) {
-          const { source, target, edge } = edgeMatch;
-          
-          // Parse source node
-          if (!source.includes('|')) {
-            // Try to parse the source as a node with shape
-            const sourceWithShape = this.parseNodeWithShape(source);
-            if (sourceWithShape && !nodeMap.has(sourceWithShape.id)) {
-              nodeMap.set(sourceWithShape.id, sourceWithShape);
-              ast.nodes.push(sourceWithShape);
-            } else if (!nodeMap.has(source)) {
-              const sourceNode = this.createNodeFromId(source);
-              nodeMap.set(source, sourceNode);
-              ast.nodes.push(sourceNode);
-            }
-          }
-          
-          // Parse target node
-          if (!target.includes('|')) {
-            // Try to parse the target as a node with shape
-            const targetWithShape = this.parseNodeWithShape(target);
-            if (targetWithShape && !nodeMap.has(targetWithShape.id)) {
-              nodeMap.set(targetWithShape.id, targetWithShape);
-              ast.nodes.push(targetWithShape);
-            } else if (!nodeMap.has(target)) {
-              const targetNode = this.createNodeFromId(target);
-              nodeMap.set(target, targetNode);
-              ast.nodes.push(targetNode);
-            }
-          }
-          
-          ast.edges.push(edge);
-          
-          if (currentSubgraph.length > 0) {
-            const subgraph = ast.subgraphs.find(s => s.id === currentSubgraph[currentSubgraph.length - 1]);
-            if (subgraph) {
-              if (!subgraph.nodes.includes(source)) subgraph.nodes.push(source);
-              if (!subgraph.nodes.includes(target)) subgraph.nodes.push(target);
-            }
-          }
-          
-          continue;
-        }
-
-        const nodeMatch = this.parseNode(trimmed);
-        if (nodeMatch) {
-          if (nodeMap.has(nodeMatch.id)) {
-            warnings.push(`Duplicate node definition: ${nodeMatch.id} at line ${lineNumber}`);
-          } else {
-            nodeMap.set(nodeMatch.id, nodeMatch);
-            ast.nodes.push(nodeMatch);
-            
-            if (currentSubgraph.length > 0) {
-              const subgraph = ast.subgraphs.find(s => s.id === currentSubgraph[currentSubgraph.length - 1]);
-              if (subgraph && !subgraph.nodes.includes(nodeMatch.id)) {
-                subgraph.nodes.push(nodeMatch.id);
-              }
-            }
-          }
-          continue;
-        }
-
-        if (trimmed && !trimmed.startsWith('classDef') && !trimmed.startsWith('class') && !trimmed.startsWith('style')) {
-          warnings.push(`Unrecognized syntax at line ${lineNumber}: ${trimmed}`);
-        }
-      } catch (error) {
-        errors.push({
-          line: lineNumber,
-          column: 0,
-          message: error instanceof Error ? error.message : 'Parse error',
-          code: trimmed
-        });
+      if (this.otherDiagramPattern.test(trimmed)) {
+        errors.push(this.error(
+          'UNKNOWN_SYNTAX',
+          location,
+          'Only Mermaid graph and flowchart diagrams can be converted to BPMN'
+        ));
+        continue;
       }
+
+      if (/^subgraph\b/i.test(trimmed)) {
+        const match = trimmed.match(this.subgraphPattern);
+        if (!match) {
+          errors.push(this.error(
+            'MALFORMED_SUBGRAPH',
+            this.at(location, this.subgraphErrorIndex(trimmed)),
+            'Expected subgraph syntax: subgraph <id>[<title>]'
+          ));
+          continue;
+        }
+
+        const subgraph: MermaidSubgraph = {
+          id: match[1],
+          title: match[2].trim(),
+          nodes: []
+        };
+        if (openSubgraphs.length > 0) {
+          errors.push(this.error(
+            'UNSUPPORTED_NESTED_SUBGRAPH',
+            location,
+            'Nested Mermaid subgraphs are not supported for BPMN conversion'
+          ));
+        }
+        ast.subgraphs.push(subgraph);
+        subgraphLocations.set(subgraph, location);
+        openSubgraphs.push({ id: subgraph.id, location });
+        recognizedDocumentSyntax = true;
+        continue;
+      }
+
+      if (/^end\b/i.test(trimmed)) {
+        if (trimmed !== 'end') {
+          errors.push(this.error(
+            'MALFORMED_SUBGRAPH',
+            this.at(location, 3),
+            'Subgraph terminator must be exactly "end"'
+          ));
+        } else if (openSubgraphs.length === 0) {
+          errors.push(this.error(
+            'UNEXPECTED_SUBGRAPH_END',
+            location,
+            'Unexpected subgraph terminator without a matching subgraph'
+          ));
+        } else {
+          openSubgraphs.pop();
+        }
+        continue;
+      }
+
+      const directiveMatch = trimmed.match(this.unsupportedDirectivePattern);
+      if (directiveMatch) {
+        warnings.push(this.warning(
+          'UNSUPPORTED_DIRECTIVE',
+          location,
+          `Unsupported Mermaid directive "${directiveMatch[1]}"; ignored`
+        ));
+        continue;
+      }
+
+      this.parseStructuralLine(
+        trimmed,
+        location,
+        ast,
+        nodeMap,
+        nodeLocations,
+        edgeLocations,
+        edgeIdOccurrences,
+        openSubgraphs,
+        errors,
+        warnings
+      );
+      recognizedDocumentSyntax ||= this.hasDeclarationlessStructure(trimmed);
+    }
+
+    for (const openSubgraph of openSubgraphs) {
+      errors.push(this.error(
+        'UNCLOSED_SUBGRAPH',
+        openSubgraph.location,
+        `Subgraph "${openSubgraph.id}" is missing a closing "end"`
+      ));
     }
 
     this.inferNodeTypes(ast);
-    this.validateAST(ast, errors, warnings);
+    this.validateAST(
+      ast,
+      nodeLocations,
+      edgeLocations,
+      subgraphLocations,
+      firstContentLocation ?? { line: 1, column: 1, source: lines[0] ?? '' },
+      recognizedDocumentSyntax,
+      errors,
+      warnings
+    );
+
+    errors.sort(this.compareDiagnostics);
+    warnings.sort(this.compareDiagnostics);
 
     return {
       ast: errors.length === 0 ? ast : undefined,
@@ -212,240 +228,442 @@ export class MermaidParser {
     };
   }
 
-  private parseNode(line: string): MermaidNode | null {
-    const match = line.match(this.nodeDefinitionPattern);
-    if (!match) return null;
+  private parseStructuralLine(
+    text: string,
+    location: SourceLocation,
+    ast: MermaidAST,
+    nodeMap: Map<string, MermaidNode>,
+    nodeLocations: Map<string, SourceLocation>,
+    edgeLocations: Map<MermaidEdge, SourceLocation>,
+    edgeIdOccurrences: Map<string, number>,
+    openSubgraphs: OpenSubgraph[],
+    errors: ParseError[],
+    warnings: ParseWarning[]
+  ): void {
+    const first = this.parseEndpoint(text, 0);
+    if ('message' in first) {
+      errors.push(this.error(first.code, this.at(location, first.index), first.message));
+      return;
+    }
+    this.addClassAnnotationWarning(first, location, warnings);
 
-    const id = match[1];
-    let type: NodeType = 'process';
-    let label = id;
+    let cursor = this.skipWhitespace(text, first.end);
+    if (cursor === text.length) {
+      this.addNode(first.node, location, true, ast, nodeMap, nodeLocations, openSubgraphs, warnings);
+      return;
+    }
 
-    for (const [nodeType, pattern] of Object.entries(this.nodePatterns)) {
-      const remainingLine = line.slice(id.length);
-      const shapeMatch = remainingLine.match(pattern);
-      if (shapeMatch) {
-        type = nodeType as NodeType;
-        label = shapeMatch[1].trim();
-        break;
+    if (!this.looksLikeConnector(text.slice(cursor))) {
+      errors.push(this.error(
+        'UNKNOWN_SYNTAX',
+        this.at(location, cursor),
+        'Unrecognized Mermaid flowchart syntax'
+      ));
+      return;
+    }
+
+    this.addNode(first.node, location, false, ast, nodeMap, nodeLocations, openSubgraphs, warnings);
+    let sourceNode = first.node;
+
+    while (cursor < text.length) {
+      const connector = this.parseConnector(text, cursor);
+      if ('message' in connector) {
+        errors.push(this.error('MALFORMED_EDGE', this.at(location, connector.index), connector.message));
+        return;
       }
+
+      const targetStart = this.skipWhitespace(text, connector.end);
+      if (targetStart >= text.length) {
+        errors.push(this.error(
+          'MALFORMED_EDGE',
+          this.at(location, connector.end),
+          'Expected a target node after the edge connector'
+        ));
+        return;
+      }
+
+      const target = this.parseEndpoint(text, targetStart);
+      if ('message' in target) {
+        errors.push(this.error(target.code, this.at(location, target.index), target.message));
+        return;
+      }
+      this.addClassAnnotationWarning(target, location, warnings);
+
+      this.addNode(target.node, this.at(location, targetStart), false, ast, nodeMap, nodeLocations, openSubgraphs, warnings);
+      const edge: MermaidEdge = {
+        id: this.allocateEdgeId(sourceNode.id, target.node.id, edgeIdOccurrences),
+        source: sourceNode.id,
+        target: target.node.id,
+        type: connector.type,
+        label: connector.label
+      };
+      ast.edges.push(edge);
+      edgeLocations.set(edge, this.at(location, cursor));
+      this.addToCurrentSubgraph(sourceNode.id, ast, openSubgraphs);
+      this.addToCurrentSubgraph(target.node.id, ast, openSubgraphs);
+
+      sourceNode = target.node;
+      cursor = this.skipWhitespace(text, target.end);
+      if (cursor < text.length && !this.looksLikeConnector(text.slice(cursor))) {
+        errors.push(this.error(
+          'MALFORMED_EDGE',
+          this.at(location, cursor),
+          'Unexpected content after the target node'
+        ));
+        return;
+      }
+    }
+  }
+
+  private allocateEdgeId(
+    sourceId: string,
+    targetId: string,
+    occurrences: Map<string, number>
+  ): string {
+    const baseId = `${sourceId}_to_${targetId}`;
+    const occurrence = (occurrences.get(baseId) ?? 0) + 1;
+    occurrences.set(baseId, occurrence);
+    return occurrence === 1 ? baseId : `${baseId}_${occurrence}`;
+  }
+
+  private parseEndpoint(text: string, start: number): ParsedEndpoint | EndpointFailure {
+    const idMatch = text.slice(start).match(/^(\w+)/);
+    if (!idMatch) {
+      return {
+        code: 'MALFORMED_EDGE',
+        index: start,
+        message: 'Expected a Mermaid node identifier'
+      };
+    }
+
+    const id = idMatch[1];
+    const shapeStart = start + id.length;
+    const shapeText = text.slice(shapeStart);
+    if (!shapeText || /^\s/.test(shapeText) || this.looksLikeConnector(shapeText) || shapeText.startsWith(':::')) {
+      return this.withClassAnnotation(text, {
+        node: { id, type: 'process', label: id },
+        end: shapeStart
+      });
+    }
+
+    const shapes: Array<{ pattern: RegExp; type: NodeType }> = [
+      { pattern: /^\[\[([^\]]+)\]\]/, type: 'data' },
+      { pattern: /^\[\/([^/]+)\/\]/, type: 'subprocess' },
+      { pattern: /^\[([^\]]+)\]/, type: 'process' },
+      { pattern: /^\{([^}]+)\}/, type: 'decision' },
+      { pattern: /^\(\(([^)]+)\)\)/, type: 'terminator' }
+    ];
+    const connectorIndex = shapeText.search(/-->|-\.->/);
+
+    for (const shape of shapes) {
+      const match = shapeText.match(shape.pattern);
+      if (match && (connectorIndex < 0 || match[0].length <= connectorIndex)) {
+        return this.withClassAnnotation(text, {
+          node: { id, type: shape.type, label: match[1].trim() },
+          end: shapeStart + match[0].length
+        });
+      }
+    }
+
+    if (/^[\[({]/.test(shapeText)) {
+      return {
+        code: 'MALFORMED_NODE',
+        index: shapeStart,
+        message: `Malformed shape for node "${id}"`
+      };
     }
 
     return {
-      id,
-      type,
-      label
+      code: 'MALFORMED_NODE',
+      index: shapeStart,
+      message: `Unexpected content after node identifier "${id}"`
     };
   }
 
-  private parseNodeWithShape(text: string): MermaidNode | null {
-    // Try to match patterns like A((Start)) or B{Decision}
-    const patterns = [
-      { regex: /^(\w+)\[\[([^\]]+)\]\]$/, type: 'data' as NodeType },
-      { regex: /^(\w+)\[\/([^\/]+)\/\]$/, type: 'subprocess' as NodeType },
-      { regex: /^(\w+)\[([^\]]+)\]$/, type: 'process' as NodeType },
-      { regex: /^(\w+)\{([^}]+)\}$/, type: 'decision' as NodeType },
-      { regex: /^(\w+)\(\(([^)]+)\)\)$/, type: 'terminator' as NodeType }
-    ];
-
-    for (const { regex, type } of patterns) {
-      const match = text.match(regex);
-      if (match) {
-        return {
-          id: match[1],
-          type,
-          label: match[2].trim()
-        };
-      }
-    }
-
-    return null;
+  private withClassAnnotation(text: string, endpoint: ParsedEndpoint): ParsedEndpoint {
+    const annotation = text.slice(endpoint.end).match(/^:::([A-Za-z_]\w*(?:-[A-Za-z0-9_]+)*)(?=\s|-->|-\.->|$)/);
+    if (!annotation) return endpoint;
+    return {
+      ...endpoint,
+      end: endpoint.end + annotation[0].length,
+      classAnnotation: { index: endpoint.end, name: annotation[1] }
+    };
   }
 
-  private parseEdge(line: string): { source: string; target: string; edge: MermaidEdge } | null {
-    let edgeType: EdgeType = 'directed';
+  private addClassAnnotationWarning(
+    endpoint: ParsedEndpoint,
+    location: SourceLocation,
+    warnings: ParseWarning[]
+  ): void {
+    if (!endpoint.classAnnotation) return;
+    warnings.push(this.warning(
+      'UNSUPPORTED_DIRECTIVE',
+      this.at(location, endpoint.classAnnotation.index),
+      `Unsupported Mermaid CSS class "${endpoint.classAnnotation.name}"; ignored`
+    ));
+  }
+
+  private parseConnector(text: string, start: number): ParsedConnector | ConnectorFailure {
+    const connectorMatch = text.slice(start).match(/^(-->|-\.->)/);
+    if (!connectorMatch) {
+      return { index: start, message: 'Expected a supported edge connector: --> or -.->' };
+    }
+
+    const type: EdgeType = connectorMatch[1] === '-.->' ? 'dotted' : 'directed';
+    let cursor = this.skipWhitespace(text, start + connectorMatch[0].length);
     let label: string | undefined;
 
-    // Check for labeled edges first (e.g., A -->|Yes| B)
-    const labeledMatch = line.match(/(\w+(?:\[.+?\]|\{.+?\}|\(.+?\))?)\s*-->\s*\|([^|]+)\|\s*(\w+(?:\[.+?\]|\{.+?\}|\(.+?\))?)/);
-    if (labeledMatch) {
-      const sourcePart = labeledMatch[1];
-      const targetPart = labeledMatch[3];
-      label = labeledMatch[2].trim();
-      edgeType = 'labeled';
-      
-      // Extract just the ID from source and target
-      const sourceId = sourcePart.match(/^(\w+)/)?.[1] || sourcePart;
-      const targetId = targetPart.match(/^(\w+)/)?.[1] || targetPart;
-      
-      return {
-        source: sourcePart, // Return full source with shape for node creation
-        target: targetPart, // Return full target with shape for node creation
-        edge: {
-          id: `${sourceId}_to_${targetId}`,
-          source: sourceId,
-          target: targetId,
-          type: edgeType,
-          label
-        }
-      };
-    }
-
-    // Check for dotted edges with label (e.g., A -.->|Label| B)
-    const dottedLabelMatch = line.match(/(\w+(?:\[.+?\]|\{.+?\}|\(.+?\))?)\s*-\.->\s*\|([^|]+)\|\s*(\w+(?:\[.+?\]|\{.+?\}|\(.+?\))?)/);
-    if (dottedLabelMatch) {
-      const sourcePart = dottedLabelMatch[1];
-      const targetPart = dottedLabelMatch[3];
-      label = dottedLabelMatch[2].trim();
-      edgeType = 'dotted';
-      
-      // Extract just the ID from source and target
-      const sourceId = sourcePart.match(/^(\w+)/)?.[1] || sourcePart;
-      const targetId = targetPart.match(/^(\w+)/)?.[1] || targetPart;
-      
-      return {
-        source: sourcePart, // Return full source with shape for node creation
-        target: targetPart, // Return full target with shape for node creation
-        edge: {
-          id: `${sourceId}_to_${targetId}`,
-          source: sourceId,
-          target: targetId,
-          type: edgeType,
-          label
-        }
-      };
-    }
-
-    // Check for dotted edges (e.g., A -.-> B)
-    if (this.edgePatterns.dotted.test(line)) {
-      edgeType = 'dotted';
-    }
-
-    // Parse regular edges
-    const parts = line.split(/--[\|>.-]+/);
-    if (parts.length !== 2) return null;
-
-    const sourcePart = parts[0].trim();
-    const targetPart = parts[1].trim();
-
-    // Extract node ID from source (handles A[Label], A{Label}, A((Label)), etc.)
-    const sourceMatch = sourcePart.match(/^(\w+)/);
-    const targetMatch = targetPart.match(/^(\w+)/);
-
-    if (!sourceMatch || !targetMatch) return null;
-
-    const source = sourceMatch[1];
-    const target = targetMatch[1];
-
-    return {
-      source: sourcePart, // Return full source with shape for node creation
-      target: targetPart, // Return full target with shape for node creation
-      edge: {
-        id: `${source}_to_${target}`,
-        source,
-        target,
-        type: edgeType,
-        label
+    if (text[cursor] === '|') {
+      const labelEnd = text.indexOf('|', cursor + 1);
+      if (labelEnd < 0 || labelEnd === cursor + 1) {
+        return { index: cursor, message: 'Edge labels must be non-empty and enclosed by | characters' };
       }
-    };
+      label = text.slice(cursor + 1, labelEnd).trim();
+      if (!label) {
+        return { index: cursor, message: 'Edge labels must not be blank' };
+      }
+      cursor = this.skipWhitespace(text, labelEnd + 1);
+    }
+
+    return { type: label === undefined ? type : type === 'directed' ? 'labeled' : type, label, end: cursor };
   }
 
-  private parseSubgraph(line: string, _lineNumber: number): MermaidSubgraph | null {
-    const match = line.match(this.subgraphPattern);
-    if (!match) return null;
-
-    return {
-      id: match[1],
-      title: match[2].trim(),
-      nodes: []
-    };
+  private addNode(
+    node: MermaidNode,
+    location: SourceLocation,
+    explicit: boolean,
+    ast: MermaidAST,
+    nodeMap: Map<string, MermaidNode>,
+    nodeLocations: Map<string, SourceLocation>,
+    openSubgraphs: OpenSubgraph[],
+    warnings: ParseWarning[]
+  ): void {
+    if (nodeMap.has(node.id)) {
+      if (explicit) {
+        warnings.push(this.warning(
+          'DUPLICATE_NODE',
+          location,
+          `Duplicate node definition: ${node.id}`
+        ));
+      }
+    } else {
+      nodeMap.set(node.id, node);
+      nodeLocations.set(node.id, location);
+      ast.nodes.push(node);
+    }
+    this.addToCurrentSubgraph(node.id, ast, openSubgraphs);
   }
 
-  private createNodeFromId(id: string): MermaidNode {
-    // Check if the ID contains shape information
-    for (const [nodeType, pattern] of Object.entries(this.nodePatterns)) {
-      if (pattern.test(id)) {
-        const match = id.match(pattern);
-        if (match) {
-          return {
-            id: id.replace(pattern, '').trim() || id,
-            type: nodeType as NodeType,
-            label: match[1].trim()
-          };
-        }
-      }
-    }
-    
-    return {
-      id,
-      type: 'process',
-      label: id
-    };
+  private addToCurrentSubgraph(nodeId: string, ast: MermaidAST, openSubgraphs: OpenSubgraph[]): void {
+    const current = openSubgraphs.at(-1);
+    if (!current) return;
+    const subgraph = ast.subgraphs.find(candidate => candidate.id === current.id);
+    if (subgraph && !subgraph.nodes.includes(nodeId)) subgraph.nodes.push(nodeId);
   }
 
   private inferNodeTypes(ast: MermaidAST): void {
+    const startKeywords = new Set(['start', 'begin']);
+    const endKeywords = new Set(['end', 'stop', 'finish']);
+
     for (const node of ast.nodes) {
-      // Skip if already has a specific type other than 'terminator'
       if (node.type !== 'terminator' && node.type !== 'process') continue;
-      
-      if (node.label.toLowerCase().includes('start') || node.label.toLowerCase().includes('begin')) {
+
+      const normalizedLabel = node.label.trim().toLowerCase();
+      if (startKeywords.has(normalizedLabel)) {
         node.type = 'start';
-      } else if (node.label.toLowerCase().includes('end') || node.label.toLowerCase().includes('stop')) {
+      } else if (endKeywords.has(normalizedLabel)) {
         node.type = 'end';
       } else if (node.type === 'terminator') {
-        const incomingEdges = ast.edges.filter(e => e.target === node.id);
-        const outgoingEdges = ast.edges.filter(e => e.source === node.id);
-        
-        if (incomingEdges.length === 0 && outgoingEdges.length > 0) {
+        const hasIncoming = ast.edges.some(edge => edge.target === node.id);
+        const hasOutgoing = ast.edges.some(edge => edge.source === node.id);
+
+        if (!hasIncoming && hasOutgoing) {
           node.type = 'start';
-        } else if (outgoingEdges.length === 0 && incomingEdges.length > 0) {
+        } else if (hasIncoming && !hasOutgoing) {
           node.type = 'end';
         }
       }
     }
   }
 
-  private validateAST(ast: MermaidAST, errors: ParseError[], warnings: string[]): void {
-    const nodeIds = new Set(ast.nodes.map(n => n.id));
-    
+  private validateAST(
+    ast: MermaidAST,
+    nodeLocations: Map<string, SourceLocation>,
+    edgeLocations: Map<MermaidEdge, SourceLocation>,
+    subgraphLocations: Map<MermaidSubgraph, SourceLocation>,
+    fallbackLocation: SourceLocation,
+    recognizedDocumentSyntax: boolean,
+    errors: ParseError[],
+    warnings: ParseWarning[]
+  ): void {
+    const edgeIds = new Set<string>();
+    const subgraphIds = new Set<string>();
+    const ownerByNode = new Map<string, string>();
+
     for (const edge of ast.edges) {
-      if (!nodeIds.has(edge.source)) {
-        errors.push({
-          line: 0,
-          column: 0,
-          message: `Edge references undefined source node: ${edge.source}`,
-          code: `${edge.source} --> ${edge.target}`
-        });
+      const edgeLocation = edgeLocations.get(edge) ?? fallbackLocation;
+      if (edgeIds.has(edge.id)) {
+        errors.push(this.error(
+          'DUPLICATE_EDGE',
+          edgeLocation,
+          `Duplicate Mermaid edge ID: ${edge.id}`
+        ));
       }
-      if (!nodeIds.has(edge.target)) {
-        errors.push({
-          line: 0,
-          column: 0,
-          message: `Edge references undefined target node: ${edge.target}`,
-          code: `${edge.source} --> ${edge.target}`
-        });
+      edgeIds.add(edge.id);
+      if (edge.type === 'dotted') {
+        warnings.push(this.warning(
+          'UNSUPPORTED_EDGE_STYLE',
+          edgeLocation,
+          `Dotted Mermaid edge ${edge.id} is converted without dotted styling`
+        ));
+      }
+      const sourceNode = ast.nodes.find(node => node.id === edge.source);
+      const targetNode = ast.nodes.find(node => node.id === edge.target);
+      if (sourceNode?.type === 'data' || targetNode?.type === 'data') {
+        errors.push(this.error(
+          'UNSUPPORTED_EDGE_ENDPOINT',
+          edgeLocation,
+          `Edge ${edge.id} cannot connect a BPMN flow to a data object`
+        ));
       }
     }
 
-    const startNodes = ast.nodes.filter(n => n.type === 'start');
-    const endNodes = ast.nodes.filter(n => n.type === 'end');
-    
-    if (startNodes.length === 0) {
-      warnings.push('No explicit start node found. Consider adding a start event.');
+    for (const subgraph of ast.subgraphs) {
+      const subgraphLocation = subgraphLocations.get(subgraph) ?? fallbackLocation;
+      if (subgraphIds.has(subgraph.id)) {
+        errors.push(this.error(
+          'DUPLICATE_SUBGRAPH',
+          subgraphLocation,
+          `Duplicate Mermaid subgraph ID: ${subgraph.id}`
+        ));
+      }
+      subgraphIds.add(subgraph.id);
+
+      for (const nodeId of subgraph.nodes) {
+        const existingOwner = ownerByNode.get(nodeId);
+        if (existingOwner && existingOwner !== subgraph.id) {
+          errors.push(this.error(
+            'MULTIPLE_SUBGRAPH_OWNERS',
+            subgraphLocation,
+            `Mermaid node ${nodeId} belongs to multiple subgraphs`
+          ));
+        } else {
+          ownerByNode.set(nodeId, subgraph.id);
+        }
+      }
     }
-    if (endNodes.length === 0) {
-      warnings.push('No explicit end node found. Consider adding an end event.');
+
+    if (ast.subgraphs.length > 0) {
+      for (const node of ast.nodes) {
+        if (!ownerByNode.has(node.id)) {
+          errors.push(this.error(
+            'MISSING_SUBGRAPH_OWNER',
+            nodeLocations.get(node.id) ?? fallbackLocation,
+            `Mermaid node ${node.id} is not owned by a subgraph`
+          ));
+        }
+      }
+    }
+
+    if (ast.nodes.length === 0) {
+      if (errors.length === 0) {
+        errors.push(this.error(
+          'EMPTY_DIAGRAM',
+          fallbackLocation,
+          'Mermaid flowchart must contain at least one node'
+        ));
+      }
+      return;
+    }
+
+    if (!recognizedDocumentSyntax && errors.length === 0) {
+      errors.push(this.error(
+        'UNKNOWN_SYNTAX',
+        fallbackLocation,
+        'Expected a Mermaid graph/flowchart declaration or declaration-less flowchart syntax'
+      ));
+      return;
+    }
+
+    if (!ast.nodes.some(node => node.type === 'start')) {
+      warnings.push(this.warning(
+        'MISSING_START',
+        fallbackLocation,
+        'No explicit start node found. Consider adding a start event.'
+      ));
+    }
+    if (!ast.nodes.some(node => node.type === 'end')) {
+      warnings.push(this.warning(
+        'MISSING_END',
+        fallbackLocation,
+        'No explicit end node found. Consider adding an end event.'
+      ));
     }
 
     for (const node of ast.nodes) {
-      const incoming = ast.edges.filter(e => e.target === node.id);
-      const outgoing = ast.edges.filter(e => e.source === node.id);
-      
-      if (incoming.length === 0 && node.type !== 'start') {
-        warnings.push(`Node "${node.id}" has no incoming connections`);
+      const nodeLocation = nodeLocations.get(node.id) ?? fallbackLocation;
+      const hasIncoming = ast.edges.some(edge => edge.target === node.id);
+      const hasOutgoing = ast.edges.some(edge => edge.source === node.id);
+
+      if (!hasIncoming && node.type !== 'start') {
+        warnings.push(this.warning(
+          'DISCONNECTED_NODE',
+          nodeLocation,
+          `Node "${node.id}" has no incoming connections`
+        ));
       }
-      if (outgoing.length === 0 && node.type !== 'end') {
-        warnings.push(`Node "${node.id}" has no outgoing connections`);
+      if (!hasOutgoing && node.type !== 'end') {
+        warnings.push(this.warning(
+          'DISCONNECTED_NODE',
+          nodeLocation,
+          `Node "${node.id}" has no outgoing connections`
+        ));
       }
     }
+  }
+
+  private warning(code: ParseWarningCode, location: SourceLocation, message: string): ParseWarning {
+    return { severity: 'warning', code, ...location, message };
+  }
+
+  private error(code: ParseErrorCode, location: SourceLocation, message: string): ParseError {
+    return { severity: 'error', code, ...location, message };
+  }
+
+  private at(location: SourceLocation, zeroBasedOffset: number): SourceLocation {
+    return { ...location, column: location.column + zeroBasedOffset };
+  }
+
+  private skipWhitespace(text: string, start: number): number {
+    let cursor = start;
+    while (cursor < text.length && /\s/.test(text[cursor])) cursor++;
+    return cursor;
+  }
+
+  private looksLikeConnector(text: string): boolean {
+    return /^(-->|-\.->)/.test(text) || /^[-.=]+>/.test(text) || /^-+/.test(text);
+  }
+
+  private hasDeclarationlessStructure(text: string): boolean {
+    return /(?:-->|-\.->)/.test(text)
+      || /^\w+(?:\[\[|\[\/|\[|\{|\(\(|:::)/.test(text);
+  }
+
+  private headerErrorIndex(text: string): number {
+    const keyword = text.match(/^(graph|flowchart)\b/i)?.[0];
+    if (!keyword) return 0;
+    return this.skipWhitespace(text, keyword.length);
+  }
+
+  private subgraphErrorIndex(text: string): number {
+    const openingBracket = text.indexOf('[');
+    return openingBracket >= 0 ? openingBracket : Math.min('subgraph'.length, text.length);
+  }
+
+  private compareDiagnostics(
+    left: { line: number; column: number },
+    right: { line: number; column: number }
+  ): number {
+    return left.line - right.line || left.column - right.column;
   }
 }

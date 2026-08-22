@@ -48,15 +48,50 @@ export interface MermaidAST {
   subgraphs: MermaidSubgraph[];
 }
 
-export interface ParseError {
+export type ParseErrorCode =
+  | 'EMPTY_DIAGRAM'
+  | 'MALFORMED_HEADER'
+  | 'MALFORMED_NODE'
+  | 'MALFORMED_EDGE'
+  | 'MALFORMED_SUBGRAPH'
+  | 'UNEXPECTED_SUBGRAPH_END'
+  | 'UNCLOSED_SUBGRAPH'
+  | 'UNSUPPORTED_NESTED_SUBGRAPH'
+  | 'UNKNOWN_SYNTAX'
+  | 'DUPLICATE_EDGE'
+  | 'DUPLICATE_SUBGRAPH'
+  | 'MISSING_SUBGRAPH_OWNER'
+  | 'MULTIPLE_SUBGRAPH_OWNERS'
+  | 'UNSUPPORTED_EDGE_ENDPOINT';
+
+export type ParseWarningCode =
+  | 'UNSUPPORTED_DIRECTIVE'
+  | 'UNSUPPORTED_EDGE_STYLE'
+  | 'DUPLICATE_NODE'
+  | 'MISSING_START'
+  | 'MISSING_END'
+  | 'DISCONNECTED_NODE';
+
+export type ParseDiagnosticCode = ParseErrorCode | ParseWarningCode;
+
+export interface ParseDiagnostic<TCode extends ParseDiagnosticCode> {
   line: number;
   column: number;
   message: string;
-  code: string;
+  code: TCode;
+  source: string;
+}
+
+export interface ParseError extends ParseDiagnostic<ParseErrorCode> {
+  severity: 'error';
+}
+
+export interface ParseWarning extends ParseDiagnostic<ParseWarningCode> {
+  severity: 'warning';
 }
 
 export interface ParseResult {
   ast?: MermaidAST;
   errors: ParseError[];
-  warnings: string[];
+  warnings: ParseWarning[];
 }

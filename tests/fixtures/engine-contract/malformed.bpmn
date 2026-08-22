@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+  <bpmn:process id="Process_Malformed">
+    <bpmn:startEvent id="Start_Malformed">
+  </bpmn:process>
+</bpmn:definitions>

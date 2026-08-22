@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Definitions_Skip" targetNamespace="http://mcp-bpmn.test/layout">
+  <bpmn:process id="Process_Skip" isExecutable="false">
+    <bpmn:documentation>A direct skip edge bypasses an optional activity.</bpmn:documentation>
+    <bpmn:startEvent id="Start_Skip"><bpmn:outgoing>Flow_Skip_1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:exclusiveGateway id="Gateway_Skip" name="Work needed?" gatewayDirection="Diverging"><bpmn:incoming>Flow_Skip_1</bpmn:incoming><bpmn:outgoing>Flow_Skip_Work</bpmn:outgoing><bpmn:outgoing>Flow_Skip_Direct</bpmn:outgoing></bpmn:exclusiveGateway>
+    <bpmn:task id="Task_Optional" name="Optional work"><bpmn:incoming>Flow_Skip_Work</bpmn:incoming><bpmn:outgoing>Flow_Skip_3</bpmn:outgoing></bpmn:task>
+    <bpmn:endEvent id="End_Skip"><bpmn:incoming>Flow_Skip_Direct</bpmn:incoming><bpmn:incoming>Flow_Skip_3</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_Skip_1" sourceRef="Start_Skip" targetRef="Gateway_Skip" />
+    <bpmn:sequenceFlow id="Flow_Skip_Work" name="yes" sourceRef="Gateway_Skip" targetRef="Task_Optional" />
+    <bpmn:sequenceFlow id="Flow_Skip_Direct" name="skip" sourceRef="Gateway_Skip" targetRef="End_Skip" />
+    <bpmn:sequenceFlow id="Flow_Skip_3" sourceRef="Task_Optional" targetRef="End_Skip" />
+  </bpmn:process>
+</bpmn:definitions>

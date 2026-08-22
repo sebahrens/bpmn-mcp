@@ -1,400 +1,310 @@
 # MCP-BPMN Implementation Guide
 
-This document provides detailed technical information about the MCP-BPMN server implementation.
+This guide describes the implementation that is present in this checkout. The
+public usage guide is [`README.md`](README.md); this document focuses on source
+ownership, contributor commands, and claims that can be checked against code or
+tests.
 
-## 🏗️ Architecture Overview
+## Runtime architecture
 
-### Design Principles
+The server is a stateful MCP server over standard input/output:
 
-1. **Server-Side Generation**: Pure XML generation without browser dependencies
-2. **Explicit API Design**: Clear separation between element creation and connection
-3. **Smart Positioning**: Automatic layout with branch-aware algorithms
-4. **File Persistence**: Local storage for diagram editing in visual tools
-
-### Core Components
-
-```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   MCP Client    │────▶│  MCP Protocol    │────▶│ Request Handler │
-└─────────────────┘     └──────────────────┘     └─────────────────┘
-                                                           │
-                                                           ▼
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  File Storage   │◀────│ SimpleBpmnEngine │◀────│ Type Mappings   │
-└─────────────────┘     └──────────────────┘     └─────────────────┘
-                                │
-                                ▼
-                        ┌──────────────────┐
-                        │   Auto Layout    │
-                        └──────────────────┘
+```text
+MCP client
+  -> src/server/index.ts          registers and executes tools
+  -> src/server/tools.ts          Zod schemas and advertised JSON Schema
+  -> src/server/handlers.ts       validation, dispatch, and MCP responses
+  -> src/core/SimpleBpmnEngine.ts in-memory document and transactional mutations
+  -> src/core/BpmnDocument.ts     BPMN model and XML serialization
+  -> src/utils/FileManager.ts     bounded, atomic file operations
 ```
 
-## 📦 Component Details
+`DiagramContext` holds one current diagram per server process. Creating or
+opening a diagram replaces that context. New diagrams receive an active
+filename, and successful model mutations serialize and atomically save the
+active file. `save_as` changes the active filename; `close` clears the current
+context.
 
-### SimpleBpmnEngine (`src/core/SimpleBpmnEngine.ts`)
+The engine uses `BpmnDocument` as its internal representation. XML import and
+serialization use `bpmn-moddle`. SVG export is rendered by `bpmn-js` through
+`BpmnSvgRenderer`. Mermaid input is parsed into the project's AST, converted to
+the shared layout model, and then serialized as BPMN.
 
-The core engine responsible for BPMN XML generation.
+### Extension profile status
 
-#### Key Methods:
+Portable BPMN core is the default serialization contract. The opt-in Camunda 7
+profile uses `http://camunda.org/schema/1.0/bpmn` and exposes typed `assignee`,
+`candidateGroups`, and `dueDate` fields on user tasks. Unknown imported
+extensions remain opaque and are preserved only after warning-free parsing. See
+[`docs/decisions/0001-bpmn-extension-profile.md`](docs/decisions/0001-bpmn-extension-profile.md)
+for the versioned fields, compatibility guarantees, alternatives, and fixture
+evidence.
 
-```typescript
-// Create a new process
-async createProcess(name: string, type: 'process' | 'collaboration'): Promise<ProcessContext>
+## Tool contract
 
-// Add an element
-async createElement(processId: string, elementDef: ElementDefinition): Promise<any>
+[`src/server/tools.ts`](src/server/tools.ts) is the single source of truth for
+tool names and arguments:
 
-// Connect elements
-async connect(processId: string, sourceId: string, targetId: string, label?: string): Promise<any>
+- `toolDefinitions` contains strict Zod object schemas.
+- `tools` converts those schemas to the JSON Schema advertised over MCP.
+- `parseToolRequest` applies the same schemas at runtime, including defaults.
+- `ToolArguments<Name>` derives handler argument types from those schemas.
+- `BpmnRequestHandler.handleRequest` validates before dispatching.
 
-// Apply auto-layout
-async applyAutoLayout(processId: string, algorithm: 'horizontal' | 'vertical'): Promise<void>
+This arrangement is checked by
+[`tests/security/request-validation.test.ts`](tests/security/request-validation.test.ts),
+including parity between advertised tools, validators, and dispatchers.
 
-// Export as XML
-async exportXml(processId: string, formatted: boolean): Promise<string>
-```
+### Current tools and arguments
 
-#### XML Generation Strategy:
+All argument objects are strict: unknown fields are rejected. `position`
+requires both numeric `x` and `y`; `size` requires both numeric `width` and
+`height`.
 
-1. **Template-based**: Uses string templates for XML structure
-2. **Dynamic waypoints**: Calculates connection points based on element positions
-3. **Proper namespaces**: Includes all required BPMN 2.0 namespaces
+| Tool | Required arguments | Optional arguments and runtime defaults |
+| --- | --- | --- |
+| `new_bpmn` | `name` | `type`: `process`, `extensionProfile`: `portable` |
+| `new_from_mermaid` | `name`, `mermaidCode` | `extensionProfile`: `portable` |
+| `open_bpmn` | `filename` | none |
+| `open_mermaid_file` | `filename` | `extensionProfile`: `portable` |
+| `save` | none | none |
+| `save_as` | `filename` | none |
+| `close` | none | none |
+| `current` | none | none |
+| `add_event` | `eventType` | `name`, `eventDefinition`, `eventDefinitionPayload`, `cancelActivity`, `position`, `attachTo`, `ownerId`, `scopeId` |
+| `add_activity` | `activityType`, `name` | `position`, `properties`, `ownerId`, `scopeId` |
+| `add_gateway` | `gatewayType` | `name`, `position`, `ownerId`, `scopeId` |
+| `add_data_object` | `name` | `position`, `isCollection`: `false`, `itemSubjectRef`, `ownerId`, `scopeId` |
+| `add_text_annotation` | `text` | `textFormat`, `position`, `size`, `associatedElementId` |
+| `connect` | `sourceId`, `targetId` | `label`, `condition`, `conditionLanguage`, `conditionType`, `isDefault`: `false` |
+| `add_association` | `sourceId`, `targetId` | `associationDirection`: `None` |
+| `add_pool` | `name` | `position`, `size`, `blackBox`: `false` |
+| `add_lane` | `poolId`, `name`, `flowNodeIds` | `position`: `bottom` |
+| `list_elements` | none | `elementType`, `limit`: `100`, `offset`: `0` |
+| `get_element` | `elementId` | none |
+| `update_element` | `elementId` | `name`, `properties`, `defaultFlow` |
+| `delete_element` | `elementId` | none |
+| `export` | none | `format`: `xml`, `formatted`: `true` |
+| `validate` | none | `level`: `full` |
+| `auto_layout` | none | `algorithm`: `horizontal` |
+| `list_diagrams` | none | `limit`: `100`, `offset`: `0` |
+| `delete_diagram_file` | `filename` | none |
+| `get_diagrams_path` | none | none |
 
-Example XML structure:
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" 
-  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" 
-  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" 
-  xmlns:di="http://www.omg.org/spec/DD/20100524/DI">
-  <bpmn:process id="Process_1" name="My Process" isExecutable="true">
-    <!-- Elements -->
-  </bpmn:process>
-  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
-    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Process_1">
-      <!-- Shapes and Edges -->
-    </bpmndi:BPMNPlane>
-  </bpmndi:BPMNDiagram>
-</bpmn:definitions>
-```
+The exact enums, nested event-definition fields, string limits, geometry
+limits, and typed property schemas belong in `toolDefinitions`; do not copy
+them into another hand-maintained schema.
 
-### AutoLayout (`src/utils/AutoLayout.ts`)
+### Valid argument examples
 
-Intelligent positioning system for BPMN elements.
+Create a process:
 
-#### Layout Algorithm:
-
-1. **Graph Building**:
-   ```typescript
-   // Build flow graph from elements and connections
-   const flowGraph = buildFlowGraph(elements, connections);
-   ```
-
-2. **Level Assignment**:
-   - Start events at level 0
-   - BFS traversal to assign levels
-   - Each level gets increasing X coordinate
-
-3. **Branch Handling**:
-   ```typescript
-   // For gateways with multiple outputs
-   if (isGateway(element.type) && targets.length > 1) {
-     targets.forEach((target, index) => {
-       const offset = (index - (targets.length - 1) / 2) * VERTICAL_SPACING;
-       target.position.y = centerY + offset;
-     });
-   }
-   ```
-
-4. **Positioning Constants**:
-   - Horizontal spacing: 150px
-   - Vertical spacing: 100px
-   - Gateway branch spacing: 80px
-   - Start position: (100, 200)
-
-### Waypoint Calculation
-
-Accurate edge routing for visual rendering:
-
-```typescript
-// Calculate connection points
-const sourceX = sourceElement.position.x + sourceElement.width;
-const sourceY = sourceElement.position.y + (sourceElement.height / 2);
-const targetX = targetElement.position.x;
-const targetY = targetElement.position.y + (targetElement.height / 2);
-
-// Generate waypoints
-<di:waypoint x="${sourceX}" y="${sourceY}" />
-<di:waypoint x="${targetX}" y="${targetY}" />
-```
-
-### Type Mappings (`src/utils/TypeMappings.ts`)
-
-Converts user-friendly types to BPMN types:
-
-```typescript
-// Event mapping
-"start" → "bpmn:StartEvent"
-"end" → "bpmn:EndEvent"
-"message" + "start" → "bpmn:StartEvent" + "bpmn:MessageEventDefinition"
-
-// Activity mapping
-"userTask" → "bpmn:UserTask"
-"serviceTask" → "bpmn:ServiceTask"
-
-// Gateway mapping
-"exclusive" → "bpmn:ExclusiveGateway"
-"parallel" → "bpmn:ParallelGateway"
-```
-
-## 🔧 Implementation Patterns
-
-### 1. Process Context Management
-
-Each process maintains its state:
-
-```typescript
-interface ProcessContext {
-  id: string;
-  name: string;
-  type: 'process' | 'collaboration';
-  elements: Map<string, any>;      // Element storage
-  connections: Map<string, any>;   // Connection storage
-  xml?: string;                    // Generated XML
-}
-```
-
-### 2. Element Creation Pattern
-
-```typescript
-// 1. Generate unique ID
-const elementId = IdGenerator.generate(elementType);
-
-// 2. Apply default position if not provided
-if (!position) {
-  position = { x: 100 + (elementCount * 50), y: 200 };
-}
-
-// 3. Create element object
-const element = {
-  id: elementId,
-  type: bpmnType,
-  name: elementName,
-  position: position,
-  properties: additionalProps
-};
-
-// 4. Store and regenerate XML
-process.elements.set(elementId, element);
-process.xml = generateXmlWithElements(process);
-```
-
-### 3. Connection Pattern
-
-Explicit connection API to avoid duplicates:
-
-```typescript
-// Create connection object
-const connection = {
-  id: flowId,
-  source: sourceId,
-  target: targetId,
-  type: 'bpmn:SequenceFlow',
-  label: optionalLabel
-};
-
-// Store connection
-process.connections.set(flowId, connection);
-```
-
-### 4. File Persistence Pattern
-
-Automatic saving after each operation:
-
-```typescript
-// Generate filename
-const filename = `${process.id}_${sanitizeFilename(process.name)}.bpmn`;
-const filepath = join(diagramsPath, filename);
-
-// Write to filesystem
-await fs.writeFile(filepath, process.xml, 'utf8');
-```
-
-## 🛠️ MCP Protocol Implementation
-
-### Tool Registration
-
-Tools are defined with JSON Schema:
-
-```typescript
+```json
 {
-  name: 'bpmn_add_activity',
-  description: 'Add an activity to the process',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      processId: { type: 'string', description: 'ID of the process' },
-      activityType: { 
-        type: 'string', 
-        enum: ['task', 'userTask', 'serviceTask', ...] 
-      },
-      name: { type: 'string', description: 'Name of the activity' },
-      position: { 
-        type: 'object',
-        properties: {
-          x: { type: 'number' },
-          y: { type: 'number' }
-        }
-      }
-    },
-    required: ['processId', 'activityType', 'name']
-  }
+  "name": "Order processing",
+  "type": "process"
 }
 ```
 
-### Request Handling Flow
+Add a user task to the current process:
 
-1. **Request Reception**: MCP server receives tool call
-2. **Validation**: Input validated against schema
-3. **Routing**: Request routed to appropriate handler
-4. **Processing**: Business logic executed
-5. **Response**: Result returned via MCP protocol
-
-```typescript
-async handleRequest(name: string, args: any): Promise<CallToolResult> {
-  try {
-    switch (name) {
-      case 'bpmn_create_process':
-        return await this.createProcess(args);
-      case 'bpmn_add_event':
-        return await this.addEvent(args);
-      // ... other tools
-    }
-  } catch (error) {
-    return {
-      content: [{ type: 'text', text: `Error: ${error.message}` }],
-      isError: true
-    };
-  }
+```json
+{
+  "activityType": "userTask",
+  "name": "Review order",
+  "position": { "x": 250, "y": 200 },
+  "properties": { "assignee": "reviewer", "candidateGroups": ["operations"] }
 }
 ```
 
-## 🧪 Testing Strategy
+The example requires a current document created with
+`"extensionProfile": "camunda7"`. Portable documents reject Camunda fields.
 
-### Unit Tests
-- Core functionality isolation
-- Mock dependencies
-- Fast execution
+Connect using the element IDs returned by creation calls:
 
-### Integration Tests
-- Handler logic verification
-- Real engine operations
-- File system operations
-
-### E2E Tests
-- Full MCP protocol flow
-- Real server startup
-- Complete tool execution
-
-### Test Structure:
-```
-tests/
-├── unit/
-│   ├── utils/          # Utility function tests
-│   └── core/           # Engine tests
-├── integration/
-│   └── handlers/       # Handler tests
-└── e2e/
-    └── server/         # Full server tests
+```json
+{
+  "sourceId": "UserTask_1",
+  "targetId": "ServiceTask_1",
+  "condition": "amount > 1000",
+  "conditionLanguage": "FEEL"
+}
 ```
 
-## 📊 Performance Considerations
+Static IDs above are illustrative; callers must use IDs returned by their
+running server. Activities and supported gateways may own conditional or
+default sequence flows. A default flow cannot also have a condition.
 
-### Memory Management
-- Process contexts stored in memory
-- Automatic file persistence reduces memory pressure
-- Clear() method for cleanup
+## Layout
 
-### Scalability
-- O(n) layout complexity for standard flows
-- Efficient Map-based storage
-- Minimal object cloning
+There are two layout paths:
 
-### Bundle Size
-- ~48KB CommonJS bundle
-- Tree-shaking friendly
-- Minimal dependencies
+- Mermaid conversion uses `LayoutEngine` and the adapters under
+  `src/core/layout/adapters/` to create the shared `LayoutModel`.
+- The `auto_layout` tool serializes the current BPMN document and calls
+  `BpmnAutoLayoutV2Adapter` in `src/core/layout/BpmnLayoutAdapter.ts`. The
+  selected production package is `bpmn-auto-layout@2.0.0-alpha.2`.
 
-## 🔒 Security Considerations
+The production adapter runs synchronous third-party layout in a subprocess so
+it can enforce a timeout. `SimpleBpmnEngine` then imports the returned XML,
+checks that semantic ownership and connectivity did not change, applies the
+requested orientation/collaboration policy, and commits the result through the
+same persistence path as other mutations.
 
-### Input Validation
-- Schema validation for all inputs
-- ID sanitization
-- Filename sanitization
+No asymptotic complexity guarantee is made. Accepted work is bounded by the
+configured element, connection, density, byte, concurrency, and timeout limits
+in [`src/config/index.ts`](src/config/index.ts). Layout fixtures and behavioral
+checks live under `tests/fixtures/layout/`, `tests/unit/layout/`, and the
+`tests/integration/layout-*.test.ts` suites.
 
-### File System Safety
-- Restricted to configured directory
-- No path traversal
-- Safe filename generation
+## Validation and file safety
 
-## 🚀 Deployment
+Security statements in this section describe implemented boundaries, not a
+blanket guarantee for all possible inputs.
 
-### Production Build
+### Request validation
+
+Every MCP tool call passes through `parseToolRequest`. Top-level and nested
+object schemas are strict where defined. Strings, geometry, pagination, Mermaid
+input, and recursive property bags have explicit limits in
+[`src/server/tools.ts`](src/server/tools.ts). The property-copy boundary rejects
+non-JSON values, circular references, accessors, non-plain objects, and the
+keys `__proto__`, `prototype`, and `constructor`.
+
+General element-reference arguments are bounded strings, not globally
+"sanitized IDs." Fields that become caller-supplied BPMN IDs use the narrower
+`bpmnId` schema where applicable, and engine-generated IDs are checked for
+uniqueness. BPMN-specific semantic and lexical checks remain the engine's
+responsibility.
+
+Reproduce the request-boundary checks with:
+
 ```bash
+npx jest tests/security/request-validation.test.ts --runInBand
+```
+
+### File operations
+
+Client-supplied file operations accept basenames rather than nested paths.
+`resolveSafeFilePath` in [`src/utils/SafeFilePath.ts`](src/utils/SafeFilePath.ts)
+checks extensions, rejects absolute paths and path separators, anchors the
+candidate beneath the configured root, and rejects existing symbolic links.
+`FileManager` uses that policy for BPMN/Mermaid reads and BPMN writes; the engine
+uses it for deletes. Writes use an adjacent temporary file followed by an
+atomic destination operation.
+
+Reproduce the containment and persistence checks with:
+
+```bash
+npx jest tests/unit/utils/FileSecurity.test.ts tests/unit/utils/FileManager.test.ts tests/integration/persistence.test.ts --runInBand
+```
+
+Import byte/element/flow/DI limits and layout resource limits are configured in
+`src/config/index.ts`. These controls do not justify a general claim that the
+application is secure; security regression coverage is under `tests/security/`
+and `tests/unit/utils/FileSecurity.test.ts`.
+
+## Build and test workflow
+
+The supported runtime is Node.js `>=22.12.0`, as declared in `package.json`.
+From a clean checkout:
+
+```bash
+npm ci
 npm run build
+npm start
+```
+
+`npm run build` compiles TypeScript to `dist/`; `npm start` runs
+`dist/server/index.js`. To build and run the optional CommonJS bundle:
+
+```bash
 npm run build:bundle
+npm run start:bundle
 ```
 
-### Environment Variables
+There is no fixed bundle-size contract. Dependencies and their versions are
+defined by `package.json` and `package-lock.json`; the project does not claim a
+"minimal dependency" set. No Dockerfile is maintained in this repository, so
+deployment images must be tested separately and must honor the declared Node.js
+version.
+
+### Contributor quality gate
+
+Use the same clean aggregate command as CI:
+
 ```bash
-MCP_BPMN_DIAGRAMS_PATH=/var/bpmn/diagrams
-NODE_ENV=production
+npm run clean
+npm run check
 ```
 
-### Docker Support
-```dockerfile
-FROM node:18-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --only=production
-COPY dist ./dist
-CMD ["node", "dist/server/bundle.cjs"]
-```
+`npm run check` cleans output, type-checks, lints, rebuilds, runs all Jest suites
+including e2e, and runs the renderer suite. It is intentionally valid when
+`dist/` does not exist before the command.
 
-## 🔍 Debugging
+Focused commands are:
 
-### Debug Mode
 ```bash
-DEBUG=mcp:* npm start
+npm test                  # source Jest suites except e2e, then renderer tests
+npm run test:unit         # unit tests
+npm run test:integration  # integration tests, then renderer tests
+npm run test:e2e          # clean build, then e2e tests
+npm run test:all          # clean build, all Jest suites, then renderer tests
+npm run test:coverage     # coverage for non-e2e Jest suites, then renderer tests
+npm run test:package      # clean build and package/entrypoint smoke test
+npm run type-check
+npm run lint
 ```
 
-### Common Issues
+No test-count or coverage-percentage claim is maintained here because both
+change as the suite evolves. The current structure is:
 
-1. **Connection Waypoints Wrong**
-   - Check element positions
-   - Verify element sizing
-   - Ensure proper ID references
+```text
+tests/
+  contracts/       engine contract checks
+  e2e/             built MCP server protocol tests
+  fixtures/        BPMN, Mermaid, dialect, layout, and lint inputs
+  helpers/         shared test helpers and helper tests
+  integration/     cross-component behavior
+  mocks/           Jest/runtime mocks
+  security/        adversarial boundary and resource tests
+  unit/            component tests grouped by source area
+```
 
-2. **Layout Not Working**
-   - Verify connections exist
-   - Check for circular dependencies
-   - Ensure elements have IDs
+## Configuration
 
-3. **File Not Saving**
-   - Check directory permissions
-   - Verify path configuration
-   - Check disk space
+Diagram storage defaults to `~/mcp-bpmn`. Override it with:
 
-## 📚 References
+```bash
+MCP_BPMN_DIAGRAMS_PATH=/var/bpmn/diagrams npm start
+```
 
-- [BPMN 2.0 Specification](https://www.omg.org/spec/BPMN/2.0/)
+`src/config/index.ts` also defines the supported resource-limit environment
+variables and their defaults:
+
+- `MCP_BPMN_MAX_IMPORT_BYTES`
+- `MCP_BPMN_MAX_IMPORT_ELEMENTS`
+- `MCP_BPMN_MAX_IMPORT_FLOWS`
+- `MCP_BPMN_MAX_IMPORT_DI_ELEMENTS`
+- `MCP_BPMN_MAX_MERMAID_BYTES`
+- `MCP_BPMN_MAX_LAYOUT_ELEMENTS`
+- `MCP_BPMN_MAX_LAYOUT_CONNECTIONS`
+- `MCP_BPMN_MAX_LAYOUT_DENSITY`
+- `MCP_BPMN_MAX_LAYOUT_BYTES`
+- `MCP_BPMN_MAX_CONCURRENT_LAYOUTS`
+- `MCP_BPMN_MAX_LISTING_ITEMS`
+- `MCP_BPMN_LAYOUT_TIMEOUT_MS`
+
+Invalid, non-positive overrides fall back to source defaults. Consult the
+configuration module instead of duplicating numeric defaults in deployment
+documentation.
+
+## Further references
+
+- [`README.md`](README.md) — tool usage and MCP client configuration
+- [`docs/architecture/engine-contract.md`](docs/architecture/engine-contract.md)
+  — engine ownership, import/export, and mutation contract
+- [`docs/decisions/0001-bpmn-extension-profile.md`](docs/decisions/0001-bpmn-extension-profile.md)
+  — selected extension profile and explicitly pending behavior
+- [BPMN 2.0 specification](https://www.omg.org/spec/BPMN/2.0/)
 - [Model Context Protocol](https://modelcontextprotocol.io/)
-- [bpmn-js Documentation](https://github.com/bpmn-io/bpmn-js)
-
-## 🎯 Best Practices
-
-1. **Always use explicit connections** - Avoid connectFrom pattern
-2. **Apply auto-layout last** - After all elements and connections
-3. **Use meaningful IDs** - For easier debugging
-4. **Test with visual tools** - VS Code BPMN Editor recommended
-5. **Handle errors gracefully** - Return helpful error messages

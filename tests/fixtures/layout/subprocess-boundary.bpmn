@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Definitions_SubprocessBoundary" targetNamespace="http://mcp-bpmn.test/layout">
+  <bpmn:process id="Process_SubprocessBoundary" isExecutable="false">
+    <bpmn:documentation>A subprocess contains a flow and has an interrupting boundary error path.</bpmn:documentation>
+    <bpmn:startEvent id="Start_Outer"><bpmn:outgoing>Flow_Outer_1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:subProcess id="SubProcess_Work" name="Perform guarded work">
+      <bpmn:incoming>Flow_Outer_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_Outer_2</bpmn:outgoing>
+      <bpmn:startEvent id="Start_Inner"><bpmn:outgoing>Flow_Inner_1</bpmn:outgoing></bpmn:startEvent>
+      <bpmn:task id="Task_Inner" name="Perform work"><bpmn:incoming>Flow_Inner_1</bpmn:incoming><bpmn:outgoing>Flow_Inner_2</bpmn:outgoing></bpmn:task>
+      <bpmn:endEvent id="End_Inner"><bpmn:incoming>Flow_Inner_2</bpmn:incoming></bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_Inner_1" sourceRef="Start_Inner" targetRef="Task_Inner" />
+      <bpmn:sequenceFlow id="Flow_Inner_2" sourceRef="Task_Inner" targetRef="End_Inner" />
+    </bpmn:subProcess>
+    <bpmn:boundaryEvent id="Boundary_Error" name="Work failed" attachedToRef="SubProcess_Work">
+      <bpmn:outgoing>Flow_Recovery_1</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="ErrorDefinition_Work" />
+    </bpmn:boundaryEvent>
+    <bpmn:task id="Task_Recovery" name="Recover"><bpmn:incoming>Flow_Recovery_1</bpmn:incoming><bpmn:outgoing>Flow_Recovery_2</bpmn:outgoing></bpmn:task>
+    <bpmn:endEvent id="End_Outer"><bpmn:incoming>Flow_Outer_2</bpmn:incoming><bpmn:incoming>Flow_Recovery_2</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_Outer_1" sourceRef="Start_Outer" targetRef="SubProcess_Work" />
+    <bpmn:sequenceFlow id="Flow_Outer_2" sourceRef="SubProcess_Work" targetRef="End_Outer" />
+    <bpmn:sequenceFlow id="Flow_Recovery_1" sourceRef="Boundary_Error" targetRef="Task_Recovery" />
+    <bpmn:sequenceFlow id="Flow_Recovery_2" sourceRef="Task_Recovery" targetRef="End_Outer" />
+  </bpmn:process>
+</bpmn:definitions>

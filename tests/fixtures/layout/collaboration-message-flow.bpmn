@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Definitions_Collaboration" targetNamespace="http://mcp-bpmn.test/layout">
+  <bpmn:process id="Process_Buyer" isExecutable="false">
+    <bpmn:startEvent id="Buyer_Start"><bpmn:outgoing>Buyer_Flow_1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:sendTask id="Buyer_Send" name="Send order"><bpmn:incoming>Buyer_Flow_1</bpmn:incoming><bpmn:outgoing>Buyer_Flow_2</bpmn:outgoing></bpmn:sendTask>
+    <bpmn:endEvent id="Buyer_End"><bpmn:incoming>Buyer_Flow_2</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="Buyer_Flow_1" sourceRef="Buyer_Start" targetRef="Buyer_Send" />
+    <bpmn:sequenceFlow id="Buyer_Flow_2" sourceRef="Buyer_Send" targetRef="Buyer_End" />
+  </bpmn:process>
+  <bpmn:process id="Process_Seller" isExecutable="false">
+    <bpmn:startEvent id="Seller_Start"><bpmn:outgoing>Seller_Flow_1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:receiveTask id="Seller_Receive" name="Receive order"><bpmn:incoming>Seller_Flow_1</bpmn:incoming><bpmn:outgoing>Seller_Flow_2</bpmn:outgoing></bpmn:receiveTask>
+    <bpmn:endEvent id="Seller_End"><bpmn:incoming>Seller_Flow_2</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="Seller_Flow_1" sourceRef="Seller_Start" targetRef="Seller_Receive" />
+    <bpmn:sequenceFlow id="Seller_Flow_2" sourceRef="Seller_Receive" targetRef="Seller_End" />
+  </bpmn:process>
+  <bpmn:collaboration id="Collaboration_Order">
+    <bpmn:documentation>Two white-box participants exchange one message.</bpmn:documentation>
+    <bpmn:participant id="Participant_Buyer" name="Buyer" processRef="Process_Buyer" />
+    <bpmn:participant id="Participant_Seller" name="Seller" processRef="Process_Seller" />
+    <bpmn:messageFlow id="Message_Order" name="Order" sourceRef="Buyer_Send" targetRef="Seller_Receive" />
+  </bpmn:collaboration>
+</bpmn:definitions>

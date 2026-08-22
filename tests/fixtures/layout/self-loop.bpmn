@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Definitions_SelfLoop" targetNamespace="http://mcp-bpmn.test/layout">
+  <bpmn:process id="Process_SelfLoop" isExecutable="false">
+    <bpmn:documentation>An activity has a sequence flow back to itself.</bpmn:documentation>
+    <bpmn:startEvent id="Start_SelfLoop"><bpmn:outgoing>Flow_SelfLoop_1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:task id="Task_Retry" name="Retryable work"><bpmn:incoming>Flow_SelfLoop_1</bpmn:incoming><bpmn:incoming>Flow_SelfLoop_Retry</bpmn:incoming><bpmn:outgoing>Flow_SelfLoop_Retry</bpmn:outgoing><bpmn:outgoing>Flow_SelfLoop_2</bpmn:outgoing></bpmn:task>
+    <bpmn:endEvent id="End_SelfLoop"><bpmn:incoming>Flow_SelfLoop_2</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_SelfLoop_1" sourceRef="Start_SelfLoop" targetRef="Task_Retry" />
+    <bpmn:sequenceFlow id="Flow_SelfLoop_Retry" name="retry" sourceRef="Task_Retry" targetRef="Task_Retry" />
+    <bpmn:sequenceFlow id="Flow_SelfLoop_2" sourceRef="Task_Retry" targetRef="End_SelfLoop" />
+  </bpmn:process>
+</bpmn:definitions>

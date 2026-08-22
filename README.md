@@ -4,7 +4,7 @@ A Model Context Protocol (MCP) server that enables AI agents to create, manipula
 
 ## 🎯 Overview
 
-MCP-BPMN provides a standardized interface for AI assistants to work with business process diagrams. It generates valid BPMN 2.0 XML files that can be viewed and edited in any BPMN-compliant tool (VS Code BPMN Editor, Camunda Modeler, etc.).
+MCP-BPMN provides a standardized interface for AI assistants to work with business process diagrams. It generates valid BPMN 2.0 XML. Portable BPMN core is the default output contract, with an opt-in typed Camunda 7 profile documented in [ADR 0001](docs/decisions/0001-bpmn-extension-profile.md).
 
 ### Key Features
 
@@ -31,8 +31,8 @@ npm install
 # Build the project
 npm run build
 
-# Run tests (optional)
-npm test
+# Run the complete contributor quality check (optional)
+npm run check
 ```
 
 ### Configuration
@@ -91,6 +91,25 @@ Create a new BPMN diagram from Mermaid code and set it as the current context.
 }
 ```
 
+Mermaid conversion intentionally supports a focused flowchart subset:
+
+| Mermaid construct | BPMN mapping |
+| --- | --- |
+| `[Task]` | Task (the exact labels `Start`/`Begin` and `End`/`Stop`/`Finish` become events) |
+| `((Event))` | Start/end event when topology identifies one; otherwise intermediate throw event |
+| `{Decision}` | Exclusive gateway |
+| `[/Subprocess/]` | Subprocess |
+| `[[Data]]` | Standalone data object reference linked to a backing data object |
+| `-->|Label|` | Sequence/message-flow display name; labels are not condition expressions |
+| `subgraph id[Name]` | Participant with its own process; cross-subgraph edges become message flows |
+
+When any subgraph is present, every node must belong to exactly one top-level
+subgraph. Nested subgraphs and sequence-flow connections to data nodes are
+rejected before BPMN export. Styling, click handlers, CSS classes, and dotted
+edge appearance are not represented in BPMN; accepted lossy syntax returns a
+conversion warning. Text labels and subgraph names are XML-escaped and
+round-trip through BPMN unchanged.
+
 ### File Operations
 
 #### `open_bpmn`
@@ -112,14 +131,18 @@ Open and convert a Mermaid file to BPMN, setting it as the current context.
 ```
 
 #### `save`
-Save the current diagram to its file (requires filename to be set).
+Atomically save the current diagram to its active file. New and opened diagrams
+already have an active filename, and successful mutations autosave to that same
+file.
 
 ```javascript
 {}
 ```
 
 #### `save_as`
-Save the current diagram with a new filename.
+Atomically save the current diagram with a new filename and make that filename
+active. Later mutations update only the new file; the previous file remains an
+unchanged snapshot.
 
 ```javascript
 {
@@ -150,10 +173,19 @@ Add events (start, end, intermediate, boundary) to the current diagram.
 {
   eventType: "start", // start, end, intermediate-throw, intermediate-catch, boundary
   name: "Order Received",
-  eventDefinition: "message", // optional: message, timer, error, signal, etc.
+  eventDefinition: "message", // optional; only BPMN-legal event kind/definition pairs are accepted
+  eventDefinitionPayload: {
+    reference: { name: "Order received" } // root ID is generated when omitted
+  },
   position: { x: 100, y: 200 } // optional
 }
 ```
+
+Timer definitions require `timer: { type: "timeDate" | "timeDuration" |
+"timeCycle", expression, language? }`; conditional definitions require
+`condition: { expression, language? }`. Error and escalation references may
+also include `code`. Compensation throws may include `activityRef` and
+`waitForCompletion`; compensation boundary events are non-interrupting.
 
 #### `add_activity`
 Add activities (tasks, subprocesses) to the current diagram.
@@ -163,7 +195,65 @@ Add activities (tasks, subprocesses) to the current diagram.
   activityType: "userTask", // task, userTask, serviceTask, scriptTask, etc.
   name: "Review Order",
   position: { x: 250, y: 200 }, // optional
-  properties: { assignee: "reviewer" } // optional
+  properties: { // optional; Camunda 7 profile only on userTask
+    assignee: "reviewer",
+    candidateGroups: ["operations", "approvers"],
+    dueDate: "${dueDate}"
+  }
+}
+```
+
+New BPMN and Mermaid-authored documents accept `extensionProfile: "portable" |
+"camunda7"`; the default is `portable`. Portable mode rejects the three vendor
+fields and emits no vendor namespace. Camunda updates accept `null` for any of
+them to remove the corresponding XML attribute. Candidate group entries cannot
+contain commas. Imported BPMN detects actual Camunda namespace use and preserves
+other warning-free extensions opaquely.
+
+Call activities serialize as `bpmn:callActivity`. Their optional
+`properties.calledElement` is a lexical BPMN QName identifying the callable
+element; it is not required to match a process ID in the current diagram.
+
+Activities may use standard BPMN multi-instance loop characteristics. Set
+`isSequential` to `false` for parallel instances or `true` for sequential
+instances:
+
+```javascript
+{
+  activityType: "serviceTask",
+  name: "Process Batch",
+  properties: {
+    multiInstance: {
+      isSequential: false,
+      loopCardinality: {
+        body: "requestedInstanceCount",
+        language: "urn:example:expression-language"
+      },
+      completionCondition: {
+        body: "completedInstanceCount >= requiredInstanceCount",
+        language: "urn:example:expression-language"
+      },
+      loopDataInputRef: "DataObjectReference_Input",  // optional ItemAwareElement ID
+      loopDataOutputRef: "DataObjectReference_Output" // optional ItemAwareElement ID
+    }
+  }
+}
+```
+
+The server preserves expression bodies exactly and serializes them as BPMN
+`FormalExpression` values. It does not parse or evaluate them, so choose a
+language/profile supported by the BPMN engine that will execute the exported
+diagram. The loop data references must identify existing BPMN
+`ItemAwareElement` instances; the portable schema does not emit a
+vendor-specific `collection` attribute.
+Vendor-specific binding or version attributes are not emitted by the portable
+BPMN dialect.
+
+```javascript
+{
+  activityType: "callActivity",
+  name: "Invoke fulfillment",
+  properties: { calledElement: "FulfillmentProcess" }
 }
 ```
 
@@ -178,15 +268,69 @@ Add gateways for branching logic to the current diagram.
 }
 ```
 
+#### `add_data_object`
+Add a visible `bpmn:dataObjectReference` and its linked, non-rendered
+`bpmn:dataObject`. Collection state belongs to the backing object. An optional
+`itemSubjectRef` must identify an existing `bpmn:itemDefinition`, such as one
+loaded from an imported diagram.
+
+```javascript
+{
+  name: "Order records",
+  position: { x: 400, y: 320 }, // optional reference position
+  isCollection: true, // optional, defaults to false
+  itemSubjectRef: "ItemDefinition_Order" // optional existing definition ID
+}
+```
+
+Data input/output associations are activity-owned BPMN constructs and are not
+created by `add_association`, which remains the generic artifact association.
+
+#### `add_text_annotation`
+Add a BPMN text annotation. Text is preserved exactly, including line breaks
+and XML metacharacters. `textFormat` defaults to BPMN's `text/plain`; position
+and size default to the engine's annotation geometry. Supplying
+`associatedElementId` also creates a separate, undirected BPMN association from
+the annotation to that element.
+
+```javascript
+{
+  text: "Review the exception path\nbefore approval",
+  textFormat: "text/markdown", // optional
+  position: { x: 400, y: 320 }, // optional
+  size: { width: 220, height: 80 }, // optional
+  associatedElementId: "UserTask_1" // optional
+}
+```
+
 #### `connect`
 Connect two elements with a sequence flow in the current diagram.
 
 ```javascript
 {
-  sourceId: "StartEvent_1",
+  sourceId: "ExclusiveGateway_1",
   targetId: "UserTask_1",
   label: "Start Flow", // optional
-  condition: "amount > 1000" // optional, for conditional flows
+  condition: "amount > 1000", // optional, for conditional sequence flows
+  conditionLanguage: "FEEL", // optional
+  conditionType: "bpmn:FormalExpression", // optional
+  isDefault: false // optional; default flows cannot have conditions
+}
+```
+
+Conditions and defaults are supported for activities and exclusive, inclusive,
+or complex gateways. A default flow cannot also have a condition.
+
+#### `add_association`
+Add a BPMN association artifact between two BaseElements in a compatible
+process or collaboration scope. This is distinct from sequence and message
+flows. `associationDirection` defaults to BPMN's `None` value.
+
+```javascript
+{
+  sourceId: "TextAnnotation_1",
+  targetId: "UserTask_1",
+  associationDirection: "One" // None, One, or Both
 }
 ```
 
@@ -202,12 +346,14 @@ Add a pool (participant) to a collaboration diagram.
 ```
 
 #### `add_lane`
-Add a lane to a pool (not yet fully implemented).
+Add a lane to a white-box pool and assign direct process flow nodes to it. Nodes
+already assigned to another lane are moved to the new lane.
 
 ```javascript
 {
   poolId: "Participant_1",
   name: "Sales Department",
+  flowNodeIds: ["StartEvent_1", "UserTask_1"],
   position: "bottom" // optional
 }
 ```
@@ -215,16 +361,26 @@ Add a lane to a pool (not yet fully implemented).
 ### Query and Manipulation Tools
 
 #### `list_elements`
-List all elements in the current diagram.
+List a stable, ID-ordered page of elements and association artifacts in the
+current diagram. Filter with `elementType: "bpmn:Association"` to list only
+associations.
 
 ```javascript
 {
-  elementType: "bpmn:Task" // optional filter
+  elementType: "bpmn:Task", // optional filter
+  limit: 100, // optional, defaults to 100; maximum 500
+  offset: 0 // optional, defaults to 0
 }
 ```
 
+The response is `{ count, returnedCount, offset, limit, hasMore, elements }`.
+Compatibility note: the pagination envelope replaces the earlier bare-array
+response; clients written against that contract must now read `elements`. The
+existing element fields retain their meanings; additional metadata fields and
+lane entries may be present.
+
 #### `get_element`
-Get details of a specific element.
+Get details of a specific element or association.
 
 ```javascript
 {
@@ -239,12 +395,15 @@ Update element properties.
 {
   elementId: "UserTask_1",
   name: "Updated Task Name",
-  properties: { assignee: "john.doe" }
+  properties: { assignee: "john.doe", candidateGroups: ["reviewers"] },
+  defaultFlow: "Flow_2" // outgoing flow ID, or null to clear
 }
 ```
 
 #### `delete_element`
-Delete an element and its connections.
+Delete an element and its incident connections. Passing an association ID
+deletes only that association and leaves its endpoints intact; deleting an
+endpoint, including a text annotation, cascades to its associations.
 
 ```javascript
 {
@@ -280,14 +439,33 @@ Apply automatic layout to position elements in the current diagram.
 }
 ```
 
+Layout runs in a killable subprocess with a default five-second budget. A
+benchmark-derived preflight accepts at most 2,000 elements, 2,000 connections,
+and 10 connections per element; inputs over any limit reject before layout.
+For collaborations, each participant process is ranked independently, so
+message flows do not change its sequence-flow order. Auto-layout replaces
+manual node and container coordinates, but requested/imported participant and
+lane dimensions remain lower bounds. Pools are then stacked without overlap;
+lanes and owned nodes remain contained, and message flows are routed only after
+the final pool placement. Disconnected nodes are packed deterministically in
+their owner process, nested subprocesses retain semantic containment, and
+black-box participants keep their requested minimum size without fabricated
+process content.
+
 ### File Management Tools
 
 #### `list_diagrams`
-List all saved BPMN diagrams.
+List a stable, filename-ordered page of saved BPMN diagrams.
 
 ```javascript
-{}
+{
+  limit: 100, // optional, defaults to 100; maximum 500
+  offset: 0 // optional, defaults to 0
+}
 ```
+
+The existing `{ count, diagrams, path }` response fields remain available;
+`returnedCount`, `offset`, `limit`, and `hasMore` describe the selected page.
 
 #### `delete_diagram_file`
 Delete a saved diagram file.
@@ -361,6 +539,7 @@ const xml = await export();
 // Step 1: Create from Mermaid syntax (much more concise!)
 await new_from_mermaid({ 
   name: "Approval Workflow",
+  extensionProfile: "camunda7",
   mermaidCode: `
     graph TD
       A((Request Received)) --> B[Review Request]
@@ -423,7 +602,22 @@ Custom path via environment variable:
 export MCP_BPMN_DIAGRAMS_PATH=/custom/path
 ```
 
-Files are named: `{ProcessId}_{ProcessName}.bpmn`
+Resource limits can be tuned with `MCP_BPMN_MAX_IMPORT_BYTES`,
+`MCP_BPMN_MAX_MERMAID_BYTES`, `MCP_BPMN_MAX_LAYOUT_ELEMENTS`,
+`MCP_BPMN_MAX_LAYOUT_CONNECTIONS`, `MCP_BPMN_MAX_LAYOUT_DENSITY`,
+`MCP_BPMN_MAX_LAYOUT_BYTES`, `MCP_BPMN_MAX_CONCURRENT_LAYOUTS`, and
+`MCP_BPMN_MAX_LISTING_ITEMS`, and `MCP_BPMN_LAYOUT_TIMEOUT_MS`. Defaults are 5 MiB per imported/layout input,
+2,000 layout elements/connections, density 10, two concurrent layout
+subprocesses, 10,000 listing candidates, and 5,000 ms. The layout defaults
+come from local sparse/dense benchmarks: 2,000/1,999 completed in about 1.4s,
+25/300 took about 4.8s, and 26/325 exceeded five seconds.
+
+New diagrams start with the filename `{ProcessId}_{ProcessName}.bpmn`. Each
+diagram has exactly one active filename: opening adopts the opened filename and
+`save_as` switches it after the new file is written successfully. Add, update,
+delete, connect, and layout operations serialize and atomically autosave the
+active file; failed serialization or writes leave both memory and disk at the
+last successful state.
 
 ## 🏗️ Architecture
 
@@ -468,8 +662,11 @@ mcp-bpmn/
 npm run build        # Build TypeScript
 npm run build:bundle # Build CommonJS bundle
 npm run build:watch  # Build with watch mode
-npm test            # Run all tests
+npm run check        # Clean, type-check, lint, build, and run every test
+npm test            # Run source-level tests (no build output required)
+npm run test:all    # Clean, build, and run every test including e2e
 npm run test:unit   # Run unit tests only
+npm run test:integration # Run integration tests only
 npm run test:e2e    # Run end-to-end tests
 npm run lint        # Run ESLint
 npm run dev         # Development mode with hot reload
@@ -478,16 +675,19 @@ npm start           # Start the MCP server
 
 ### Testing
 
-The project includes comprehensive test coverage:
+The project includes comprehensive test coverage. Source-level commands do not
+read `dist/`, so an old build cannot affect their result:
 - **Unit Tests**: Core functionality testing
 - **Integration Tests**: Handler and tool testing
 - **E2E Tests**: Full MCP protocol testing
 
 Run tests with:
 ```bash
-npm test                    # All tests
-npm run test:coverage       # With coverage report
-npm run test:watch         # Watch mode
+npm test                    # Source-level tests
+npm run test:all            # Clean build plus all tests
+npm run check               # Complete clean contributor/CI quality gate
+npm run test:coverage       # Source-level tests with coverage
+npm run test:watch          # Source-level tests in watch mode
 ```
 
 ## 📈 Performance
@@ -522,9 +722,10 @@ Contributions are welcome! Please:
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+3. Run the complete quality gate (`npm run check`)
+4. Commit your changes (`git commit -m 'Add amazing feature'`)
+5. Push to the branch (`git push origin feature/amazing-feature`)
+6. Open a Pull Request
 
 ### Code Style
 

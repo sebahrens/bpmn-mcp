@@ -126,3 +126,10 @@ bd prime                # Refresh Beads context
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+
+## Build and test policy
+
+Source-level test commands (`npm test`, `npm run test:unit`, and
+`npm run test:integration`) do not use compiled output. Use
+`npm run test:all` for the contributor/CI all-tests check; it removes `dist/`,
+builds the current source, and then runs every suite including e2e.

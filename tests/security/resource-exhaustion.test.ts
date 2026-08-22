@@ -1,0 +1,401 @@
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { ResourceLimits } from '../../src/config/index.js';
+import { DEFAULT_RESOURCE_LIMITS } from '../../src/config/index.js';
+import { MermaidConverter } from '../../src/converters/MermaidConverter.js';
+import { diagramContext } from '../../src/core/DiagramContext.js';
+import { SimpleBpmnEngine } from '../../src/core/SimpleBpmnEngine.js';
+import {
+  assertLayoutComplexity,
+  BpmnAutoLayoutV2Adapter,
+  type BpmnLayoutAdapter
+} from '../../src/core/layout/BpmnLayoutAdapter.js';
+import { BpmnRequestHandler } from '../../src/server/handlers.js';
+import { MAX_PAGE_LIMIT, parseToolRequest } from '../../src/server/tools.js';
+import { FileManager } from '../../src/utils/FileManager.js';
+import { IdGenerator } from '../../src/utils/IdGenerator.js';
+
+const passthroughLayout: BpmnLayoutAdapter = {
+  layout: jest.fn(async (xml: string) => ({ xml, warnings: [] }))
+};
+
+function limits(overrides: Partial<ResourceLimits> = {}): ResourceLimits {
+  return { ...DEFAULT_RESOURCE_LIMITS, ...overrides };
+}
+
+function textOf(result: Awaited<ReturnType<BpmnRequestHandler['handleRequest']>>): string {
+  const item = result.content[0];
+  if (!item || item.type !== 'text') throw new Error('Expected text result');
+  return item.text;
+}
+
+function denseProcessXml(elementCount: number): string {
+  const elements = Array.from(
+    { length: elementCount },
+    (_, index) => `<bpmn:task id="Task_${index}" />`
+  ).join('');
+  const connections: string[] = [];
+  for (let source = 0; source < elementCount; source++) {
+    for (let target = source + 1; target < elementCount; target++) {
+      connections.push(
+        `<bpmn:sequenceFlow id="Flow_${source}_${target}" sourceRef="Task_${source}" targetRef="Task_${target}" />`
+      );
+    }
+  }
+  return `<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="resource-test"><bpmn:process id="Process_1">${elements}${connections.join('')}</bpmn:process></bpmn:definitions>`;
+}
+
+describe('resource exhaustion guards', () => {
+  let directory: string;
+
+  beforeEach(async () => {
+    directory = await fs.mkdtemp(join(tmpdir(), 'mcp-bpmn-resource-'));
+    IdGenerator.reset();
+    diagramContext.clear();
+    jest.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    diagramContext.clear();
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  it('accepts an exact-limit Mermaid file and rejects one byte over before conversion', async () => {
+    const maxMermaidBytes = 128;
+    const source = 'flowchart TD\n  A((Start)) --> B((End))';
+    const commentPrefix = `${source}\n%%`;
+    const exact = `${commentPrefix}${'x'.repeat(maxMermaidBytes - Buffer.byteLength(commentPrefix))}`;
+    const fileManager = new FileManager(directory);
+    await fs.writeFile(join(directory, 'exact.mmd'), exact, 'utf8');
+    await fs.writeFile(join(directory, 'over.mmd'), `${exact}x`, 'utf8');
+
+    await expect(fileManager.readMermaidFile('exact.mmd', maxMermaidBytes)).resolves.toBe(exact);
+    await expect(fileManager.readMermaidFile('over.mmd', maxMermaidBytes))
+      .rejects.toThrow('Mermaid import exceeds the configured byte limit');
+
+    const handler = new BpmnRequestHandler(
+      new SimpleBpmnEngine(directory, undefined, passthroughLayout),
+      undefined,
+      limits({ maxMermaidBytes })
+    );
+    const opened = await handler.handleRequest('open_mermaid_file', { filename: 'exact.mmd' });
+    expect(opened.isError).toBeUndefined();
+    const stable = diagramContext.getCurrent();
+
+    const rejected = await handler.handleRequest('open_mermaid_file', { filename: 'over.mmd' });
+    expect(rejected.isError).toBe(true);
+    expect(textOf(rejected)).toContain('Mermaid import exceeds the configured byte limit');
+    expect(diagramContext.getCurrent()).toBe(stable);
+  });
+
+  it('accepts the layout element limit and rejects one over before invoking layout', async () => {
+    const adapter: BpmnLayoutAdapter = {
+      layout: jest.fn(async xml => ({ xml, warnings: [] }))
+    };
+    const engine = new SimpleBpmnEngine(
+      directory,
+      undefined,
+      adapter,
+      limits({ maxLayoutElements: 2, maxLayoutConnections: 10, maxLayoutDensity: 10 })
+    );
+    const context = await engine.createProcess('Element guard');
+    await engine.createElement(context.id, { type: 'bpmn:Task', name: 'One' });
+    await engine.createElement(context.id, { type: 'bpmn:Task', name: 'Two' });
+
+    await expect(engine.applyAutoLayout(context.id)).resolves.toBeDefined();
+    expect(adapter.layout).toHaveBeenCalledTimes(1);
+
+    await engine.createElement(context.id, { type: 'bpmn:Task', name: 'Three' });
+    await expect(engine.applyAutoLayout(context.id)).rejects.toThrow('element limit 2 exceeded');
+    expect(adapter.layout).toHaveBeenCalledTimes(1);
+  });
+
+  it('guards inline Mermaid bytes and Mermaid layout complexity before layout', async () => {
+    const adapter: BpmnLayoutAdapter = {
+      layout: jest.fn(async xml => ({ xml, warnings: [] }))
+    };
+    const resourceLimits = limits({
+      maxMermaidBytes: 64,
+      maxLayoutElements: 2,
+      maxLayoutConnections: 2,
+      maxLayoutDensity: 2
+    });
+    const converter = new MermaidConverter(adapter, resourceLimits);
+    const handler = new BpmnRequestHandler(
+      new SimpleBpmnEngine(directory, undefined, passthroughLayout, resourceLimits),
+      converter,
+      resourceLimits
+    );
+
+    const exactGraph = await handler.handleRequest('new_from_mermaid', {
+      name: 'Exact graph',
+      mermaidCode: 'flowchart TD\nA-->B'
+    });
+    expect(exactGraph.isError).toBeUndefined();
+    expect(adapter.layout).toHaveBeenCalledTimes(1);
+
+    const overGraph = await handler.handleRequest('new_from_mermaid', {
+      name: 'Over graph',
+      mermaidCode: 'flowchart TD\nA-->B-->C'
+    });
+    expect(overGraph.isError).toBe(true);
+    expect(textOf(overGraph)).toContain('element limit 2 exceeded');
+    expect(adapter.layout).toHaveBeenCalledTimes(1);
+
+    const overBytes = await handler.handleRequest('new_from_mermaid', {
+      name: 'Over bytes',
+      mermaidCode: `flowchart TD\nA-->B\n%%${'x'.repeat(64)}`
+    });
+    expect(overBytes.isError).toBe(true);
+    expect(textOf(overBytes)).toContain('Mermaid import exceeds the configured byte limit');
+    expect(adapter.layout).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts exact connection and density limits and rejects one over', async () => {
+    const adapter: BpmnLayoutAdapter = {
+      layout: jest.fn(async xml => ({ xml, warnings: [] }))
+    };
+    const engine = new SimpleBpmnEngine(
+      directory,
+      undefined,
+      adapter,
+      limits({ maxLayoutElements: 10, maxLayoutConnections: 3, maxLayoutDensity: 0.5 })
+    );
+    const context = await engine.createProcess('Connection guard');
+    for (let index = 1; index <= 4; index++) {
+      await engine.createElement(context.id, {
+        id: `Task_${index}`,
+        type: 'bpmn:Task',
+        name: `Task ${index}`
+      });
+    }
+    await engine.connect(context.id, 'Task_1', 'Task_2');
+    await engine.connect(context.id, 'Task_3', 'Task_4');
+
+    await expect(engine.applyAutoLayout(context.id)).resolves.toBeDefined();
+    await engine.connect(context.id, 'Task_1', 'Task_3');
+    await expect(engine.applyAutoLayout(context.id)).rejects.toThrow('connection density limit 0.5');
+    expect(adapter.layout).toHaveBeenCalledTimes(1);
+
+    const edgeLimited = new SimpleBpmnEngine(
+      join(directory, 'edge-limit'),
+      undefined,
+      adapter,
+      limits({ maxLayoutElements: 10, maxLayoutConnections: 2, maxLayoutDensity: 10 })
+    );
+    const edgeContext = await edgeLimited.createProcess('Edge guard');
+    for (let index = 1; index <= 3; index++) {
+      await edgeLimited.createElement(edgeContext.id, {
+        id: `EdgeTask_${index}`,
+        type: 'bpmn:Task',
+        name: `Edge task ${index}`
+      });
+    }
+    await edgeLimited.connect(edgeContext.id, 'EdgeTask_1', 'EdgeTask_2');
+    await edgeLimited.connect(edgeContext.id, 'EdgeTask_2', 'EdgeTask_3');
+    await expect(edgeLimited.applyAutoLayout(edgeContext.id)).resolves.toBeDefined();
+    await edgeLimited.connect(edgeContext.id, 'EdgeTask_1', 'EdgeTask_3');
+    await expect(edgeLimited.applyAutoLayout(edgeContext.id))
+      .rejects.toThrow('connection limit 2 exceeded');
+  });
+
+  it('rejects oversized low-complexity layout XML before invoking the adapter', async () => {
+    const adapter: BpmnLayoutAdapter = {
+      layout: jest.fn(async xml => ({ xml, warnings: [] }))
+    };
+    const engine = new SimpleBpmnEngine(
+      directory,
+      undefined,
+      adapter,
+      limits({ maxLayoutBytes: 512 })
+    );
+    const context = await engine.createProcess('x'.repeat(1_000));
+    await engine.createElement(context.id, { type: 'bpmn:Task', name: 'Only task' });
+
+    await expect(engine.applyAutoLayout(context.id)).rejects.toThrow('byte limit 512 exceeded');
+    expect(adapter.layout).not.toHaveBeenCalled();
+
+    expect(() => assertLayoutComplexity(1, 0, 512, limits({ maxLayoutBytes: 512 })))
+      .not.toThrow();
+    expect(() => assertLayoutComplexity(1, 0, 513, limits({ maxLayoutBytes: 512 })))
+      .toThrow('byte limit 512 exceeded');
+  });
+
+  it('terminates synchronous pathological layout work without blocking the server event loop', async () => {
+    const timeoutMs = 10;
+    const adapter = new BpmnAutoLayoutV2Adapter(undefined, timeoutMs);
+    let eventLoopAdvanced = false;
+    setTimeout(() => { eventLoopAdvanced = true; }, 0);
+    const startedAt = Date.now();
+
+    await expect(adapter.layout(denseProcessXml(100)))
+      .rejects.toThrow(`bpmn-auto-layout subprocess exceeded ${timeoutMs}ms`);
+
+    expect(eventLoopAdvanced).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+  });
+
+  it('rejects layout bursts above the global subprocess concurrency cap', async () => {
+    const timeoutMs = 100;
+    const adapter = new BpmnAutoLayoutV2Adapter(undefined, timeoutMs, 1);
+    const first = adapter.layout(denseProcessXml(30));
+
+    await expect(adapter.layout(denseProcessXml(30)))
+      .rejects.toThrow('Concurrent auto-layout limit 1 reached');
+    await expect(first).rejects.toThrow(`bpmn-auto-layout subprocess exceeded ${timeoutMs}ms`);
+  });
+
+  it('paginates empty, sparse, dense, and final element pages in stable ID order', async () => {
+    const handler = new BpmnRequestHandler(
+      new SimpleBpmnEngine(directory, undefined, passthroughLayout)
+    );
+    await handler.handleRequest('new_bpmn', { name: 'Pagination' });
+
+    const empty = JSON.parse(textOf(await handler.handleRequest('list_elements', {
+      elementType: 'bpmn:Gateway',
+      limit: 2,
+      offset: 0
+    })));
+    expect(empty).toMatchObject({ count: 0, returnedCount: 0, hasMore: false, elements: [] });
+
+    for (let index = 1; index <= 4; index++) {
+      await handler.handleRequest('add_activity', { activityType: 'task', name: `Task ${index}` });
+    }
+    for (let index = 1; index < 4; index++) {
+      await handler.handleRequest('connect', {
+        sourceId: `Task_${index}`,
+        targetId: `Task_${index + 1}`
+      });
+    }
+
+    const first = JSON.parse(textOf(await handler.handleRequest('list_elements', {
+      limit: 2,
+      offset: 0
+    })));
+    const middle = JSON.parse(textOf(await handler.handleRequest('list_elements', {
+      limit: 2,
+      offset: 2
+    })));
+    expect(first.elements.map((element: { id: string }) => element.id)).toEqual(['Task_1', 'Task_2']);
+    expect(middle.elements.map((element: { id: string }) => element.id)).toEqual(['Task_3', 'Task_4']);
+    expect([first.hasMore, middle.hasMore]).toEqual([true, false]);
+
+    await handler.handleRequest('add_activity', { activityType: 'task', name: 'Task 5' });
+    await handler.handleRequest('connect', { sourceId: 'Task_4', targetId: 'Task_5' });
+    const final = JSON.parse(textOf(await handler.handleRequest('list_elements', {
+      limit: 2,
+      offset: 4
+    })));
+    const middleAfterGrowth = JSON.parse(textOf(await handler.handleRequest('list_elements', {
+      limit: 2,
+      offset: 2
+    })));
+    expect(final.elements.map((element: { id: string }) => element.id)).toEqual(['Task_5']);
+    expect([middleAfterGrowth.hasMore, final.hasMore]).toEqual([true, false]);
+
+    await handler.handleRequest('connect', { sourceId: 'Task_1', targetId: 'Task_3' });
+    await handler.handleRequest('connect', { sourceId: 'Task_1', targetId: 'Task_4' });
+    await handler.handleRequest('connect', { sourceId: 'Task_1', targetId: 'Task_5' });
+    const dense = JSON.parse(textOf(await handler.handleRequest('list_elements', {
+      limit: 5,
+      offset: 0
+    })));
+    expect(dense.elements[0]).toMatchObject({ id: 'Task_1', incoming: 0, outgoing: 4 });
+    expect(dense.elements[4]).toMatchObject({ id: 'Task_5', incoming: 2, outgoing: 0 });
+  });
+
+  it('bounds and stably paginates diagram listings through the final page', async () => {
+    const handler = new BpmnRequestHandler(
+      new SimpleBpmnEngine(directory, undefined, passthroughLayout)
+    );
+    const empty = JSON.parse(textOf(await handler.handleRequest('list_diagrams', {})));
+    expect(empty).toMatchObject({ count: 0, returnedCount: 0, hasMore: false, diagrams: [] });
+
+    for (const name of ['Zulu', 'Alpha', 'Middle']) {
+      await handler.handleRequest('new_bpmn', { name });
+    }
+    const first = JSON.parse(textOf(await handler.handleRequest('list_diagrams', {
+      limit: 2,
+      offset: 0
+    })));
+    const final = JSON.parse(textOf(await handler.handleRequest('list_diagrams', {
+      limit: 2,
+      offset: 2
+    })));
+    const filenames = [...first.diagrams, ...final.diagrams]
+      .map((diagram: { filename: string }) => diagram.filename);
+    expect(filenames).toEqual([...filenames].sort());
+    expect(first).toMatchObject({ count: 3, returnedCount: 2, hasMore: true });
+    expect(final).toMatchObject({ count: 3, returnedCount: 1, hasMore: false });
+
+    expect(() => parseToolRequest('list_elements', { limit: MAX_PAGE_LIMIT, offset: 0 }))
+      .not.toThrow();
+    expect(() => parseToolRequest('list_diagrams', { limit: MAX_PAGE_LIMIT + 1, offset: 0 }))
+      .toThrow(`Number must be less than or equal to ${MAX_PAGE_LIMIT}`);
+  });
+
+  it('accepts exact listing candidate caps and rejects one over', async () => {
+    const resourceLimits = limits({ maxListingItems: 2 });
+    const handler = new BpmnRequestHandler(
+      new SimpleBpmnEngine(directory, undefined, passthroughLayout, resourceLimits),
+      undefined,
+      resourceLimits
+    );
+    await handler.handleRequest('new_bpmn', { name: 'First' });
+    await handler.handleRequest('add_activity', { activityType: 'task', name: 'One' });
+    await handler.handleRequest('add_activity', { activityType: 'task', name: 'Two' });
+    expect((await handler.handleRequest('list_elements', {})).isError).toBeUndefined();
+
+    await handler.handleRequest('add_activity', { activityType: 'task', name: 'Three' });
+    const excessElements = await handler.handleRequest('list_elements', {});
+    expect(excessElements.isError).toBe(true);
+    expect(textOf(excessElements)).toContain('item limit 2 exceeded');
+
+    await handler.handleRequest('new_bpmn', { name: 'Second' });
+    expect((await handler.handleRequest('list_diagrams', {})).isError).toBeUndefined();
+    await handler.handleRequest('new_bpmn', { name: 'Third' });
+    const excessDiagrams = await handler.handleRequest('list_diagrams', {});
+    expect(excessDiagrams.isError).toBe(true);
+    expect(textOf(excessDiagrams)).toContain('scan limit 2 exceeded');
+  });
+
+  it('caps diagram directory scans even when entries are not BPMN files', async () => {
+    const scanDirectory = join(directory, 'scan-cap');
+    await fs.mkdir(scanDirectory);
+    const resourceLimits = limits({ maxListingItems: 2 });
+    const handler = new BpmnRequestHandler(
+      new SimpleBpmnEngine(scanDirectory, undefined, passthroughLayout, resourceLimits),
+      undefined,
+      resourceLimits
+    );
+    await fs.writeFile(join(scanDirectory, 'one.txt'), 'one');
+    await fs.writeFile(join(scanDirectory, 'two.txt'), 'two');
+    expect((await handler.handleRequest('list_diagrams', {})).isError).toBeUndefined();
+
+    await fs.writeFile(join(scanDirectory, 'three.txt'), 'three');
+    const rejected = await handler.handleRequest('list_diagrams', {});
+    expect(rejected.isError).toBe(true);
+    expect(textOf(rejected)).toContain('scan limit 2 exceeded');
+  });
+
+  it('caps connection scans when element count remains small', async () => {
+    const resourceLimits = limits({ maxListingItems: 2 });
+    const handler = new BpmnRequestHandler(
+      new SimpleBpmnEngine(directory, undefined, passthroughLayout, resourceLimits),
+      undefined,
+      resourceLimits
+    );
+    await handler.handleRequest('new_bpmn', { name: 'Connection scan cap' });
+    await handler.handleRequest('add_activity', { activityType: 'task', name: 'One' });
+    await handler.handleRequest('add_activity', { activityType: 'task', name: 'Two' });
+    await handler.handleRequest('connect', { sourceId: 'Task_1', targetId: 'Task_2' });
+    await handler.handleRequest('connect', { sourceId: 'Task_1', targetId: 'Task_2' });
+    expect((await handler.handleRequest('list_elements', {})).isError).toBeUndefined();
+
+    await handler.handleRequest('connect', { sourceId: 'Task_1', targetId: 'Task_2' });
+    const rejected = await handler.handleRequest('list_elements', {});
+    expect(rejected.isError).toBe(true);
+    expect(textOf(rejected)).toContain('connection scan limit 2 exceeded');
+  });
+});

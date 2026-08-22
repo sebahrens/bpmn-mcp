@@ -1,14 +1,24 @@
+#!/usr/bin/env node
+
+import { createRequire } from 'node:module';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { tools } from './tools.js';
 import { BpmnRequestHandler } from './handlers.js';
 
+const requirePackage = createRequire(
+  typeof __filename === 'string' ? __filename : import.meta.url
+);
+const packageMetadata = requirePackage('../../package.json') as {
+  version: string;
+};
+
 // Create server instance
 const server = new Server(
   {
     name: 'mcp-bpmn-server',
-    version: '0.1.0',
+    version: packageMetadata.version,
   },
   {
     capabilities: {

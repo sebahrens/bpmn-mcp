@@ -3,18 +3,18 @@
 ## Test Structure
 
 - `unit/` - Unit tests for individual components
-  - `utils/` - Tests for utility functions (IdGenerator, PositionCalculator, TypeMappings)
+  - `utils/` - Tests for utility functions (IdGenerator, FileManager, TypeMappings)
   - Core component tests would go here
 
 - `integration/` - Integration tests
-  - `BpmnEngine.test.ts` - Tests for the BPMN engine
+  - Live engine behavior is covered by `contracts/engine-contract.test.ts` and focused core tests
   - `handlers.test.ts` - Tests for MCP request handlers
 
 - `fixtures/` - Test data
   - Sample BPMN files for testing
 
 - `mocks/` - Mock implementations
-  - `bpmn-js.js` - Mock for bpmn-js library
+  - `puppeteer.cjs` - Mock browser launcher for source-level tests
 
 ## Running Tests
 
@@ -32,16 +32,28 @@ npm run test:coverage
 npm test -- IdGenerator.test.ts
 ```
 
-## Current Status
-
-- ✅ Unit tests: All passing (36 tests)
-- ⚠️  Integration tests: Need environment setup for bpmn-js DOM dependencies
-
-The integration tests require a more complex setup due to bpmn-js needing a DOM environment. In a real deployment, these would run in a browser environment or with a more sophisticated DOM mock.
-
 ## Writing New Tests
 
 1. Place unit tests in `tests/unit/`
 2. Place integration tests in `tests/integration/`
 3. Follow the existing patterns for test structure
-4. Use the mock implementations when testing components that depend on bpmn-js
+4. Use the renderer suite for real browser-backed SVG behavior
+
+## Retired wrapper test migration
+
+The deleted `BpmnEngine` suite exercised a pass-through wrapper around
+`SimpleBpmnEngine`. Its useful public behavior now has stronger coverage at the
+live ownership boundaries:
+
+- `contracts/engine-contract.test.ts` parses exported XML with `bpmn-moddle` to
+  verify process/collaboration creation, element and connection semantics,
+  labels, DI, formatted and compact exports, imports, and file persistence.
+- `integration/handlers.test.ts` verifies MCP-facing results and negative cases,
+  including missing elements, handler file operations, and persisted labels.
+- Malformed BPMN is rejected without installing partial state instead of being
+  accepted as an empty process.
+
+Assertions about wrapper-owned maps and compatibility stubs were implementation
+details of removed code. `PositionCalculator` tests were also removed with that
+orphan utility; layout behavior is covered through the live layout engine and
+adapter suites.

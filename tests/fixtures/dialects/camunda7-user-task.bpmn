@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  id="Definitions_Camunda7_Profile"
+  targetNamespace="urn:mcp-bpmn:dialect:camunda7">
+  <bpmn:process id="Process_Camunda7_Profile" name="Camunda 7 profile" isExecutable="true">
+    <bpmn:userTask id="UserTask_Camunda7" name="Review request"
+      camunda:assignee="alice"
+      camunda:candidateGroups="reviewers,operations"
+      camunda:dueDate="2026-09-01T12:00:00Z" />
+  </bpmn:process>
+</bpmn:definitions>

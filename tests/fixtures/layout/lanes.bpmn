@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Definitions_Lanes" targetNamespace="http://mcp-bpmn.test/layout">
+  <bpmn:process id="Process_Lanes" isExecutable="false">
+    <bpmn:documentation>Two lanes own nodes connected across the lane boundary.</bpmn:documentation>
+    <bpmn:laneSet id="LaneSet_Departments">
+      <bpmn:lane id="Lane_Sales" name="Sales">
+        <bpmn:flowNodeRef>Start_Lanes</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_Qualify</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_Operations" name="Operations">
+        <bpmn:flowNodeRef>Task_Fulfill</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>End_Lanes</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="Start_Lanes"><bpmn:outgoing>Flow_Lanes_1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:userTask id="Task_Qualify" name="Qualify request"><bpmn:incoming>Flow_Lanes_1</bpmn:incoming><bpmn:outgoing>Flow_Lanes_2</bpmn:outgoing></bpmn:userTask>
+    <bpmn:serviceTask id="Task_Fulfill" name="Fulfill request"><bpmn:incoming>Flow_Lanes_2</bpmn:incoming><bpmn:outgoing>Flow_Lanes_3</bpmn:outgoing></bpmn:serviceTask>
+    <bpmn:endEvent id="End_Lanes"><bpmn:incoming>Flow_Lanes_3</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_Lanes_1" sourceRef="Start_Lanes" targetRef="Task_Qualify" />
+    <bpmn:sequenceFlow id="Flow_Lanes_2" sourceRef="Task_Qualify" targetRef="Task_Fulfill" />
+    <bpmn:sequenceFlow id="Flow_Lanes_3" sourceRef="Task_Fulfill" targetRef="End_Lanes" />
+  </bpmn:process>
+</bpmn:definitions>

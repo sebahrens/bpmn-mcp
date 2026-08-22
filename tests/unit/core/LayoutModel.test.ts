@@ -1,0 +1,480 @@
+import { promises as fs } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import type { MermaidAST } from '../../../src/converters/ASTTypes.js';
+import {
+  createProcessContext
+} from '../../../src/core/BpmnDocument.js';
+import { LayoutEngine } from '../../../src/core/LayoutEngine.js';
+import { SimpleBpmnEngine } from '../../../src/core/SimpleBpmnEngine.js';
+import { SimpleBpmnGenerator } from '../../../src/core/SimpleBpmnGenerator.js';
+import { BpmnDocumentLayoutAdapter } from '../../../src/core/layout/adapters/BpmnDocumentLayoutAdapter.js';
+import { MermaidAstLayoutAdapter } from '../../../src/core/layout/adapters/MermaidAstLayoutAdapter.js';
+import {
+  normalizeLayoutModel,
+  refreshLayoutGeometry,
+  setLayoutEdgeWaypoints,
+  validateLayoutModel
+} from '../../../src/core/layout/LayoutModel.js';
+
+const mermaidAst = (): MermaidAST => ({
+  type: 'flowchart',
+  direction: 'LR',
+  nodes: [
+    { id: 'task', type: 'process', label: 'Review request' },
+    { id: 'end', type: 'end', label: 'End' },
+    { id: 'start', type: 'start', label: 'Start' }
+  ],
+  edges: [
+    { id: 'flow-b', source: 'task', target: 'end', type: 'directed' },
+    { id: 'flow-a', source: 'start', target: 'task', type: 'labeled', label: 'submit' }
+  ],
+  subgraphs: [
+    { id: 'pool', title: 'Operations', nodes: ['task', 'end', 'start'] }
+  ]
+});
+
+describe('canonical layout model', () => {
+  it('adapts Mermaid nodes, edges, labels, containers, ports and warnings deterministically', () => {
+    const first = MermaidAstLayoutAdapter.toLayoutModel(mermaidAst());
+    const second = MermaidAstLayoutAdapter.toLayoutModel(mermaidAst());
+    const normalized = normalizeLayoutModel(first);
+
+    expect(normalized).toEqual(normalizeLayoutModel(second));
+    expect(normalized.direction).toBe('left-to-right');
+    expect(normalized.nodes.map(node => node.id)).toEqual(['end', 'start', 'task']);
+    expect(normalized.nodes.every(node => node.ports.length === 2)).toBe(true);
+    expect(normalized.edges.map(edge => edge.id)).toEqual(['flow-a', 'flow-b']);
+    expect(normalized.edges[0]).toMatchObject({
+      semanticId: 'flow-a',
+      source: { nodeId: 'start' },
+      target: { nodeId: 'task' }
+    });
+    expect(normalized.edges[0].segments).toEqual([
+      expect.objectContaining({ semanticEdgeId: 'flow-a', order: 0, virtual: false })
+    ]);
+    expect(normalized.labels.map(label => label.id)).toEqual([
+      'container:pool:label',
+      'edge:flow-a:label',
+      'node:end:label',
+      'node:start:label',
+      'node:task:label'
+    ]);
+    expect(normalized.containers.map(container => container.id)).toEqual(['mermaid:root', 'pool']);
+    expect(normalized.bounds.width).toBeGreaterThan(0);
+    expect(normalized.warnings).toEqual([]);
+    expect(validateLayoutModel(first)).toEqual({ valid: true, errors: [] });
+    expect(JSON.stringify(normalized)).not.toContain('xml');
+  });
+
+  it('returns identical normalized layout and BPMN IDs for repeated stable Mermaid input', async () => {
+    const engine = new LayoutEngine();
+    const reordered = mermaidAst();
+    reordered.nodes.reverse();
+    reordered.edges.reverse();
+    const firstLayout = engine.layoutWithPools(mermaidAst());
+    const secondLayout = engine.layoutWithPools(reordered);
+    expect(normalizeLayoutModel(firstLayout)).toEqual(normalizeLayoutModel(secondLayout));
+
+    const generator = new SimpleBpmnGenerator();
+    firstLayout.warnings.push({ code: 'test-warning', message: 'Layout warning' });
+    secondLayout.warnings.push({ code: 'test-warning', message: 'Layout warning' });
+    const first = await generator.generateBpmn(mermaidAst(), 'Stable process', firstLayout);
+    const second = await generator.generateBpmn(reordered, 'Stable process', secondLayout);
+    expect(second.xml).toBe(first.xml);
+    expect(first.warnings).toEqual(['Layout warning']);
+  });
+
+  it.each([
+    ['LR', 'left-to-right', 'right', (start: number, end: number) => start < end],
+    ['RL', 'right-to-left', 'left', (start: number, end: number) => start > end],
+    ['TD', 'top-to-bottom', 'bottom', (start: number, end: number) => start < end],
+    ['BT', 'bottom-to-top', 'top', (start: number, end: number) => start > end]
+  ] as const)('places and docks %s geometry consistently', (mermaidDirection, direction, outputSide, ordered) => {
+    const ast = mermaidAst();
+    ast.direction = mermaidDirection;
+    const layout = new LayoutEngine().layout(ast);
+    const start = layout.nodes.get('start')!;
+    const end = layout.nodes.get('end')!;
+    const startCoordinate = direction.includes('right') || direction.includes('left')
+      ? start.bounds.x
+      : start.bounds.y;
+    const endCoordinate = direction.includes('right') || direction.includes('left')
+      ? end.bounds.x
+      : end.bounds.y;
+
+    expect(layout.direction).toBe(direction);
+    expect(ordered(startCoordinate, endCoordinate)).toBe(true);
+    expect(start.ports.find(port => port.role === 'outgoing')).toMatchObject({ side: outputSide });
+    expect(validateLayoutModel(layout)).toEqual({ valid: true, errors: [] });
+  });
+
+  it('uses stable tie-breaking for cycles and gateway branches', () => {
+    const ast: MermaidAST = {
+      type: 'flowchart',
+      direction: 'LR',
+      nodes: [
+        { id: 'gateway', type: 'decision', label: 'Choose' },
+        { id: 'alpha', type: 'process', label: 'Alpha' },
+        { id: 'beta', type: 'process', label: 'Beta' }
+      ],
+      edges: [
+        { id: 'z-cycle', source: 'beta', target: 'gateway', type: 'directed' },
+        { id: 'b-branch', source: 'gateway', target: 'beta', type: 'directed' },
+        { id: 'a-branch', source: 'gateway', target: 'alpha', type: 'directed' },
+        { id: 'a-cycle', source: 'alpha', target: 'gateway', type: 'directed' }
+      ],
+      subgraphs: []
+    };
+    const reordered: MermaidAST = {
+      ...ast,
+      nodes: [...ast.nodes].reverse(),
+      edges: [...ast.edges].reverse()
+    };
+
+    expect(normalizeLayoutModel(new LayoutEngine().layout(ast)))
+      .toEqual(normalizeLayoutModel(new LayoutEngine().layout(reordered)));
+  });
+
+  it('stacks pools on the cross-axis without reversing vertical flow direction', () => {
+    const ast: MermaidAST = {
+      type: 'flowchart',
+      direction: 'BT',
+      nodes: [
+        { id: 'start', type: 'start', label: 'Start' },
+        { id: 'end', type: 'end', label: 'End' }
+      ],
+      edges: [{ id: 'message', source: 'start', target: 'end', type: 'directed' }],
+      subgraphs: [
+        { id: 'sender', title: 'Sender', nodes: ['start'] },
+        { id: 'receiver', title: 'Receiver', nodes: ['end'] }
+      ]
+    };
+    const layout = new LayoutEngine().layoutWithPools(ast);
+    expect(layout.nodes.get('start')!.bounds.y).toBeGreaterThan(layout.nodes.get('end')!.bounds.y);
+    expect(layout.containers.get('sender')!.bounds.x)
+      .not.toBe(layout.containers.get('receiver')!.bounds.x);
+    expect(validateLayoutModel(layout).valid).toBe(true);
+  });
+
+  it('includes nested child geometry and rejects unknown container members', () => {
+    const nested = mermaidAst();
+    nested.subgraphs = [{
+      id: 'parent',
+      title: 'Parent',
+      nodes: [],
+      subgraphs: [{ id: 'child', title: 'Child', nodes: ['start', 'task', 'end'] }]
+    }];
+    const layout = MermaidAstLayoutAdapter.toLayoutModel(nested);
+    expect(layout.containers.get('parent')!.bounds.width).toBeGreaterThan(0);
+    expect(layout.containers.get('parent')!.childContainerIds).toEqual(['child']);
+    expect(validateLayoutModel(layout).valid).toBe(true);
+
+    nested.subgraphs[0].nodes.push('missing');
+    expect(() => MermaidAstLayoutAdapter.toLayoutModel(nested)).toThrow('references unknown node missing');
+  });
+
+  it('round-trips BPMN semantic IDs, ownership and connectivity while applying geometry', () => {
+    const context = createProcessContext('Process_1', 'Round trip', 'process');
+    context.elements.set('Start_1', {
+      kind: 'flowNode',
+      id: 'Start_1',
+      type: 'bpmn:StartEvent',
+      ownerId: 'Process_1',
+      scopeId: 'Process_1',
+      position: { x: 20, y: 40 },
+      size: { width: 36, height: 36 },
+      properties: {}
+    });
+    context.elements.set('Task_1', {
+      kind: 'flowNode',
+      id: 'Task_1',
+      type: 'bpmn:Task',
+      name: 'Review',
+      ownerId: 'Process_1',
+      scopeId: 'Process_1',
+      position: { x: 160, y: 20 },
+      size: { width: 100, height: 80 },
+      properties: {}
+    });
+    context.connections.set('Flow_1', {
+      id: 'Flow_1',
+      type: 'bpmn:SequenceFlow',
+      source: 'Start_1',
+      target: 'Task_1',
+      ownerId: 'Process_1',
+      scopeId: 'Process_1',
+      label: 'continue',
+      waypoints: [{ x: 56, y: 58 }, { x: 160, y: 60 }],
+      properties: {}
+    });
+
+    const layout = BpmnDocumentLayoutAdapter.fromContext(context);
+    layout.nodes.get('Task_1')!.bounds = { x: 240, y: 80, width: 120, height: 90 };
+    refreshLayoutGeometry(layout);
+    setLayoutEdgeWaypoints(layout.edges.get('Flow_1')!, [
+      { x: 56, y: 58 },
+      { x: 140, y: 58 },
+      { x: 240, y: 125 }
+    ]);
+    refreshLayoutGeometry(layout);
+    BpmnDocumentLayoutAdapter.applyToContext(layout, context);
+    const roundTripped = BpmnDocumentLayoutAdapter.fromDocument(context.document);
+
+    expect(context.elements.get('Task_1')).toMatchObject({
+      ownerId: 'Process_1',
+      scopeId: 'Process_1',
+      position: { x: 240, y: 80 },
+      size: { width: 120, height: 90 }
+    });
+    expect(context.connections.get('Flow_1')).toMatchObject({
+      source: 'Start_1',
+      target: 'Task_1',
+      waypoints: layout.edges.get('Flow_1')!.waypoints
+    });
+    expect(roundTripped.nodes.get('Task_1')).toMatchObject({
+      semanticId: 'Task_1',
+      ownerId: 'Process_1',
+      scopeId: 'Process_1'
+    });
+    expect(roundTripped.edges.get('Flow_1')).toMatchObject({
+      semanticId: 'Flow_1',
+      source: { nodeId: 'Start_1' },
+      target: { nodeId: 'Task_1' }
+    });
+    expect(roundTripped.edges.get('Flow_1')!.segments.every(
+      segment => segment.semanticEdgeId === 'Flow_1'
+    )).toBe(true);
+    expect(validateLayoutModel(roundTripped).valid).toBe(true);
+  });
+
+  it('adapts collaboration containers and message-flow ownership without losing hierarchy', () => {
+    const context = createProcessContext('Collaboration_1', 'Partners', 'collaboration');
+    context.document.processes.set('Buyer_Process', { id: 'Buyer_Process', isExecutable: true });
+    context.document.processes.set('Seller_Process', { id: 'Seller_Process', isExecutable: true });
+    context.elements.set('Buyer', {
+      kind: 'participant', id: 'Buyer', type: 'bpmn:Participant', ownerId: context.id, scopeId: context.id,
+      processRef: 'Buyer_Process', position: { x: 20, y: 20 }, size: { width: 500, height: 180 }, properties: {}
+    });
+    context.elements.set('Seller', {
+      kind: 'participant', id: 'Seller', type: 'bpmn:Participant', ownerId: context.id, scopeId: context.id,
+      processRef: 'Seller_Process', position: { x: 20, y: 240 }, size: { width: 500, height: 180 }, properties: {}
+    });
+    context.elements.set('Send', {
+      kind: 'flowNode', id: 'Send', type: 'bpmn:SendTask', ownerId: 'Buyer_Process', scopeId: 'Buyer_Process',
+      position: { x: 100, y: 70 }, size: { width: 100, height: 80 }, properties: {}
+    });
+    context.elements.set('Receive', {
+      kind: 'flowNode', id: 'Receive', type: 'bpmn:ReceiveTask', ownerId: 'Seller_Process', scopeId: 'Seller_Process',
+      position: { x: 300, y: 290 }, size: { width: 100, height: 80 }, properties: {}
+    });
+    context.connections.set('Message_1', {
+      id: 'Message_1', type: 'bpmn:MessageFlow', source: 'Send', target: 'Receive', ownerId: context.id,
+      scopeId: context.id, waypoints: [{ x: 200, y: 110 }, { x: 300, y: 330 }], properties: {}
+    });
+
+    const layout = BpmnDocumentLayoutAdapter.fromContext(context);
+    expect(layout.nodes.get('Send')!.containerId).toBe('Buyer');
+    expect(layout.containers.get('Buyer_Process')).toMatchObject({ parentId: 'Buyer' });
+    expect(layout.edges.get('Message_1')).toMatchObject({ ownerId: context.id, scopeId: context.id });
+    expect(validateLayoutModel(layout)).toEqual({ valid: true, errors: [] });
+    expect(() => BpmnDocumentLayoutAdapter.applyToContext(layout, context)).not.toThrow();
+  });
+
+  it('adapts and persists the mutable SimpleBpmnEngine path through the typed model', async () => {
+    const directory = await fs.mkdtemp(join(tmpdir(), 'mcp-bpmn-layout-model-'));
+    try {
+      const engine = new SimpleBpmnEngine(directory);
+      const context = await engine.createProcess('Mutable layout');
+      const start = await engine.createElement(context.id, { id: 'Start_fixed', type: 'bpmn:StartEvent' });
+      const task = await engine.createElement(context.id, { id: 'Task_fixed', type: 'bpmn:Task' });
+      const connection = await engine.connect(context.id, start.id, task.id, 'continue');
+      const layout = engine.getLayoutModel(context.id);
+
+      layout.nodes.get(task.id)!.bounds = { x: 320, y: 140, width: 130, height: 90 };
+      refreshLayoutGeometry(layout);
+      setLayoutEdgeWaypoints(layout.edges.get(connection.id)!, [
+        { x: 136, y: 218 },
+        { x: 220, y: 218 },
+        { x: 320, y: 185 }
+      ]);
+      refreshLayoutGeometry(layout);
+      await engine.applyLayoutModel(context.id, layout);
+
+      expect(engine.getProcess(context.id).elements.get(task.id)).toMatchObject({
+        position: { x: 320, y: 140 },
+        size: { width: 130, height: 90 }
+      });
+      expect(engine.getProcess(context.id).connections.get(connection.id)?.waypoints)
+        .toEqual(layout.edges.get(connection.id)!.waypoints);
+      expect(context.document.diagram.edges.get(`${connection.id}_di`)?.waypoints)
+        .toEqual(layout.edges.get(connection.id)!.waypoints);
+      const persisted = await fs.readFile(join(directory, context.filename!), 'utf8');
+      expect(persisted).toContain('x="320" y="140" width="130" height="90"');
+      expect(persisted).toContain('<di:waypoint x="220" y="218" />');
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves one semantic edge identity across ordered virtual routing segments', () => {
+    const layout = MermaidAstLayoutAdapter.toLayoutModel(mermaidAst());
+    const edge = layout.edges.get('flow-a')!;
+    const middle = { x: 180, y: 180 };
+    edge.waypoints = [edge.waypoints[0], middle, edge.waypoints[edge.waypoints.length - 1]];
+    edge.segments = [
+      {
+        id: 'flow-a:segment:0',
+        semanticEdgeId: 'flow-a',
+        order: 0,
+        source: { ...edge.source },
+        target: { nodeId: 'virtual:flow-a:0' },
+        waypoints: [edge.waypoints[0], middle],
+        virtual: true
+      },
+      {
+        id: 'flow-a:segment:1',
+        semanticEdgeId: 'flow-a',
+        order: 1,
+        source: { nodeId: 'virtual:flow-a:0' },
+        target: { ...edge.target },
+        waypoints: [middle, edge.waypoints[edge.waypoints.length - 1]],
+        virtual: true
+      }
+    ];
+
+    expect(validateLayoutModel(layout)).toEqual({ valid: true, errors: [] });
+    expect(normalizeLayoutModel(layout).edges.find(item => item.id === edge.id)?.segments
+      .map(segment => segment.semanticEdgeId)).toEqual(['flow-a', 'flow-a']);
+
+    edge.segments[1].waypoints[0] = { x: middle.x + 1, y: middle.y };
+    expect(validateLayoutModel(layout).errors.map(error => error.code))
+      .toContain('disconnected-edge-segments');
+  });
+
+  it('rejects undocked routes, incomplete ports, stale bounds and nonreciprocal containment', () => {
+    const undocked = MermaidAstLayoutAdapter.toLayoutModel(mermaidAst());
+    const edge = undocked.edges.get('flow-a')!;
+    setLayoutEdgeWaypoints(edge, [
+      { x: edge.waypoints[0].x + 1, y: edge.waypoints[0].y },
+      edge.waypoints[edge.waypoints.length - 1]
+    ]);
+    refreshLayoutGeometry(undocked);
+    expect(validateLayoutModel(undocked).errors.map(error => error.code)).toContain('undocked-edge-route');
+
+    const missingPort = MermaidAstLayoutAdapter.toLayoutModel(mermaidAst());
+    missingPort.nodes.get('task')!.ports = missingPort.nodes.get('task')!.ports
+      .filter(port => port.role !== 'incoming');
+    expect(validateLayoutModel(missingPort).errors.map(error => error.code)).toContain('invalid-node-port-set');
+
+    const staleBounds = MermaidAstLayoutAdapter.toLayoutModel(mermaidAst());
+    staleBounds.bounds.x += 1;
+    expect(validateLayoutModel(staleBounds).errors.map(error => error.code)).toContain('stale-diagram-bounds');
+
+    const containment = MermaidAstLayoutAdapter.toLayoutModel(mermaidAst());
+    containment.containers.get('pool')!.nodeIds = ['start', 'task'];
+    expect(validateLayoutModel(containment).errors.map(error => error.code))
+      .toContain('nonreciprocal-node-container');
+  });
+
+  it('rejects an explicit Mermaid layout that changes edge connectivity', async () => {
+    const ast = mermaidAst();
+    const layout = new LayoutEngine().layoutWithPools(ast);
+    const edge = layout.edges.get('flow-a')!;
+    edge.target = { nodeId: 'end', portId: 'end:port:in' };
+    const sourcePort = layout.nodes.get('start')!.ports.find(port => port.role === 'outgoing')!;
+    const targetPort = layout.nodes.get('end')!.ports.find(port => port.role === 'incoming')!;
+    setLayoutEdgeWaypoints(edge, [sourcePort.position, targetPort.position]);
+    refreshLayoutGeometry(layout);
+
+    await expect(new SimpleBpmnGenerator().generateBpmn(ast, 'Contradictory route', layout))
+      .rejects.toThrow('does not preserve Mermaid edge flow-a');
+  });
+
+  it('rejects non-finite geometry and semantic metadata drift before mutation', () => {
+    const context = createProcessContext('Process_1', 'Preflight', 'process');
+    context.elements.set('Task_1', {
+      kind: 'flowNode',
+      id: 'Task_1',
+      type: 'bpmn:Task',
+      ownerId: 'Process_1',
+      scopeId: 'Process_1',
+      position: { x: 10, y: 20 },
+      size: { width: 100, height: 80 },
+      properties: {}
+    });
+    const invalidGeometry = BpmnDocumentLayoutAdapter.fromContext(context);
+    invalidGeometry.nodes.get('Task_1')!.bounds.x = Number.NaN;
+    expect(() => BpmnDocumentLayoutAdapter.applyToContext(invalidGeometry, context))
+      .toThrow('invalid bounds');
+    expect(context.elements.get('Task_1')!.position).toEqual({ x: 10, y: 20 });
+
+    const semanticDrift = BpmnDocumentLayoutAdapter.fromContext(context);
+    semanticDrift.nodes.get('Task_1')!.semanticType = 'bpmn:ServiceTask';
+    expect(() => BpmnDocumentLayoutAdapter.applyToContext(semanticDrift, context))
+      .toThrow('changes BPMN semantic metadata');
+    expect(context.elements.get('Task_1')!.type).toBe('bpmn:Task');
+  });
+
+  it('rejects a layout that changes BPMN semantic connectivity', () => {
+    const context = createProcessContext('Process_1', 'Connectivity', 'process');
+    for (const id of ['A', 'B', 'C']) {
+      context.elements.set(id, {
+        kind: 'flowNode',
+        id,
+        type: 'bpmn:Task',
+        ownerId: 'Process_1',
+        scopeId: 'Process_1',
+        position: { x: 0, y: 0 },
+        size: { width: 100, height: 80 },
+        properties: {}
+      });
+    }
+    context.connections.set('Flow_1', {
+      id: 'Flow_1',
+      type: 'bpmn:SequenceFlow',
+      source: 'A',
+      target: 'B',
+      ownerId: 'Process_1',
+      scopeId: 'Process_1',
+      waypoints: [{ x: 100, y: 40 }, { x: 150, y: 40 }],
+      properties: {}
+    });
+    const layout = BpmnDocumentLayoutAdapter.fromContext(context);
+    layout.nodes.get('A')!.bounds.x = 400;
+    refreshLayoutGeometry(layout);
+    layout.edges.get('Flow_1')!.target.nodeId = 'C';
+    layout.edges.get('Flow_1')!.target.portId = 'C:port:in';
+    setLayoutEdgeWaypoints(layout.edges.get('Flow_1')!, [
+      { x: 500, y: 40 },
+      { x: 0, y: 40 }
+    ]);
+    refreshLayoutGeometry(layout);
+
+    expect(() => BpmnDocumentLayoutAdapter.applyToContext(layout, context))
+      .toThrow('changes semantic connectivity');
+    expect(context.connections.get('Flow_1')!.target).toBe('B');
+    expect(context.elements.get('A')!.position.x).toBe(0);
+  });
+
+  it('restores in-memory geometry when layout persistence fails', async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), 'mcp-bpmn-layout-rollback-'));
+    const directory = join(root, 'diagrams');
+    try {
+      const engine = new SimpleBpmnEngine(directory);
+      const context = await engine.createProcess('Rollback');
+      const task = await engine.createElement(context.id, { id: 'Task_fixed', type: 'bpmn:Task' });
+      const originalX = task.position.x;
+      const layout = engine.getLayoutModel(context.id);
+      layout.nodes.get(task.id)!.bounds.x = 999;
+      refreshLayoutGeometry(layout);
+      await fs.rm(directory, { recursive: true, force: true });
+      await fs.writeFile(directory, 'blocks directory recreation', 'utf8');
+
+      await expect(engine.applyLayoutModel(context.id, layout)).rejects.toThrow();
+      expect(context.elements.get(task.id)!.position.x).toBe(originalX);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
