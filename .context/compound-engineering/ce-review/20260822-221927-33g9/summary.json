@@ -1,0 +1,38 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "README.md (installation, capability, dependency, performance, and limitation claims)",
+    "scripts/package-smoke.mjs (README drift and documented entrypoint checks)"
+  ],
+  "intent": "Replace unsupported release-facing README claims with verified source and tarball setup, an exhaustive advertised-tool inventory, explicit BPMN and browser boundaries, and a reproducible artifact measurement.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "adversarial"
+  ],
+  "findings": [],
+  "applied_fixes": [
+    "Expanded the repository-link check to validate clone URLs ending in .git.",
+    "Documented the advertised complex gateway, black-box pool, and cumulative validation-level options.",
+    "Removed the GitHub Discussions support link after live verification returned HTTP 404."
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [],
+  "coverage": {
+    "suppressed_findings": 0,
+    "residual_risks": [],
+    "testing_gaps": [],
+    "failed_reviewers": [],
+    "untracked_excluded": [
+      ".context/ content unrelated to this review",
+      "all working-tree changes unrelated to mcp-bpmn-33g.9"
+    ]
+  },
+  "agent_native": "Pass: README tool headings are checked directly against the tools/list source of truth and no agent capability changed.",
+  "learnings": "No docs/solutions directory or critical-patterns document exists in this repository.",
+  "verdict": "Ready to merge"
+}

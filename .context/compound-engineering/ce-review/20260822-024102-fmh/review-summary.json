@@ -1,0 +1,45 @@
+{
+  "mode": "autofix",
+  "scope": "mcp-bpmn-fmh event-definition implementation hunks only",
+  "intent": "Render legal BPMN event definitions with required payloads and resolvable root references, preserving them through round trips.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "security",
+    "api-contract",
+    "adversarial",
+    "kieran-typescript",
+    "code-simplicity"
+  ],
+  "findings": [
+    {
+      "title": "Invalid custom IDs fail after serialization",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 1054,
+      "why_it_matters": "A client could provide an ID containing whitespace, causing a late unresolved-reference error instead of an actionable input error.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Validate custom event-definition and root-reference IDs against the documented safe BPMN ID subset before serialization.",
+      "confidence": 0.98,
+      "evidence": [
+        "A message reference ID of 'bad id' reached bpmn-moddle and failed as 'Retained BPMN mutation produced invalid references: bad id'.",
+        "The engine now rejects the same input before serialization and the focused atomic-mutation test preserves XML and state."
+      ],
+      "pre_existing": false,
+      "status": "fixed"
+    }
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [],
+  "residual_risks": [],
+  "testing_gaps": [],
+  "learnings": "No docs/solutions directory or critical-patterns file exists in this repository.",
+  "agent_native": "Pass: add_event advertises the payload, handler implements it, README documents it, and get_element exposes normalized properties.",
+  "verdict": "Ready to merge after final verification"
+}

@@ -1,0 +1,89 @@
+{
+  "reviewer": "learnings-researcher",
+  "search_context": {
+    "feature_task": "mcp-bpmn-iqf.3 MCP output schemas and structuredContent for machine-readable tool results",
+    "keywords": [
+      "MCP",
+      "output schema",
+      "outputSchema",
+      "structured content",
+      "structuredContent",
+      "machine-readable",
+      "API contract",
+      "tool result",
+      "protocol",
+      "serialization",
+      "schema/result parity",
+      "validation"
+    ],
+    "workflow": "grep-first frontmatter filtering",
+    "searched_paths": [
+      "docs/solutions/",
+      "docs/solutions/patterns/critical-patterns.md"
+    ],
+    "searches": [
+      {
+        "frontmatter_field": "title",
+        "terms": [
+          "mcp",
+          "output",
+          "schema",
+          "structured",
+          "api",
+          "contract",
+          "tool",
+          "machine-readable"
+        ],
+        "result": "not-run-directory-absent"
+      },
+      {
+        "frontmatter_field": "tags|module|component",
+        "terms": [
+          "mcp",
+          "output",
+          "schema",
+          "structured",
+          "api",
+          "contract",
+          "tool",
+          "protocol",
+          "serialization",
+          "validation"
+        ],
+        "result": "not-run-directory-absent"
+      },
+      {
+        "frontmatter_field": "symptoms|root_cause",
+        "terms": [
+          "mcp",
+          "output",
+          "schema",
+          "structured",
+          "api",
+          "contract",
+          "tool",
+          "protocol",
+          "serialization",
+          "validation",
+          "parity"
+        ],
+        "result": "not-run-directory-absent"
+      }
+    ],
+    "files_scanned": 0,
+    "relevant_matches": 0,
+    "status": "knowledge-base-absent"
+  },
+  "critical_patterns": {
+    "status": "not-found",
+    "path": "docs/solutions/patterns/critical-patterns.md",
+    "summary": "The docs/solutions/ directory is absent in this checkout, so there is no critical-patterns file to apply."
+  },
+  "matches": [],
+  "recommendations": [
+    "No repository-documented institutional learnings are available for MCP output schemas, structuredContent, or API-contract parity; review against the issue acceptance criteria, the MCP SDK contract, and executable tools/list plus tools/call tests.",
+    "Treat each advertised outputSchema and its corresponding successful structuredContent as one public contract: field names, requiredness, defaults, nullability, identifiers, pagination metadata, validation issues, and XML/SVG metadata should agree exactly.",
+    "Verify compatibility and protocol boundaries explicitly: retain useful text content, keep binary or embedded SVG payloads in MCP content while exposing only safe metadata structurally, and confirm error responses remain protocol-compliant rather than being forced into success schemas.",
+    "Exercise every advertised tool through the real server boundary so schema/result parity cannot drift between tool registration, handler dispatch, and serialized responses."
+  ]
+}

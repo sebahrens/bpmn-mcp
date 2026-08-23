@@ -1,0 +1,49 @@
+{
+  "reviewer": "agent-native",
+  "findings": [
+    {
+      "title": "MCP tools discard connection ownership metadata",
+      "severity": "P2",
+      "file": "src/server/handlers.ts",
+      "line": 371,
+      "why_it_matters": "SimpleBpmnEngine.connect returns the created connection id, type, ownerId, scopeId, source, and target, but the MCP handler reduces it to a prose acknowledgement. list_elements and get_element expose element processRef/ownerId/scopeId, yet expose only connection counts or endpoint ids. After an agent invokes connect, it cannot reliably verify which flow was created or inspect its semantic owner/scope/type without exporting and parsing the entire XML.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Return structured connection metadata from connect and include type, ownerId, scopeId, label, source, and target in connection queries (or add a get_connection/list_connections primitive). This review intentionally does not require adding public connection-kind classification, which is tracked by mcp-bpmn-d6u.",
+      "confidence": 0.96,
+      "evidence": [
+        "SimpleBpmnEngine.connect constructs BpmnDocumentConnection with id/type/ownerId/scopeId at src/core/SimpleBpmnEngine.ts:210-221 and returns it at line 225.",
+        "BpmnRequestHandler.connect calls the engine at src/server/handlers.ts:371 but returns only 'Connected source to target' at lines 378-385.",
+        "listElements/getElement expose element ownerId/scopeId/processRef but list only has incoming/outgoing counts and get only endpoint ids at src/server/handlers.ts:438-491."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Pool creation does not return the generated processRef",
+      "severity": "P3",
+      "file": "src/server/handlers.ts",
+      "line": 404,
+      "why_it_matters": "For a normal pool, the engine generates a process root (for example Participant_1_Process), but add_pool returns only the participant id. An agent must issue a second list_elements/get_element call before it can target ownerId/scopeId in add_activity/add_event/add_gateway. The metadata is discoverable, so this is an ergonomics gap rather than a hard capability blocker; black-box pools correctly have no processRef.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Return the created participant's structured metadata, including processRef (or explicitly null for black-box participants), ownerId, and scopeId, while retaining the current human-readable text if needed.",
+      "confidence": 0.94,
+      "evidence": [
+        "addPool passes blackBox into createElement and receives the participant at src/server/handlers.ts:388-404.",
+        "The response at src/server/handlers.ts:406-412 interpolates only name and id; list/get are the only MCP paths that expose participant.processRef."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Element creation tools expose ownerId and scopeId and list/get expose participant processRef, so agents can discover and invoke scoped element actions through the current tool surface.",
+    "Public cross-process MessageFlow classification remains intentionally deferred to mcp-bpmn-d6u and is not treated as a finding for mcp-bpmn-9sv.2.",
+    "The MCP server has no dynamic system-prompt context injection; agents must use current/list_elements/get_element as discovery primitives."
+  ],
+  "testing_gaps": [
+    "No handler-level test asserts that connect returns inspectable connection metadata.",
+    "No handler-level test asserts that add_pool's response gives an agent the generated processRef or explicit black-box absence; current processRef assertions query the engine or list_elements separately."
+  ]
+}

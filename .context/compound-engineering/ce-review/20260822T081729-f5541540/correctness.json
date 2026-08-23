@@ -1,0 +1,10 @@
+{
+  "reviewer": "correctness",
+  "findings": [],
+  "residual_risks": [
+    "The environment-variable isolation relies on Jest completing each suite's afterEach before another sandbox is created in the same process; standard Jest file workers provide this, but nested or concurrent sandbox use would require a stack-safe isolation helper."
+  ],
+  "testing_gaps": [
+    "No targeted helper test exercises cleanup after module-import or engine-construction failure, or verifies restoration when MCP_BPMN_DIAGRAMS_PATH was initially set."
+  ]
+}

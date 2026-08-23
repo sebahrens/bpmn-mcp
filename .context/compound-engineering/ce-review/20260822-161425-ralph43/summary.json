@@ -1,0 +1,45 @@
+{
+  "mode": "autofix",
+  "scope": "mcp-bpmn-cpt multi-instance loop characteristics",
+  "intent": "Add portable typed BPMN multi-instance authoring, validation, serialization, import/update/reopen preservation, and matching MCP documentation.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings-researcher",
+    "api-contract",
+    "security",
+    "adversarial",
+    "typescript"
+  ],
+  "findings": [
+    {
+      "title": "Imported expression shape was not reusable by update_element",
+      "severity": "P2",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 1968,
+      "confidence": 0.95,
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "why_it_matters": "get_element exposed an internal expression type field that the strict update_element schema rejected, preventing agents from reusing the returned multi-instance configuration.",
+      "evidence": [
+        "readLoopExpression returned type while loopExpression in src/server/tools.ts accepts only body and language."
+      ],
+      "suggested_fix": "Keep the public expression shape to body/language and always serialize it as bpmn:FormalExpression."
+    }
+  ],
+  "applied_fixes": [
+    "Removed the internal type field from imported public properties and standardized authored/imported loop expressions as bpmn:FormalExpression."
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [],
+  "testing_gaps": [],
+  "residual_risks": [],
+  "learnings": "No docs/solutions directory exists in this repository.",
+  "agent_native": "Pass: multi-instance create/update is advertised through the MCP tool schema, returned by get_element, and documented with a copyable request shape.",
+  "verdict": "Ready to merge after required gates pass"
+}

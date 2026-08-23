@@ -1,0 +1,47 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Dead AutoLayout remains in coverage totals",
+      "severity": "P2",
+      "file": "jest.config.js",
+      "line": 44,
+      "why_it_matters": "The new comment and per-file thresholds present the report as scoped to production-reachable modules, but collectCoverageFrom still includes src/utils/AutoLayout.ts through src/**/*.ts. Aggregate coverage output therefore continues to count the dead module, so published totals do not represent the stated live-code scope and can drive misleading regressions or compensating tests for unreachable code.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add !src/utils/AutoLayout.ts to collectCoverageFrom (and verify whether the likewise unimported AutoLayoutEnhanced.ts belongs to the same exclusion), then rerun the focused coverage command.",
+      "confidence": 0.98,
+      "evidence": [
+        "jest.config.js:36-40 collects every src/**/*.ts file except declarations and test-example.ts.",
+        "jest.config.js:44-46 says legacy AutoLayout is not counted as live coverage, but the diff adds no negative collectCoverageFrom pattern for it.",
+        "Repository search finds src/utils/AutoLayout.ts defining AutoLayout with no production import of that module."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Disconnected layouts may overlap undetected",
+      "severity": "P2",
+      "file": "tests/unit/core/LayoutEngine.test.ts",
+      "line": 38,
+      "why_it_matters": "A regression that assigns alpha and bravo the same bounds, and likewise charlie and delta, still satisfies normalized determinism, the same-rank x assertions, and validateLayoutModel. The test would remain green while disconnected components render directly on top of one another, defeating the placement behavior named by the test.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Assert that the component nodes at each shared rank have disjoint vertical bounds (or compare complete component bounding boxes for non-overlap), while retaining the reorder determinism assertion.",
+      "confidence": 0.96,
+      "evidence": [
+        "tests/unit/core/LayoutEngine.test.ts:37 only proves reversed input yields the same normalized output; it does not prove that output is spatially usable.",
+        "tests/unit/core/LayoutEngine.test.ts:38-39 assert equal x coordinates for same-rank nodes but make no assertion about their y separation or bounding-box overlap.",
+        "validateLayoutModel checks structural and finite geometry invariants but does not reject overlapping node bounds, so line 40 does not close this gap."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The repository's aggregate test:all/check scripts invoke Jest without coverage collection, so these thresholds are enforced only when the explicit test:coverage or equivalent --coverage command runs."
+  ],
+  "testing_gaps": [
+    "The disconnected-component case has no assertion that separately rooted components occupy non-overlapping geometry."
+  ]
+}

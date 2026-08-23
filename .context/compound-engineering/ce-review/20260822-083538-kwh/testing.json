@@ -1,0 +1,27 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Refresh pinned protocol schema fingerprints",
+      "severity": "P1",
+      "file": "tests/e2e/server.test.ts",
+      "line": 45,
+      "why_it_matters": "The end-to-end protocol test pins every advertised input schema. The new Zod conversion intentionally adds strict-object constraints and other generated schema details, so its current hashes no longer match the schemas served after a build; the contributor/CI all-tests command will fail before it can validate the change.",
+      "autofix_class": "gated_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Regenerate and review EXPECTED_SCHEMA_FINGERPRINTS from the built Zod-derived tools, then run the e2e protocol test (or npm run test:all) to confirm the intended public schemas are pinned.",
+      "confidence": 0.99,
+      "evidence": [
+        "src/server/tools.ts:327-331 now advertises schemas produced by zodToJsonSchema; each source-derived tool schema has additionalProperties: false (for example, new_bpmn hashes to fdd48f... rather than the e2e expectation 021771...).",
+        "tests/e2e/server.test.ts:42-45 states that fingerprints pin complete advertised input schemas, and lines 501-509 compare every tools/list schema to the unchanged constants.",
+        "All 24 source-derived schema hashes differ from the corresponding unchanged expected values, so the single e2e test will deterministically fail after dist is rebuilt."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "tests/security/request-validation.test.ts covers strictness for top-level objects and position/size, but does not directly reject unknown keys in add_event.eventDefinitionPayload or its reference, timer, and condition children. Add representative runtime and advertised-schema cases so the stated strict-nested-object guarantee cannot regress outside geometry."
+  ]
+}

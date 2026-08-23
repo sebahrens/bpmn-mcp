@@ -1,0 +1,69 @@
+{
+  "reviewer": "agent-native",
+  "findings": [
+    {
+      "title": "Conditional sequence flows are create-only through MCP",
+      "severity": "P1",
+      "file": "src/server/tools.ts",
+      "line": 369,
+      "why_it_matters": "An MCP agent can create a conditional flow, but cannot change or clear its expression/language, rename it, retarget it, or delete just that flow. update_element and delete_element accept an elementId and route to element-only engine methods, while no connection update/delete tools exist. The only MCP workaround for a bad condition is deleting one of its endpoint elements, which also destroys unrelated flows and is not a safe parity action.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "confidence": 1.0,
+      "evidence": [
+        "The public tool list provides connect plus update_element/delete_element, but no update_connection or delete_connection operation (src/server/tools.ts:232-272 and :369-411).",
+        "BpmnRequestHandler.updateElement and deleteElement call engine.updateElement/deleteElement with an elementId (src/server/handlers.ts:535-560); those engine methods look only in document elements/lanes and reject a sequence-flow ID as not found (src/core/SimpleBpmnEngine.ts:366-383 and :428-445).",
+        "BpmnDocumentConnection stores label and condition metadata (src/types/index.ts:109-123), but SimpleBpmnEngine exposes no corresponding public mutation method."
+      ],
+      "pre_existing": false,
+      "suggested_fix": "Add connection lifecycle tools and engine operations that can update/clear label and condition metadata and delete a connection atomically. Reuse the current conditional/default validation, clear a source's default reference when its flow is deleted, and return the resulting structured connection for verification."
+    },
+    {
+      "title": "Default-flow reassignment exists only as an undocumented properties escape hatch",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "line": 369,
+      "why_it_matters": "The engine can reassign or clear a source's default flow through properties.defaultFlow, but neither the MCP schema nor README tells an agent that this key exists, that it must contain an outgoing sequence-flow ID, or that null clears it. Agents therefore see an isDefault creation flag but no discoverable inverse or reassignment action, despite the implementation accepting one through an untyped object.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "confidence": 0.99,
+      "evidence": [
+        "update_element describes properties only as an arbitrary object with 'Properties to update' (src/server/tools.ts:369-387), and the README example shows only an assignee property (README.md:244-252).",
+        "SimpleBpmnEngine.updateElement specially interprets properties.defaultFlow/default and accepts null to clear it (src/core/SimpleBpmnEngine.ts:390-421), behavior not represented in the public schema or docs.",
+        "The MCP schema documents isDefault only on connect (src/server/tools.ts:264-268), so tool discovery exposes creation but not reassignment/clear semantics."
+      ],
+      "pre_existing": false,
+      "suggested_fix": "Expose an explicit set_default_flow action (flow ID or null), or add a typed defaultFlow field to update_element with the ID/null semantics and source restrictions documented. Add a handler-level reassign/clear/reopen test."
+    },
+    {
+      "title": "Connection creation and discovery do not provide a stable flow handle",
+      "severity": "P2",
+      "file": "src/server/handlers.ts",
+      "line": 371,
+      "why_it_matters": "connect discards the engine's returned connection and acknowledges only the endpoint IDs. list_elements exposes counts rather than flows, get_element cannot accept a flow ID, and condition details are available only by querying the source element's outgoing list. An agent can eventually inspect a known source, but cannot directly bind a successful call to the exact generated flow or retrieve an already known flow ID; this becomes ambiguous with repeated endpoints or overlapping callers and blocks safe follow-up manipulation.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "confidence": 0.98,
+      "evidence": [
+        "SimpleBpmnEngine.connect returns BpmnDocumentConnection, including generated id, type, owner/scope, label, and condition (src/core/SimpleBpmnEngine.ts:268-279), but BpmnRequestHandler.connect ignores that return and emits prose only (src/server/handlers.ts:371-383).",
+        "list_elements returns only incoming/outgoing counts and a source defaultFlow ID (src/server/handlers.ts:453-469).",
+        "get_element resolves only elements/lanes and exposes condition metadata only inside a source element's outgoing array (src/server/handlers.ts:482-523)."
+      ],
+      "pre_existing": false,
+      "suggested_fix": "Return structured connection metadata from connect and add get_connection/list_connections primitives (or make get_element explicitly accept connection IDs). Include id, type, source, target, ownerId, scopeId, label, condition, and isDefault."
+    }
+  ],
+  "residual_risks": [
+    "connect descriptions do not enumerate the engine's eligible conditional/default sources: tasks, subprocesses/call activities, and exclusive/inclusive/complex gateways are accepted, while parallel/event-based gateways and events are rejected only at runtime.",
+    "get_element omits condition metadata on incoming records, so inspecting a target does not reveal why the path enters it; an agent must identify and query every source instead."
+  ],
+  "testing_gaps": [
+    "No handler/e2e test exercises default-flow reassignment or clearing through the MCP request surface; the focused coverage calls SimpleBpmnEngine.updateElement directly.",
+    "No test covers editing or deleting a conditional flow because those MCP capabilities do not exist.",
+    "No test requires connect to return the generated flow ID and condition/default metadata.",
+    "The focused command `npx jest tests/integration/handlers.test.ts tests/unit/core/SimpleBpmnEngine.test.ts --runInBand` currently fails TypeScript compilation at tests/unit/core/SimpleBpmnEngine.test.ts:894 because BpmnDocumentElement is a union and defaultFlow is read without narrowing to kind === 'flowNode'; the handler suite passes."
+  ]
+}

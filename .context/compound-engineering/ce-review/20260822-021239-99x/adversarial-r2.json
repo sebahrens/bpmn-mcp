@@ -1,0 +1,38 @@
+{
+  "reviewer": "adversarial-r2",
+  "findings": [],
+  "prior_findings": [
+    {
+      "title": "First save destroys opaque metadata on imported condition expressions",
+      "prior_severity": "P1",
+      "status": "resolved",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 845,
+      "confidence": 1.0,
+      "evidence": [
+        "applyConnectionProperties now reuses semantic.conditionExpression whenever its moddle type matches, mutating only body, language, and evaluatesToTypeRef before assigning the same object back at src/core/BpmnDocument.ts:845-861.",
+        "The focused regression 'preserves opaque metadata on an imported formal condition during updates' passed and asserts expression ID plus vendor extension retention.",
+        "Manual import -> autosave -> unrelated update -> save -> loadDiagram -> export replay preserved id Expr_1, documentation 'keep me', vendor:metadata flag='yes', and body 'amount > 0'."
+      ]
+    },
+    {
+      "title": "Alias precedence persists a different default-flow decision than the request expresses",
+      "prior_severity": "P2",
+      "status": "resolved",
+      "file": "src/server/handlers.ts",
+      "line": 371,
+      "confidence": 1.0,
+      "evidence": [
+        "BpmnConnectOptions and the connect handler now expose and forward only isDefault; the undocumented default/defaultFlow connect aliases and their nullish precedence chain are gone (src/types/index.ts:104-109, src/server/handlers.ts:359-376).",
+        "Default reassignment/clearing is now a single typed top-level BpmnElementUpdate.defaultFlow field, and updateElement uses presence-based detection so explicit null clears rather than falling through to another alias (src/types/index.ts:111-116, src/core/SimpleBpmnEngine.ts:377-409).",
+        "The focused public-handler condition/default test passed, including top-level defaultFlow:null clearing in persisted XML; a manual canonical isDefault create followed by top-level null clear also exported with source.default undefined."
+      ]
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [],
+  "verification": {
+    "command": "npx jest tests/unit/core/SimpleBpmnEngine.test.ts tests/integration/handlers.test.ts --runInBand --testNamePattern='preserves opaque metadata|pass condition metadata'",
+    "result": "2 suites passed; 2 tests passed; 70 skipped"
+  }
+}

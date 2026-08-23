@@ -1,0 +1,29 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Mermaid file open is falsely asserted idempotent",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "line": 593,
+      "why_it_matters": "Clients may automatically retry a tool advertised as idempotent. Each successful open_mermaid_file call imports the Mermaid source into a newly UUID-named BPMN file, so a retry creates another persisted diagram and has an additional environmental effect. The exhaustive tuple test repeats the incorrect expectation without exercising this path.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Advertise open_mermaid_file with idempotentHint: false (the additive tuple), and add a behavioral probe that opens the same Mermaid fixture twice and asserts two distinct output filenames/files.",
+      "confidence": 0.99,
+      "evidence": [
+        "src/server/handlers.ts:298-313 routes every open_mermaid_file call through engine.importXml rather than reopening a stable BPMN target.",
+        "src/core/SimpleBpmnEngine.ts:931-932 assigns defaultFilename(context) and persists the imported diagram; src/core/SimpleBpmnEngine.ts:1430-1441 includes a fresh IdGenerator.generateUuid() in every default filename.",
+        "tests/contracts/tool-annotations.test.ts:52 expects IDEMPOTENT_UPDATE, while the idempotency probe at lines 152-170 exercises only update_element and save."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The tools/list checks for npm start, the optional bundle, and the packed executable were inspected in scripts/package-smoke.mjs but not executed because the review was constrained to be read-only and that script cleans and rebuilds dist."
+  ],
+  "testing_gaps": [
+    "Repeat open_mermaid_file with identical arguments and assert that the advertised idempotency value matches the additional UUID-backed persisted file effect."
+  ]
+}

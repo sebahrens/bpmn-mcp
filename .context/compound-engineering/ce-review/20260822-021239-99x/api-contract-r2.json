@@ -1,0 +1,79 @@
+{
+  "reviewer": "api-contract",
+  "round": 2,
+  "findings": [],
+  "dispositions": [
+    {
+      "prior_title": "The documented conditional-flow example is rejected by the runtime",
+      "prior_severity": "P2",
+      "status": "resolved",
+      "evidence": [
+        "README.md:190 now uses ExclusiveGateway_1 as the conditional-flow source.",
+        "README.md:200-201 documents the supported activity and exclusive/inclusive/complex gateway sources and the condition/default exclusion."
+      ]
+    },
+    {
+      "prior_title": "BpmnConnectOptions accepts condition types that always fail at runtime",
+      "prior_severity": "P2",
+      "status": "resolved",
+      "evidence": [
+        "src/types/index.ts:104-109 narrows conditionType to the canonical bpmn:FormalExpression literal.",
+        "src/server/tools.ts:259-262 advertises the same single conditionType value."
+      ]
+    },
+    {
+      "prior_title": "The public BpmnEngine facade cannot pass condition or default-flow options",
+      "prior_severity": "P2",
+      "status": "resolved",
+      "evidence": [
+        "src/core/BpmnEngine.ts:45-53 mirrors and forwards the SimpleBpmnEngine type/options parameters and returns BpmnDocumentConnection.",
+        "tests/integration/BpmnEngine.test.ts:114-132 verifies conditional and default-flow creation through the facade."
+      ]
+    },
+    {
+      "prior_title": "The MCP connect schema accepts argument combinations the handler rejects",
+      "prior_severity": "P2",
+      "status": "resolved",
+      "evidence": [
+        "src/server/tools.ts:249-267 now states that condition excludes isDefault and that conditionLanguage/conditionType require condition.",
+        "The published descriptions match the runtime dependency rules while remaining compatible with the MCP tool-schema subset used by the project."
+      ]
+    },
+    {
+      "prior_title": "Undocumented default aliases have different conflict semantics at the MCP boundary",
+      "prior_severity": "P2",
+      "status": "resolved",
+      "evidence": [
+        "src/server/handlers.ts:359-376 forwards only the advertised isDefault field.",
+        "src/types/index.ts:104-109 and src/server/tools.ts:264-267 expose only isDefault; default and defaultFlow connect aliases are absent."
+      ]
+    },
+    {
+      "prior_title": "Condition/default results are not exposed through a complete query contract",
+      "prior_severity": "P2",
+      "status": "resolved_for_scope",
+      "evidence": [
+        "src/server/handlers.ts:503-521 exposes defaultFlow and outgoing condition/isDefault metadata through get_element, and list_elements exposes defaultFlow at lines 453-469.",
+        "src/types/index.ts:111-116, src/server/tools.ts:386-392, src/server/handlers.ts:535-542, and README.md:247-256 now define one explicit defaultFlow reassignment/clear contract.",
+        "A standalone connection CRUD/query contract or structured connect response is broader than the condition/default-flow bead and remains advisory."
+      ]
+    }
+  ],
+  "residual_risks": [
+    "The connect success response remains human-readable prose without the generated connection ID, and incoming connection projections remain less detailed than outgoing projections; complete connection CRUD/query semantics are advisory outside this bead.",
+    "The dependency rules are documented in property descriptions rather than structurally encoded, so clients that ignore descriptions can still construct requests rejected at runtime."
+  ],
+  "testing_gaps": [
+    "No compile-only external-consumer fixture pins the BpmnConnectOptions declaration, although npm run type-check and facade integration coverage exercise the current type path.",
+    "No end-to-end MCP test asserts condition/default metadata through tools/call followed by list_elements/get_element; current focused coverage is at handler and engine integration levels."
+  ],
+  "validation": {
+    "commands": [
+      "npm test -- --runInBand tests/integration/BpmnEngine.test.ts tests/integration/handlers.test.ts",
+      "npm run type-check"
+    ],
+    "result": "passed",
+    "test_suites": 2,
+    "tests": 35
+  }
+}

@@ -1,0 +1,125 @@
+{
+  "reviewer": "api-contract",
+  "findings": [
+    {
+      "title": "The documented conditional-flow example is rejected by the runtime",
+      "severity": "P2",
+      "file": "README.md",
+      "line": 190,
+      "why_it_matters": "The API reference shows a StartEvent source together with a condition expression, but SimpleBpmnEngine explicitly rejects conditional outgoing flows from start events. A client copying the canonical example receives an error instead of the advertised connection, and neither the README nor the MCP schema identifies the limited set of eligible conditional/default sources.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Use an activity or supported gateway as the source in the example and document the accepted sources for conditions/defaults (tasks, subprocesses/call activities, and exclusive/inclusive/complex gateways). Add a documentation contract test or executable example that invokes the shown request.",
+      "confidence": 1.0,
+      "evidence": [
+        "README.md:190-196 combines sourceId StartEvent_1 with condition amount > 1000 in the connect example.",
+        "src/core/BpmnDocument.ts:65-70 limits supportsConditionalOutgoingFlow to tasks, subprocess/call activity, and exclusive/inclusive/complex gateways.",
+        "src/core/SimpleBpmnEngine.ts:256-258 rejects a condition when that predicate is false."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "BpmnConnectOptions accepts condition types that always fail at runtime",
+      "severity": "P2",
+      "file": "src/types/index.ts",
+      "line": 107,
+      "why_it_matters": "The exported TypeScript contract declares conditionType as any string, so values such as `camunda:Expression` type-check for direct SimpleBpmnEngine consumers but are rejected during connect. This defeats the purpose of the newly exported options type and conflicts with the narrower MCP enum.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Narrow BpmnConnectOptions.conditionType to the three accepted input spellings, or expose only the canonical `bpmn:FormalExpression` and remove undocumented aliases. Add a compile-time contract fixture and runtime cases for every declared value.",
+      "confidence": 1.0,
+      "evidence": [
+        "src/types/index.ts:104-110 exports conditionType?: string.",
+        "src/core/SimpleBpmnEngine.ts:981-986 accepts only FormalExpression, bpmn:FormalExpression, and bpmn:tFormalExpression and throws for every other string.",
+        "src/server/tools.ts:259-262 advertises only bpmn:FormalExpression to MCP clients."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "The public BpmnEngine facade cannot pass condition or default-flow options",
+      "severity": "P2",
+      "file": "src/core/BpmnEngine.ts",
+      "line": 39,
+      "why_it_matters": "BpmnEngine is the existing public compatibility wrapper used by repository consumers, but its connect method still exposes only the legacy four-argument signature. Callers using that facade cannot access the newly exported BpmnConnectOptions without abandoning the facade and importing SimpleBpmnEngine directly, leaving two public engine entry points with different capabilities.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Mirror the compatible SimpleBpmnEngine overload/options parameters on BpmnEngine.connect and forward them unchanged, while preserving the four-argument call. Add contract tests through both BpmnEngine and BpmnModdleEngine for legacy and options-based calls.",
+      "confidence": 0.99,
+      "evidence": [
+        "src/core/BpmnEngine.ts:39-40 declares connect(processId, sourceId, targetId, label?) and forwards only those four arguments.",
+        "src/core/SimpleBpmnEngine.ts:174-181 adds typeOrOptions and options parameters using the exported BpmnConnectOptions type.",
+        "tests/integration/BpmnEngine.test.ts exercises the facade only with the legacy signature; all condition/default tests instantiate SimpleBpmnEngine or invoke the MCP handler."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "The MCP connect schema accepts argument combinations the handler rejects",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "line": 249,
+      "why_it_matters": "conditionLanguage and conditionType are independently optional in the advertised JSON Schema, and the schema also permits condition together with isDefault=true. These requests validate against the published tool contract but fail in SimpleBpmnEngine, so schema-driven clients cannot determine valid requests without relying on prose or trial and error.",
+      "autofix_class": "gated_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Express that language/type require condition and that isDefault=true excludes condition using the MCP-supported JSON Schema keywords; if the supported schema subset cannot encode this, make the dependency explicit in every affected property description and add schema-vs-handler contract cases for the invalid combinations.",
+      "confidence": 0.99,
+      "evidence": [
+        "src/server/tools.ts:249-268 declares the four fields independently and contains no dependentRequired, allOf, if/then, or not constraints.",
+        "src/core/SimpleBpmnEngine.ts:968-970 rejects language/type without condition.",
+        "src/core/SimpleBpmnEngine.ts:265-266 rejects a default flow carrying a condition."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Undocumented default aliases have different conflict semantics at the MCP boundary",
+      "severity": "P2",
+      "file": "src/server/handlers.ts",
+      "line": 375,
+      "why_it_matters": "The handler silently accepts `default` and `defaultFlow` even though the MCP schema and README expose only `isDefault`; the exported options type mentions only `default`. It then coalesces the aliases into one isDefault value, so a conflicting request such as isDefault=false plus default=true is silently treated as false, whereas the direct engine contract rejects conflicting isDefault/default values. Identical concepts therefore behave differently depending on entry point.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Choose one canonical MCP name. Either remove hidden aliases at the handler boundary, or advertise and validate the supported compatibility alias consistently, forward both values so the engine can detect conflicts, and remove the untyped defaultFlow spelling unless it is intentionally part of the contract.",
+      "confidence": 1.0,
+      "evidence": [
+        "src/server/handlers.ts:371-376 maps isDefault ?? args.default ?? args.defaultFlow into only the isDefault option.",
+        "src/server/tools.ts:264-267 and README.md:196 advertise only isDefault.",
+        "src/types/index.ts:108-110 declares isDefault and default but not defaultFlow, while src/core/SimpleBpmnEngine.ts:193-198 rejects disagreement when both declared aliases reach it."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Condition/default results are not exposed through a complete query contract",
+      "severity": "P2",
+      "file": "src/server/handlers.ts",
+      "line": 378,
+      "why_it_matters": "A successful connect response still returns only prose and omits the generated connection ID, resolved connection type, condition, and default status. list_elements exposes only a source element's defaultFlow ID, while get_element exposes condition/default metadata only on outgoing entries and incoming entries contain just id/source. With no connection query tool or documented output shape, clients cannot reliably identify the created flow or inspect its metadata from an arbitrary endpoint without querying the source and diffing its outgoing array.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Return a structured JSON payload from connect containing the connection ID, resolved type, condition, and isDefault, and define/document a consistent connection projection for list/get (or add a connection query tool). If incoming and outgoing intentionally differ, document that ownership model and provide an outputSchema where supported.",
+      "confidence": 0.97,
+      "evidence": [
+        "src/server/handlers.ts:371-383 discards the returned BpmnDocumentConnection and emits only a human-readable Connected source to target message.",
+        "src/server/handlers.ts:457-469 lists defaultFlow but no connections or conditions; src/server/handlers.ts:513-521 gives rich metadata only to outgoing entries while incoming entries contain id and source.",
+        "README.md:226-242 documents only list_elements/get_element inputs and provides no response shape or connection-discovery semantics."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "BpmnConditionExpression.type remains an unconstrained string because imported moddle expressions can carry types outside the creation subset; consumers need a documented distinction between accepted create inputs and observed imported outputs.",
+    "ProcessContext exposes mutable element and connection maps, allowing direct callers to construct conditional/default combinations that bypass connect and updateElement validation.",
+    "The README describes connect as always creating a sequence flow, while the runtime may infer a message flow across participant boundaries; condition/default rejection then depends on inferred topology that the MCP request cannot select explicitly."
+  ],
+  "testing_gaps": [
+    "No compile-time public API test asserts the declared BpmnConnectOptions value domain or options forwarding through BpmnEngine.",
+    "No MCP contract test compares advertised-schema-valid dependency combinations with handler outcomes, or covers conflicting isDefault/default/defaultFlow spellings.",
+    "No end-to-end MCP test creates a conditional/default flow and verifies its response and subsequent list/get projections; current coverage is handler-level only.",
+    "No contract test asserts a stable structured response shape for connect, list_elements, or get_element, and README examples do not validate output semantics.",
+    "The canonical README connect example is not executed in tests, allowing its unsupported StartEvent condition to remain unnoticed."
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "reviewer": "adversarial",
+  "findings": [
+    {
+      "title": "A valid association to a retained lane makes import fail before any edit",
+      "severity": "P1",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 183,
+      "why_it_matters": "The retained-graph contract accepts valid moddle objects outside the typed mutation API, but an indexed Association is still required to have both endpoints in document.elements during the import autosave. A normal BPMN association from a TextAnnotation to a Lane therefore rejects an otherwise warning-free document solely because Lane is intentionally unindexed. Users cannot open, save, or later mutate such a model without first deleting valid semantics outside the API surface.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Treat a connection whose endpoint is outside the editable index as retained-only (as intended for unsupported SequenceFlows), and do not synthesize/reconcile its typed DI from document.elements. Preserve it in sourceXml unless the user explicitly deletes a tracked object that it references. Add an import-and-unrelated-update regression using a warning-free Association from a supported TextAnnotation to bpmn:Lane.",
+      "confidence": 0.98,
+      "evidence": [
+        "Constructed source: add `<bpmn:textAnnotation id=\"Annotation_A\"><bpmn:text>hi</bpmn:text></bpmn:textAnnotation>` and `<bpmn:association id=\"Assoc_Group_Lane\" sourceRef=\"Annotation_A\" targetRef=\"Lane_Reviewer\" />` to the rich fixture. `new BpmnModdle().fromXML(xml)` returned `warnings: []` and resolved the target as `bpmn:Lane`.",
+        "readArtifactOrAssociation always indexes the Association (src/core/BpmnDocument.ts:1046-1057), while Lane is never added to document.elements because it is outside the supported element set.",
+        "importXml immediately commits the parsed context (src/core/SimpleBpmnEngine.ts:375-376). serialize calls synchronizeDiagramInterchange first (src/core/BpmnDocument.ts:212-215), which throws `Connection Assoc_Group_Lane references a missing source or target` when it looks up both endpoints (lines 182-186). The reproducible engine result is `Failed to parse BPMN XML: malformed or invalid input`."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Deleting a retained node writes dangling lane and secondary-DI references, then blocks the next edit",
+      "severity": "P1",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 418,
+      "why_it_matters": "A deletion is committed to disk even though retained, unindexed objects can still reference the detached semantic. The successful delete is therefore not semantically atomic: it replaces a valid BPMN file with one that has unresolved references. On the next mutation, serializeRetained rejects parser warnings, so the diagram becomes uneditable without manual repair. The same issue leaves a deleted node's shape in every BPMNDiagram after the first one.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Build an explicit reference/dependency index over the full parsed moddle graph before a deletion. Either delete or repair every retained construct that points to deleted IDs (including Lane.flowNodeRef and every diagram plane), or reject the deletion before writing. Reconcile/filter all BPMNDiagram planes, then parse/validate the prospective serialized XML before FileManager.saveBpmnFile commits it.",
+      "confidence": 0.99,
+      "evidence": [
+        "Executable reproduction: import full-semantics-di.bpmn, call deleteElement(context.id, 'Task_Unrelated'), then read the autosaved file. The task and its three indexed flows are absent, but `<bpmn:flowNodeRef>Task_Unrelated</bpmn:flowNodeRef>` remains in Lane_Reviewer. bpmn-moddle reports `unresolved reference <Task_Unrelated>`.",
+        "deleteElement removes only entries in the typed elements/connections maps (src/core/SimpleBpmnEngine.ts:265-315). serializeRetained detaches the missing typed task and flows (src/core/BpmnDocument.ts:418-429), but never examines retained Lane.flowNodeRef or other unindexed references.",
+        "The next export/save/mutation parses the bad sourceXml and aborts on any warning (src/core/BpmnDocument.ts:407-411), turning that successful delete into a repeated-mutation failure rather than rolling it back.",
+        "A lane-free variant with a second valid BPMNDiagram containing `Task_Second_DI` for Task_Unrelated produces the same unresolved-reference warning after deletion: reconcileRetainedDiagram selects only document.diagram / definitions.diagrams[0] (lines 615-616) and filters only that plane (lines 635-645), leaving Task_Second_DI in the other diagram while the semantic task is detached."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The editable model retains only one diagram/plane in BpmnDocument. Add/connect operations place new DI only there, so multi-DI documents may remain internally divergent even when no deletion makes references unresolved.",
+    "The retained graph can contain arbitrary moddle references in extension namespaces and unindexed BPMN constructs; no full-graph dependency traversal is present to determine whether a proposed delete is safe.",
+    "commitMutation clones the typed index but reparses sourceXml and validates it only before applying the mutation. A post-mutation parse is needed to guarantee that an autosaved retained graph is still loadable."
+  ],
+  "testing_gaps": [
+    "Add a warning-free custom/unknown-construct fixture with a supported Association endpoint and bpmn:Lane (or another unindexed valid BaseElement); import it and perform an unrelated add, update, connect, and save.",
+    "Exercise deleteElement against the rich fixture and assert that Lane.flowNodeRef, all reference-bearing extensions, and every BPMNDiagram plane contain no deleted IDs; then reopen the saved file and perform a second mutation.",
+    "Add a multi-root, multi-BPMNDiagram golden case that mutates and deletes a node represented in multiple planes, checking semantic references, shapes, edges, labels, bounds, and waypoints in each diagram.",
+    "Focused import-roundtrip Jest tests and npm run type-check pass, but they cover only one name update and do not execute these retained-reference deletion or multi-DI paths."
+  ]
+}

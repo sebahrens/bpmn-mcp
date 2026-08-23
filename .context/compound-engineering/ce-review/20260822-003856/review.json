@@ -1,0 +1,41 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "README.md",
+    "src/types/index.ts",
+    "src/core/DiagramContext.ts",
+    "src/core/SimpleBpmnEngine.ts",
+    "src/server/handlers.ts",
+    "src/utils/FileManager.ts",
+    "tests/integration/handlers-new.test.ts",
+    "tests/integration/persistence.test.ts"
+  ],
+  "intent": "Implement one atomic autosave contract with a single active filename and rollback-safe model, XML, and disk state for mcp-bpmn-9sv.4.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "security",
+    "api-contract",
+    "reliability",
+    "adversarial",
+    "kieran-typescript"
+  ],
+  "applied_fixes": [
+    "Serialize per-process commits and mutate an isolated document copy so concurrent or failed writes cannot expose or retain partial memory state.",
+    "Use atomic no-clobber linking for save_as destinations created concurrently after the initial existence check.",
+    "Close and unregister a diagram when its active file is deleted.",
+    "Clone document maps in the active Jest realm to preserve the public Map contract."
+  ],
+  "findings": [],
+  "residual_actionable_work": [],
+  "advisory": [
+    "No docs/solutions directory with applicable institutional learnings exists.",
+    "The repository lint command cannot run because no ESLint configuration exists; this is pre-existing and outside the selected bead.",
+    "The full Jest suite retains pre-existing MCP CallToolResult test typing failures outside the selected persistence test, handler, and engine paths."
+  ],
+  "verdict": "Ready to merge"
+}

@@ -1,0 +1,28 @@
+{
+  "mode": "interactive",
+  "scope": "git diff HEAD -- tests/e2e/server.test.ts",
+  "intent": "Replace permissive e2e checks with strict, isolated MCP protocol, lifecycle, schema, and BPMN behavior gates.",
+  "verdict": "ready",
+  "applied_fixes": [
+    "Separated the helper response deadline from Jest's test deadline and added post-start timeout cleanup coverage.",
+    "Added isolated HOME and diagrams roots plus a no-default-directory-write sentinel.",
+    "Pinned complete input schemas, including descriptions, and restored the expected invalid-tool error contract.",
+    "Replaced per-request stdout listeners with a lifetime protocol parser and covered trailing malformed output."
+  ],
+  "residual_findings": [],
+  "suppressed_or_advisory": [
+    {
+      "title": "Opaque hashes hide the asserted schema contract",
+      "reason": "Retained as an intentional compact exact-contract representation; each mismatch identifies the tool and the canonical source schema remains directly reviewable. Expanding 24 schemas into a duplicate fixture would materially increase drift surface."
+    },
+    {
+      "title": "Independent gates are coupled into one long scenario",
+      "reason": "The integrated create/connect/export chain is the bead's required semantic e2e gate and intentionally shares one initialized stateful MCP session; lifecycle failure modes remain separate tests."
+    }
+  ],
+  "final_rereview": {
+    "findings": [],
+    "residual_risks": [],
+    "testing_gaps": []
+  }
+}

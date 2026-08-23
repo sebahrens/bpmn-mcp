@@ -1,0 +1,50 @@
+{
+  "run_id": "20260822-090744-owa1",
+  "mode": "autofix",
+  "scope": "mcp-bpmn-owa.1 property payload validation only in a shared dirty worktree",
+  "intent": "Reject recursive prototype keys and bounded-resource violations before add_activity or update_element can mutate diagram state, while preserving valid documented properties.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "security",
+    "performance",
+    "api-contract",
+    "adversarial",
+    "kieran-typescript"
+  ],
+  "execution_note": "Repository instructions required sequential main-thread review; no reviewer subagents were dispatched.",
+  "applied_fixes": [
+    {
+      "severity": "P1",
+      "file": "src/server/tools.ts",
+      "issue": "Post-copy serialized-size validation allowed branching arrays to allocate before rejection",
+      "route": "safe_auto -> review-fixer",
+      "verification": "Traversal now counts exact UTF-8 JSON bytes incrementally; oversized create and update requests are covered"
+    },
+    {
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "issue": "A non-object property root was rejected only after recursive copying",
+      "route": "safe_auto -> review-fixer",
+      "verification": "Top-level arrays and non-plain objects are rejected before traversal"
+    }
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "Aggregate depth, total-key, and serialized-byte limits are described in the advertised schema because JSON Schema cannot express all aggregate constraints directly; runtime validation remains authoritative.",
+    "No docs/solutions directory or critical-patterns file exists in this checkout, so no institutional learning matched.",
+    "Agent-native parity passed: both mutations advertise and enforce the same property policy at the MCP dispatch boundary."
+  ],
+  "coverage": {
+    "suppressed_findings": 0,
+    "selected_files_reviewed": true,
+    "unrelated_dirty_files_excluded": true,
+    "validation": "Focused property/request/handler suites: 47 passed; npm run type-check passed; npm run test:all passed 361 tests across 25 suites with 6 existing todos.",
+    "unrelated_lint_blocker": "npm run lint cannot start because no ESLint configuration exists; this is the repository's pre-existing tooling state.",
+    "verdict": "Ready to merge"
+  }
+}

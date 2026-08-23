@@ -186,12 +186,20 @@ npx jest tests/security/request-validation.test.ts --runInBand
 ### File operations
 
 Client-supplied file operations accept basenames rather than nested paths.
-`resolveSafeFilePath` in [`src/utils/SafeFilePath.ts`](src/utils/SafeFilePath.ts)
-checks extensions, rejects absolute paths and path separators, anchors the
-candidate beneath the configured root, and rejects existing symbolic links.
-`FileManager` uses that policy for BPMN/Mermaid reads and BPMN writes; the engine
-uses it for deletes. Writes use an adjacent temporary file followed by an
-atomic destination operation.
+`SafeFileStore` in [`src/utils/SafeFilePath.ts`](src/utils/SafeFilePath.ts)
+checks extensions, rejects absolute paths and path separators, and pins the
+configured root's device/inode identity for BPMN/Mermaid reads, BPMN writes,
+and deletes. Operations run relative to that anchored directory in a bounded
+helper process, reject symbolic-link leaves, and never adopt a replaced root
+on retry. Writes use an adjacent temporary file followed by an atomic
+destination operation.
+
+The configured root's identity is trusted at its first successful resolution;
+its parent must therefore not be writable by an untrusted local principal
+before the server starts using it. A process running as the same account can
+still race which in-root entry occupies a basename, but swapping a leaf or the
+configured path to an outside symlink does not redirect reads, writes, or
+deletes outside the pinned root.
 
 Reproduce the containment and persistence checks with:
 
@@ -293,11 +301,19 @@ variables and their defaults:
 - `MCP_BPMN_MAX_LAYOUT_BYTES`
 - `MCP_BPMN_MAX_CONCURRENT_LAYOUTS`
 - `MCP_BPMN_MAX_LISTING_ITEMS`
+- `MCP_BPMN_MAX_LISTING_METADATA_BYTES`
 - `MCP_BPMN_LAYOUT_TIMEOUT_MS`
+- `MCP_BPMN_SHUTDOWN_TIMEOUT_MS`
 
 Invalid, non-positive overrides fall back to source defaults. Consult the
 configuration module instead of duplicating numeric defaults in deployment
 documentation.
+
+The stdio executable handles SIGINT, SIGTERM, and stdin EOF through one
+idempotent shutdown coordinator. It stops accepting tool calls, drains accepted
+handler work and persistence, releases browser/layout subprocesses, and closes
+the transport. The graceful-drain deadline is 15 seconds; a timeout forces a
+nonzero exit.
 
 ## Further references
 

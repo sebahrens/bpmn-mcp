@@ -1,0 +1,51 @@
+{
+  "mode": "autofix",
+  "scope": "mcp-bpmn-97u selected layout integration files in a shared dirty worktree",
+  "intent": "Integrate exact bpmn-auto-layout 2.0.0-alpha.2 behind one typed adapter for manual and Mermaid layout while preserving mutable geometry and surfacing diagnostics.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "reliability",
+    "performance",
+    "api-contract",
+    "adversarial",
+    "kieran-typescript"
+  ],
+  "execution_note": "Repository instructions required sequential main-thread review; no reviewer subagents were dispatched.",
+  "applied_fixes": [
+    {
+      "severity": "P1",
+      "file": "src/server/handlers.ts",
+      "issue": "Mermaid layout warnings were discarded before the MCP response",
+      "route": "safe_auto -> review-fixer",
+      "verification": "Handler-level test covers Mermaid and manual warning visibility"
+    },
+    {
+      "severity": "P2",
+      "file": "src/converters/MermaidConverter.ts",
+      "issue": "ConversionResult element coordinates remained stale after external layout",
+      "route": "safe_auto -> review-fixer",
+      "verification": "Unit test asserts result coordinates match adapter-produced DI"
+    }
+  ],
+  "residual_actionable_work": [],
+  "advisory": [
+    "The selected package remains an alpha; the adapter validates its runtime result and isolates its API.",
+    "A subprocess bridge is bounded to Jest's missing native ESM callback and has explicit removal criteria.",
+    "No docs/solutions directory or critical-patterns file exists in this checkout, so no institutional learning matched."
+  ],
+  "coverage": {
+    "suppressed_findings": 0,
+    "selected_files_reviewed": true,
+    "unrelated_dirty_files_excluded": true,
+    "agent_native": "Both MCP entry paths expose warnings and share the current diagram workspace.",
+    "validation": "Exact focused command: 14 passed; source suite: 326 passed, 6 todo; type-check and build passed; built runtime adapter and Mermaid metadata probe passed.",
+    "unrelated_gate_failure": "npm run test:all reached 331 passing tests and failed only the pre-existing connect schema fingerprint changed by unrelated dirty tools.ts work.",
+    "unrelated_lint_blocker": "npm run lint cannot start because no ESLint configuration exists; this is tracked by open bead mcp-bpmn-xhb.",
+    "verdict": "ready"
+  }
+}

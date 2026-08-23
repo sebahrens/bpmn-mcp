@@ -1,0 +1,48 @@
+{
+  "reviewer": "kieran-typescript",
+  "findings": [
+    {
+      "title": "Serializer bypasses strict types with pervasive any",
+      "severity": "P2",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 210,
+      "why_it_matters": "The new serializer and importer represent every bpmn-moddle semantic object and parsed XML container as any. TypeScript therefore cannot check ownership, scope, root, or reference assignments in the collaboration path; a future field rename or malformed ref can compile and fail only during export or reopen.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "confidence": 0.93,
+      "evidence": [
+        "BpmnDocumentSerializer.serialize declares semanticById as Map<string, any> and rootElements as any[] at src/core/BpmnDocument.ts:210-211.",
+        "The parse path keeps definitions, semantic values, flow containers, shapes, edges, and points as any across src/core/BpmnDocument.ts:388-410 and :521-708.",
+        "The implementation then mutates untyped fields such as participants, messageFlows, flowElements, artifacts, sourceRef, and targetRef; the strict BpmnDocument model cannot constrain those mutations."
+      ],
+      "pre_existing": false,
+      "suggested_fix": "Introduce a small typed semantic facade for the bpmn-moddle objects used here (or use unknown plus narrow type guards) and type parser/DI records explicitly; keep any confined to the external library declaration boundary."
+    },
+    {
+      "title": "Mermaid subgraphs share one process owner",
+      "severity": "P1",
+      "file": "src/core/SimpleBpmnGenerator.ts",
+      "line": 29,
+      "why_it_matters": "A multi-subgraph Mermaid conversion emits multiple participant shapes but assigns every node and sequence flow to one process and gives every participant that same processRef. Reopening the result cannot recover which pool owns a node, and cross-pool edges remain sequence flows instead of collaboration message flows.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "confidence": 0.98,
+      "evidence": [
+        "SimpleBpmnGenerator creates one process document at src/core/SimpleBpmnGenerator.ts:28-29 and assigns every generated element ownerId/scopeId to processId at lines 55-69.",
+        "Every edge is created as bpmn:SequenceFlow with ownerId/scopeId processId before subgraphs are converted at src/core/SimpleBpmnGenerator.ts:79-103.",
+        "Each participant created at src/core/SimpleBpmnGenerator.ts:111-123 uses processRef: processId, so two pools serialize against the same process root."
+      ],
+      "pre_existing": false,
+      "suggested_fix": "Create a process root per subgraph, assign nodes by subgraph membership, and classify same-owner edges as sequence flows while placing cross-owner edges in the collaboration as message flows."
+    }
+  ],
+  "residual_risks": [
+    "The bpmn-moddle declaration itself exposes broad any types, so the typed facade should be the boundary that prevents dynamic semantic objects from spreading through the document model."
+  ],
+  "testing_gaps": [
+    "No compile-time or focused runtime check guards the serializer's semantic facade against missing/incorrect ownership and reference fields.",
+    "No Mermaid conversion test parses two subgraphs and asserts distinct process roots, node ownership, internal sequence flows, and cross-subgraph message flows."
+  ]
+}

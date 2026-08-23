@@ -1,0 +1,9 @@
+{
+  "reviewer": "correctness",
+  "findings": [],
+  "residual_risks": [
+    "The strict query output schemas remain hand-maintained against imported BPMN variants, but the previously demonstrated negative-coordinate and evaluatesToTypeRef failures are now covered by the exhaustive real-server e2e path.",
+    "The exhaustive scenario validates every advertised successful result against its pinned output schema, but it does not deliberately inject an invalid post-mutation result to exercise failure behavior after a side effect."
+  ],
+  "testing_gaps": []
+}

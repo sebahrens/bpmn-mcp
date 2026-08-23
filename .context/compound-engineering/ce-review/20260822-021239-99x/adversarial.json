@@ -1,0 +1,55 @@
+{
+  "reviewer": "adversarial",
+  "findings": [
+    {
+      "title": "First save destroys opaque metadata on imported condition expressions",
+      "severity": "P1",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 855,
+      "why_it_matters": "The retained serializer promises to preserve imported moddle content outside the typed mutation surface, but every typed conditional sequence flow has its conditionExpression replaced with a newly created object. Merely importing, saving, reopening, or renaming an unrelated element therefore deletes valid expression identity and extension semantics that the API never exposed or asked to change.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "For an existing retained sequence flow, mutate only the typed condition fields on its existing conditionExpression and preserve its id, documentation, extensionElements, custom attributes, and other moddle-owned state. Create a new FormalExpression only for a newly created condition, and introduce explicit managed/dirty state before supporting condition replacement or clearing.",
+      "confidence": 1.0,
+      "evidence": [
+        "readConnection reduces an imported expression to body/type/language/evaluatesToTypeRef at src/core/BpmnDocument.ts:1445-1460, so expression id, documentation, extensionElements, and custom attributes have no typed representation.",
+        "serializeRetained calls applyConnectionProperties for every indexed connection, and src/core/BpmnDocument.ts:855 unconditionally assigns semantic.conditionExpression = moddle.create(...), even when the condition was imported and no condition mutation occurred.",
+        "Concrete reproduction: import a task-to-task sequence flow whose bpmn:FormalExpression has id=Expr_1, documentation 'keep me', and a vendor:metadata extension, then immediately export. Before import, bpmn-moddle resolves Expr_1 and both child structures; after the engine's import autosave/export, Expr_1, documentation, and extensionElements are all absent while only the body remains.",
+        "Because importXml immediately runs commitMutation and persists the reconciled XML, the loss occurs before the caller can inspect or reopen the imported document; subsequent save/reopen cycles cannot recover it from sourceXml."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Alias precedence persists a different default-flow decision than the request expresses",
+      "severity": "P2",
+      "file": "src/server/handlers.ts",
+      "line": 375,
+      "why_it_matters": "The engine correctly rejects conflicting isDefault/default values, but the MCP handler collapses three spellings before the engine sees them, while updateElement independently applies nullish precedence to two flow-ID spellings. Contradictory or invalid aliases are therefore silently ignored, so a request to create a default can create an ordinary flow and an explicit request to clear a default can instead assign another flow; autosave makes that unintended routing durable.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Normalize aliases with one shared presence-based resolver before mutation: validate every supplied alias, reject disagreement, and preserve explicit null as the clear operation. Pass both supported connect aliases to the engine conflict check or remove undocumented handler aliases; apply the same conflict rule to defaultFlow/default during update.",
+      "confidence": 1.0,
+      "evidence": [
+        "At src/server/handlers.ts:375, isDefault ?? args.default ?? args.defaultFlow discards all lower-priority supplied values. Thus {isDefault:false, default:true} reaches the engine only as isDefault:false, bypassing SimpleBpmnEngine.ts:196-198, which would reject the conflict if both values were preserved.",
+        "Concrete handler reproduction: connect a task to a target with {isDefault:false, default:true}. The call succeeds, creates one sequence flow, and leaves source.defaultFlow undefined; the saved XML and reopened model therefore encode an ordinary flow despite one alias explicitly requesting a default. An invalid lower-priority alias is masked in the same way.",
+        "At src/core/SimpleBpmnEngine.ts:390-423, updateElement detects either properties.defaultFlow or properties.default but resolves them with defaultFlow ?? default and never compares aliases. {defaultFlow:F1, default:F2} silently assigns F1, and {defaultFlow:null, default:F2} silently assigns F2 rather than clearing.",
+        "All of these paths run inside commitMutation, so successful alias mis-resolution is serialized and atomically saved instead of remaining a transient response-format inconsistency."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Imported defaults or conditions on valid constructs outside the typed index remain intentionally invisible to list/get responses; later typed ownership transitions must continue distinguishing opaque retained references from explicitly cleared managed references.",
+    "ProcessContext exposes mutable element and connection maps, so an in-process caller can bypass source ownership, supported-source, and default-versus-condition checks and rely only on late serializer rejection.",
+    "Imported BpmnConditionExpression.type remains an unrestricted moddle type string; direct typed-model mutation can request an abstract or unknown type even though MCP condition creation restricts the value."
+  ],
+  "testing_gaps": [
+    "No round-trip fixture gives a conditionExpression its own id, documentation, extensionElements, vendor attributes, or other opaque children and compares them after import autosave, unrelated update, save, and reopen.",
+    "No table-driven tests cover every connect alias permutation, conflicting booleans, masked invalid lower-priority values, or update defaultFlow/default conflicts including explicit null clearing, with memory, XML, and reopen assertions.",
+    "Default lifecycle coverage does not delete the active default flow's target after import/reopen and verify source cleanup in get_element, persisted XML, and a second reopen.",
+    "Unsupported conditional-flow coverage exercises a start event and an inferred message flow, but not explicit associations/message flows or independently authored invalid message/association condition XML.",
+    "No retained import fixture exercises a FormalExpression evaluatesToTypeRef together with an opaque ItemDefinition and verifies the reference plus expression metadata across mutation and reopen."
+  ]
+}

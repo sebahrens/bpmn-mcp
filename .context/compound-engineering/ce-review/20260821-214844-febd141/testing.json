@@ -1,0 +1,85 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Mermaid collaboration ownership path has no semantic test",
+      "severity": "P1",
+      "file": "src/core/SimpleBpmnGenerator.ts",
+      "line": 107,
+      "why_it_matters": "The subgraph/collaboration branch creates participants and reuses one process root, but no test parses its output to verify participant processRef, node ownership, flow placement, or collaboration BPMNPlane. A regression can silently collapse Mermaid pools while all current tests remain green.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "confidence": 0.98,
+      "evidence": [
+        "SimpleBpmnGenerator.ts lines 107-128 contain the collaboration-only branch.",
+        "The focused coverage run reports SimpleBpmnGenerator.ts at 0% statements and 0% branches.",
+        "Existing Mermaid integration coverage uses a graph with no subgraphs and only asserts the handler response text."
+      ],
+      "pre_existing": false,
+      "suggested_fix": "Add a generator/converter test with two Mermaid subgraphs that parses the XML with bpmn-moddle and asserts participant types, processRef ownership, flow containers, pool bounds, and collaboration plane target."
+    },
+    {
+      "title": "Sole participant deletion cleanup is untested",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 290,
+      "why_it_matters": "The only participant deletion test exercises the shared-process branch and verifies that the process root survives. The opposite branch removes the process root and owned nodes, so stale process roots, elements, connections, or DI could persist without detection.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "confidence": 0.96,
+      "evidence": [
+        "SimpleBpmnEngine.ts lines 284-297 conditionally delete the process and owned elements when no other participant references it.",
+        "SimpleBpmnEngine.test.ts only tests deleting the first of two participants sharing a process at lines 554-571."
+      ],
+      "pre_existing": false,
+      "suggested_fix": "Add a test with one participant, owned flow nodes, sequence/message flows, and DI; delete the participant and assert the process root, owned elements, connections, and shapes/edges are absent."
+    },
+    {
+      "title": "Black-box pool handler wiring lacks an XML test",
+      "severity": "P2",
+      "file": "src/server/handlers.ts",
+      "line": 388,
+      "why_it_matters": "Black-box behavior is tested only through the engine API. The MCP add_pool wiring and schema path can drop or invert the blackBox argument while direct engine tests still pass, causing the public tool to emit an unwanted processRef or process root.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "confidence": 0.93,
+      "evidence": [
+        "handlers.ts lines 388-404 map the public add_pool blackBox argument into participant properties.",
+        "SimpleBpmnEngine.test.ts lines 463-491 calls createElement directly and does not invoke handler.handleRequest('add_pool', { blackBox: true })."
+      ],
+      "pre_existing": false,
+      "suggested_fix": "Add an integration test that invokes new_bpmn(type=collaboration), add_pool(blackBox=true), parses the export, and asserts a bpmn:Participant with no processRef and no generated process root."
+    },
+    {
+      "title": "Importer rejection branches lack focused fixtures",
+      "severity": "P2",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 562,
+      "why_it_matters": "The importer now explicitly rejects lanes, nested-scope unsupported types, multiple event definitions, and unknown event definitions, but focused tests cover only an unknown flow-node type. A malformed collaboration can therefore change acceptance behavior without a regression test proving the error and non-registration contract.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "confidence": 0.91,
+      "evidence": [
+        "BpmnDocument.ts lines 562-585 reject lane sets and unsupported flow-container items.",
+        "BpmnDocument.ts lines 598-603 reject multiple or unknown event definitions.",
+        "SimpleBpmnEngine.test.ts lines 234-249 cover only a made-up flow-node type and do not exercise these importer branches."
+      ],
+      "pre_existing": false,
+      "suggested_fix": "Add import fixtures/tests for a lane, multiple eventDefinitions, and an unsupported eventDefinition; assert the expected error and that no context/file is registered or written."
+    }
+  ],
+  "residual_risks": [
+    "No focused MCP test proves a public connect request can create a collaboration-level MessageFlow; current MessageFlow assertions call engine.connect directly.",
+    "No focused test rejects an Association across participant ownership or a Participant with an incompatible owner/scope, despite those guards being part of the new mutation contract."
+  ],
+  "testing_gaps": [
+    "Add a black-box Mermaid subgraph round-trip test before relying on pool ownership semantics.",
+    "Cover sole-participant deletion and stale process/DI cleanup.",
+    "Exercise public handler wiring for blackBox pools and collaboration MessageFlows.",
+    "Add malformed collaboration importer fixtures for lanes, unsupported event definitions, and invalid scopes."
+  ]
+}

@@ -1,39 +1,58 @@
 # MCP-BPMN Server
 
-A Model Context Protocol (MCP) server that enables AI agents to create, manipulate, and manage BPMN 2.0 (Business Process Model and Notation) diagrams programmatically.
+A Model Context Protocol (MCP) server for a tested BPMN 2.0 authoring subset,
+including Mermaid conversion, local persistence, layout, validation, and XML or
+SVG export.
 
 ## 🎯 Overview
 
-MCP-BPMN provides a standardized interface for AI assistants to work with business process diagrams. It generates valid BPMN 2.0 XML. Portable BPMN core is the default output contract, with an opt-in typed Camunda 7 profile documented in [ADR 0001](docs/decisions/0001-bpmn-extension-profile.md).
+MCP-BPMN provides a stateful interface for AI assistants to work with one
+business process diagram at a time. It authors well-formed BPMN 2.0 XML for the
+constructs listed below; it is not a complete BPMN 2.0 editor, execution engine,
+or deployment client. Portable BPMN core is the default authoring contract,
+with an opt-in typed Camunda 7 profile documented in
+[ADR 0001](docs/decisions/0001-bpmn-extension-profile.md).
 
 ### Key Features
 
-- ✅ **Complete BPMN 2.0 Support**: Events, activities, gateways, pools, and sequences
-- ✅ **Mermaid to BPMN Conversion**: Bootstrap BPMN diagrams from Mermaid flowcharts
-- ✅ **Smart Auto-Layout**: Automatic positioning with branch handling for gateways
-- ✅ **File Persistence**: Save diagrams locally for editing in visual tools
-- ✅ **Proper Visual Rendering**: Accurate waypoint calculation for connections
-- ✅ **Enterprise-Ready**: Clean API design following BPMN standards
-- ✅ **No Browser Dependencies**: Server-side XML generation
+- **Focused BPMN authoring**: Supported events, activities, gateways, data
+  objects, annotations, pools, top-level lanes, sequence flows, and associations
+- **Mermaid conversion**: Bootstrap diagrams from the documented flowchart subset
+- **Horizontal auto-layout**: Deterministic process and collaboration placement
+- **Local persistence**: Atomically save and reopen diagrams in a configured directory
+- **XML and SVG export**: XML is generated in-process; SVG is rendered through
+  Puppeteer and `bpmn-js`
+- **Portable and Camunda 7 profiles**: Vendor-free output by default, with three
+  typed Camunda 7 user-task fields when explicitly selected
 
 ## 🚀 Quick Start
 
-### Installation
+### Requirements
+
+- Node.js 22.12.0 or newer
+- npm with lockfile support
+- Chrome or Chromium for `export({ format: "svg" })`; the normal Puppeteer
+  install downloads a compatible browser
+
+XML authoring, validation, layout, persistence, and XML export do not launch a
+browser. SVG export does. If the Puppeteer browser download is intentionally
+skipped, set `PUPPETEER_EXECUTABLE_PATH` to a compatible Chrome or Chromium
+executable before starting the server. SVG rendering is headless, limited to
+one concurrent render per server instance, and has a ten-second render timeout.
+
+### Run from a source checkout
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-org/mcp-bpmn.git
+git clone https://github.com/oisee/mcp-bpmn.git
 cd mcp-bpmn
-
-# Install dependencies
-npm install
-
-# Build the project
+npm ci
 npm run build
-
-# Run the complete contributor quality check (optional)
-npm run check
+npm start
 ```
+
+`npm run build` emits the canonical ESM executable at
+`dist/server/index.js`. The server uses stdio, so it normally appears idle when
+started in a terminal and is intended to be launched by an MCP client.
 
 ### Configuration
 
@@ -55,12 +74,46 @@ Add to your Claude Desktop configuration file:
 }
 ```
 
-#### For Other MCP Clients
+#### For other MCP clients
 
-Use the compiled CommonJS bundle:
+Use the same ESM entrypoint with an absolute path:
 
 ```bash
-node dist/server/bundle.cjs
+node /absolute/path/to/mcp-bpmn/dist/server/index.js
+```
+
+### Install a packed release artifact
+
+This repository currently documents an npm tarball install rather than assuming
+that `mcp-bpmn-server` is available from the public npm registry. A release
+producer can build the canonical CLI-only artifact from a source checkout:
+
+```bash
+artifact_dir=$(mktemp -d)
+npm pack --pack-destination "$artifact_dir"
+```
+
+Install that tarball into a dedicated consumer directory and run its packaged
+executable:
+
+```bash
+consumer_dir=$(mktemp -d)
+npm install --prefix "$consumer_dir" "$artifact_dir"/mcp-bpmn-server-*.tgz
+"$consumer_dir/node_modules/.bin/mcp-bpmn-server"
+```
+
+For an MCP client, use the absolute value of
+`$consumer_dir/node_modules/.bin/mcp-bpmn-server` as `command` and an empty
+`args` array. The package is a CLI, not an importable JavaScript library.
+
+### Optional CommonJS bundle
+
+The CommonJS bundle is a separate source-checkout build and is not produced by
+`npm run build` or included in the canonical npm tarball:
+
+```bash
+npm run build:bundle
+npm run start:bundle
 ```
 
 ## 📚 API Reference
@@ -68,6 +121,31 @@ node dist/server/bundle.cjs
 ### Stateful Context Management
 
 MCP-BPMN uses a stateful API design where you work with one diagram at a time. All operations apply to the current diagram context, eliminating the need for processId parameters.
+
+### Advertised tool matrix
+
+The headings in this API reference enumerate every tool returned by
+`tools/list`. The executable parity baseline is
+`tests/contracts/engine-contract.test.ts`, with focused behavior in the unit,
+integration, and end-to-end suites.
+
+Each advertised tool also includes the standard MCP `readOnlyHint`,
+`destructiveHint`, `idempotentHint`, and `openWorldHint` annotations. These
+annotations describe observable server behavior: authoring calls auto-save,
+replacement and deletion calls may destroy existing state, and all operations
+stay within the configured local diagram store. MCP annotations are advisory
+hints, not an authorization boundary; clients must still apply their own trust
+and approval policies.
+
+| Area | Advertised tools | Tested scope and boundary |
+| --- | --- | --- |
+| Context creation/import | `new_bpmn`, `new_from_mermaid`, `open_bpmn`, `open_mermaid_file` | Process or collaboration roots; documented Mermaid subset; imports must fit the server's canonical model |
+| Context lifecycle | `save`, `save_as`, `close`, `current` | One active diagram and filename; local atomic persistence |
+| Authoring | `add_event`, `add_activity`, `add_gateway`, `add_data_object`, `add_text_annotation`, `add_pool`, `add_lane` | The explicit schema enums and typed properties below, not arbitrary BPMN elements or extension attributes |
+| Relationships | `connect`, `add_association` | Direct `connect` authors sequence flows; Mermaid subgraphs can also produce message flows; associations are artifact relationships |
+| Query/mutation | `list_elements`, `get_element`, `update_element`, `delete_element` | Paginated queries and the documented typed mutation fields |
+| Export/quality | `export`, `validate`, `auto_layout` | XML or browser-backed SVG; layered structural validation; horizontal layout only |
+| Stored files | `list_diagrams`, `delete_diagram_file`, `get_diagrams_path` | Sandboxed access inside the configured diagrams directory |
 
 ### Creation Tools
 
@@ -262,7 +340,7 @@ Add gateways for branching logic to the current diagram.
 
 ```javascript
 {
-  gatewayType: "exclusive", // exclusive, parallel, inclusive, eventBased
+  gatewayType: "exclusive", // exclusive, parallel, inclusive, eventBased, complex
   name: "Payment Check",
   position: { x: 400, y: 200 } // optional
 }
@@ -341,7 +419,8 @@ Add a pool (participant) to a collaboration diagram.
 {
   name: "Customer",
   position: { x: 100, y: 100 }, // optional
-  size: { width: 600, height: 250 } // optional
+  size: { width: 600, height: 250 }, // optional
+  blackBox: false // optional; true creates a participant without an owned process
 }
 ```
 
@@ -414,21 +493,33 @@ endpoint, including a text annotation, cascades to its associations.
 ### Utility Tools
 
 #### `export`
-Export the current diagram as BPMN 2.0 XML.
+Export the current diagram as BPMN 2.0 XML or a rendered SVG.
 
 ```javascript
 {
-  format: "xml", // only xml is currently supported
-  formatted: true // optional, defaults to true
+  format: "xml", // "xml" or "svg"; defaults to "xml"
+  formatted: true // optional; applies to XML and defaults to true
 }
 ```
+
+XML export returns text and does not launch a browser. SVG export launches a
+headless browser through Puppeteer, renders with `bpmn-js`, sanitizes the
+result, and returns an embedded `image/svg+xml` resource. It requires an
+available Chrome/Chromium executable and retains the visible bpmn.io
+attribution described under [License](#-license).
 
 #### `validate`
 Validate the current diagram structure.
 
 ```javascript
-{}
+{
+  level: "full" // "syntax", "semantic", or "full"; defaults to "full"
+}
 ```
+
+Validation levels are cumulative. `syntax` parses XML and resolves references;
+`semantic` adds owner-aware event, flow, subprocess, lane, and collaboration
+rules; `full` also adds executable-profile start/end/connectivity guidance.
 
 #### `auto_layout`
 Apply automatic layout to position elements in the current diagram.
@@ -466,6 +557,8 @@ List a stable, filename-ordered page of saved BPMN diagrams.
 
 The existing `{ count, diagrams, path }` response fields remain available;
 `returnedCount`, `offset`, `limit`, and `hasMore` describe the selected page.
+Only files on the selected page are read for embedded BPMN metadata, and the
+aggregate metadata read is capped at 5 MiB by default.
 
 #### `delete_diagram_file`
 Delete a saved diagram file.
@@ -605,12 +698,19 @@ export MCP_BPMN_DIAGRAMS_PATH=/custom/path
 Resource limits can be tuned with `MCP_BPMN_MAX_IMPORT_BYTES`,
 `MCP_BPMN_MAX_MERMAID_BYTES`, `MCP_BPMN_MAX_LAYOUT_ELEMENTS`,
 `MCP_BPMN_MAX_LAYOUT_CONNECTIONS`, `MCP_BPMN_MAX_LAYOUT_DENSITY`,
-`MCP_BPMN_MAX_LAYOUT_BYTES`, `MCP_BPMN_MAX_CONCURRENT_LAYOUTS`, and
-`MCP_BPMN_MAX_LISTING_ITEMS`, and `MCP_BPMN_LAYOUT_TIMEOUT_MS`. Defaults are 5 MiB per imported/layout input,
-2,000 layout elements/connections, density 10, two concurrent layout
+`MCP_BPMN_MAX_LAYOUT_BYTES`, `MCP_BPMN_MAX_CONCURRENT_LAYOUTS`,
+`MCP_BPMN_MAX_LISTING_ITEMS`, `MCP_BPMN_MAX_LISTING_METADATA_BYTES`, and
+`MCP_BPMN_LAYOUT_TIMEOUT_MS`. The graceful shutdown deadline can be overridden
+with `MCP_BPMN_SHUTDOWN_TIMEOUT_MS`. Defaults are 5 MiB per imported/layout input and
+per listing metadata page, 2,000 layout elements/connections, density 10, two concurrent layout
 subprocesses, 10,000 listing candidates, and 5,000 ms. The layout defaults
 come from local sparse/dense benchmarks: 2,000/1,999 completed in about 1.4s,
 25/300 took about 4.8s, and 26/325 exceeded five seconds.
+
+On SIGINT, SIGTERM, or stdin EOF, the server stops accepting tool calls and
+allows accepted operations and their atomic persistence to finish before it
+closes renderer/layout subprocesses and the stdio transport. Graceful shutdown
+has a hard 15-second deadline; exceeding it forces a nonzero exit.
 
 New diagrams start with the filename `{ProcessId}_{ProcessName}.bpmn`. Each
 diagram has exactly one active filename: opening adopts the opened filename and
@@ -628,7 +728,8 @@ last successful state.
 - **Jest** - Testing framework
 
 ### Key Components
-- `SimpleBpmnEngine` - Core BPMN XML generation without browser dependencies
+- `SimpleBpmnEngine` - Canonical BPMN document mutation, persistence, and XML export
+- `BpmnSvgRenderer` - Isolated, browser-backed `bpmn-js` SVG rendering
 - `DiagramContext` - Stateful context management for current diagram
 - `AutoLayout` - Smart positioning algorithm with branch handling
 - `BpmnRequestHandler` - MCP request processing
@@ -662,7 +763,7 @@ mcp-bpmn/
 npm run build        # Build TypeScript
 npm run build:bundle # Build CommonJS bundle
 npm run build:watch  # Build with watch mode
-npm run check        # Clean, type-check, lint, build, and run every test
+npm run check        # Complete clean contributor/CI quality gate
 npm test            # Run source-level tests (no build output required)
 npm run test:all    # Clean, build, and run every test including e2e
 npm run test:unit   # Run unit tests only
@@ -692,29 +793,49 @@ npm run test:watch          # Source-level tests in watch mode
 
 ## 📈 Performance
 
-- **Fast XML Generation**: Direct XML string building
-- **Efficient Layout**: O(n) complexity for standard flows
-- **Minimal Dependencies**: No browser or heavy libraries
-- **Bundled Size**: ~48KB CommonJS bundle
+The canonical release artifact was measured on 2026-08-22 with Node 25.9.0 and
+npm 11.12.1 using:
+
+```bash
+npm pack --dry-run --json
+```
+
+That command reported approximately `195 kB` compressed and `1104270` unpacked bytes.
+These figures describe the npm tarball,
+not an installed server: the tarball bundles no production dependencies, while
+installation resolves the nine direct runtime dependencies in `package.json`
+and their transitive dependencies. Puppeteer's managed Chrome download is also
+outside the tarball measurement. Re-run the command for the current artifact
+instead of treating this dated snapshot as a permanent size guarantee.
+
+The optional CommonJS bundle is not the release artifact and has no size claim.
+Layout input limits and the dated benchmark observations used to choose their
+defaults are documented under [File Storage](#-file-storage).
 
 ## 🐛 Known Limitations
 
-- SVG export not yet implemented (XML only)
-- Vertical layout algorithm pending
-- Lanes within pools not fully implemented
-- Complex gateway merging patterns need manual positioning
+- The authoring API is a focused BPMN 2.0 subset, not complete BPMN 2.0
+  coverage. Unsupported imported constructs can be rejected rather than edited
+  losslessly.
+- `connect` does not expose direct message-flow authoring. The Mermaid
+  collaboration subset can create message flows between subgraphs.
+- `add_lane` authors top-level lanes in white-box pools; it cannot extend an
+  imported nested lane hierarchy.
+- Auto-layout supports horizontal layout only. Vertical and radial algorithms
+  are not advertised.
+- Validation provides the documented syntax, semantic, and full guidance
+  levels; it is not BPMN XSD certification or validation against a deployment
+  engine.
+- The Camunda 7 authoring profile is limited to `assignee`, `candidateGroups`,
+  and `dueDate` on user tasks. It is not general Camunda modeler coverage.
+- SVG export requires Chrome/Chromium through Puppeteer and permits only one
+  concurrent render per server instance. XML workflows remain browser-free.
+- The server does not execute, simulate, or deploy BPMN processes.
 
 ## 🚧 Roadmap
 
-- [ ] SVG export support
-- [ ] Vertical and radial layout algorithms
-- [ ] Enhanced BPMN validation framework
-- [x] Mermaid diagram import/export (Completed!)
-- [ ] Natural language to BPMN conversion
-- [ ] Integration with Camunda/Activiti engines
-- [ ] Subprocess expansion support
-- [ ] Message flow between pools
-- [ ] BPMN execution simulation
+Planned work and known gaps are tracked as Beads issues rather than promised as
+implemented features in this release document.
 
 ## 🤝 Contributing
 
@@ -738,10 +859,16 @@ Contributions are welcome! Please:
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
+SVG export uses `bpmn-js@17.11.1`. Every exported SVG includes a visible
+"Powered by bpmn.io" logo linked to `https://bpmn.io`; clients should not crop,
+cover, or remove that attribution. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+for the dependency's license terms and
+[ADR 0002](docs/decisions/0002-bpmn-js-svg-attribution.md) for the release
+decision.
+
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/your-org/mcp-bpmn/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-org/mcp-bpmn/discussions)
+- **Issues**: [GitHub Issues](https://github.com/oisee/mcp-bpmn/issues)
 - **Documentation**: See `/docs` folder for detailed guides
 
 ## 🙏 Acknowledgments

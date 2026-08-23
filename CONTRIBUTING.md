@@ -51,19 +51,17 @@ The following commands are the supported contributor entry points:
 | `npm run test:all` | Remove `dist/`, rebuild, and run every suite, including e2e and renderer tests. |
 | `npm run test:package` | Clean, build, pack, install, and initialize the published entry points in a temporary directory. |
 | `npm run clean` | Remove generated `dist/` output. |
-| `npm run check` | Run the clean contributor/CI gate: type-check, lint, clean build, and all tests. |
+| `npm run check` | Run the complete clean contributor/CI gate: type-check, lint, build, all tests, package smoke, and the production dependency audit. |
 
 During development, run the narrowest relevant suite first. Before opening or
 updating a pull request, run the same complete gates used by CI:
 
 ```bash
-npm run clean
 npm run check
-npm run test:package
 ```
 
-CI also runs `npm run audit:prod`. Dependency audit findings may require a
-maintainer decision; do not weaken or bypass a check to make it pass.
+The production dependency audit is part of this gate. Audit findings may
+require a maintainer decision; do not weaken or bypass a check to make it pass.
 
 ### Generated and temporary files
 
@@ -86,7 +84,7 @@ fails, verify that it preserves this isolation and cleans up in `afterEach` or
 1. Rebase or merge the current target branch into your focused branch and
    resolve conflicts deliberately.
 2. Add or update tests and documentation with the implementation.
-3. Run `npm run clean`, `npm run check`, and `npm run test:package`.
+3. Run `npm run check`.
 4. Review `git diff` and ensure generated output, credentials, local diagrams,
    and unrelated changes are absent.
 5. Push your branch and open a pull request against the repository's target

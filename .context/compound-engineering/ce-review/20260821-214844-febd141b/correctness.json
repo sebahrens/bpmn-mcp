@@ -1,0 +1,49 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "MCP connect cannot create message flows",
+      "severity": "P1",
+      "file": "src/server/handlers.ts",
+      "line": 371,
+      "why_it_matters": "The collaboration feature is exposed through the MCP connect tool, but the handler always calls the engine without a connection type. A cross-participant request therefore defaults to SequenceFlow and is rejected, so callers cannot create the required collaboration-level MessageFlow even though the engine supports it.",
+      "autofix_class": "gated_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add a connection type (with a MessageFlow option) to the connect tool schema, destructure it in the handler, and pass it to SimpleBpmnEngine.connect; add a handler-level two-pool message-flow test.",
+      "confidence": 0.99,
+      "evidence": [
+        "src/server/handlers.ts:368 destructures only sourceId, targetId, label, and condition; line 371 calls engine.connect with no type, so the engine default is bpmn:SequenceFlow.",
+        "src/server/tools.ts:232-255 exposes no type property, while SimpleBpmnEngine.connect accepts bpmn:MessageFlow and the focused engine test creates one only by calling the engine directly.",
+        "A two-pool MCP sequence using connect({sourceId:'Task_1', targetId:'Task_2', type:'bpmn:MessageFlow'}) returns 'Sequence flows cannot cross process or nested-scope boundaries' because the extra property is ignored."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Mermaid pools share one process and sequence flows",
+      "severity": "P1",
+      "file": "src/core/SimpleBpmnGenerator.ts",
+      "line": 29,
+      "why_it_matters": "Mermaid subgraphs are emitted as multiple participants that all reference the single generated process, while every node and edge is owned by that same process. A conversion with two pools therefore loses per-pool process ownership and emits cross-pool edges as sequence flows instead of collaboration MessageFlows, violating the collaboration semantic contract.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Create or select a process root for each subgraph, assign subgraph nodes to that owner, and classify edges whose endpoints have different owners as collaboration MessageFlows; keep same-owner edges as SequenceFlows in their owning process.",
+      "confidence": 0.98,
+      "evidence": [
+        "src/core/SimpleBpmnGenerator.ts:29 creates one process document; lines 54-70 assign every generated node ownerId/scopeId to that processId.",
+        "src/core/SimpleBpmnGenerator.ts:92-103 assigns every edge bpmn:SequenceFlow with ownerId/scopeId processId before subgraphs are converted.",
+        "src/core/SimpleBpmnGenerator.ts:107-123 creates each participant with processRef: processId. Generating an AST with two subgraphs produces Process_1.flowElements containing both tasks and Flow_2, and both participants processRef Process_1."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Participant structural properties are not synchronized on updateElement: changing properties.blackBox or properties.processRef does not update the participant processRef field or process-root lifecycle.",
+    "The serializer validates ownership at mutation time, but imported XML with cross-scope connection references is not independently rejected before it is reserialized."
+  ],
+  "testing_gaps": [
+    "No MCP handler/tool test exercises creating a MessageFlow between nodes owned by different participant processes.",
+    "No Mermaid conversion test asserts that subgraph participants have distinct process refs and that cross-subgraph edges become collaboration MessageFlows."
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "reviewer": "learnings-researcher",
+  "search_context": {
+    "feature_task": "mcp-bpmn-9sv.2 collaboration participant/process ownership, flow scope, black-box pools, and round-trip BPMN DI",
+    "keywords": [
+      "collaboration",
+      "participant",
+      "process ownership",
+      "ownerId",
+      "scopeId",
+      "black-box",
+      "MessageFlow",
+      "SequenceFlow",
+      "round-trip",
+      "BPMN DI",
+      "waypoints"
+    ],
+    "searched_paths": ["docs/solutions/", "docs/solutions/patterns/critical-patterns.md"],
+    "files_scanned": 0,
+    "relevant_matches": 0
+  },
+  "critical_patterns": {
+    "status": "not-found",
+    "path": "docs/solutions/patterns/critical-patterns.md",
+    "summary": "No critical-patterns file exists in this repository."
+  },
+  "learnings": [],
+  "recommendations": [
+    "No repository-documented institutional learnings were available; rely on the current diff and focused BPMN collaboration/round-trip tests."
+  ]
+}

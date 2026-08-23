@@ -1,0 +1,50 @@
+{
+  "reviewer": "maintainability",
+  "findings": [
+    {
+      "title": "Retained document state has two public mutable representations",
+      "severity": "P2",
+      "file": "src/types/index.ts",
+      "line": 150,
+      "why_it_matters": "ProcessContext now carries the canonical BpmnDocument while retaining separate public elements, connections, and xml fields that mirror document.elements, document.connections, and document.sourceXml. The engine must manually preserve the aliases on every clone/commit, and existing callers mutate the aliases directly. Future retained-state features have to update both representations or risk a context whose indexed model, source XML, and compatibility fields describe different diagrams.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Make BpmnDocument the sole mutable document state. Preserve API compatibility with read-only accessors or a deliberately constructed view at the engine boundary, then migrate mutating utilities to operate on context.document. Ensure the XML compatibility field derives from document.sourceXml rather than being separately assigned.",
+      "confidence": 0.92,
+      "evidence": [
+        "ProcessContext exposes document, elements, connections, and xml as independently assignable fields (src/types/index.ts:150-160); createProcessContext initially aliases the two Maps (src/core/BpmnDocument.ts:122-130).",
+        "commitMutation rebuilds the aliases for its working context and assigns all four fields separately on success (src/core/SimpleBpmnEngine.ts:507-532), while BpmnDocumentSerializer independently changes document.sourceXml (src/core/BpmnDocument.ts:396 and 515).",
+        "AutoLayout, DiagramContext, handlers, and tests consume context.elements/connections directly, so an alias change reaches a broad set of modules rather than being confined to the document boundary."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Transaction cloning duplicates the BpmnDocument schema outside its owner module",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 560,
+      "why_it_matters": "Atomic mutation depends on a hand-written deep clone of every BpmnDocument collection and nested value, but that schema is declared in types/index.ts and constructed/serialized in BpmnDocument.ts. Adding a retained field or a nested mutable BPMN property now requires a developer to recognize and update this third, distant representation; otherwise a failed mutation can share state with the original or a successful mutation can silently omit state.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Move a single explicit cloneBpmnDocument helper beside the document factory/serializer (or use structuredClone after verifying the model remains plain cloneable data) and make commitMutation consume it. Add a clone-isolation test that mutates each map and nested geometry/properties value in the working copy before commit.",
+      "confidence": 0.89,
+      "evidence": [
+        "cloneDocument enumerates all top-level fields plus Map, Set, geometry, waypoint, and properties cloning mechanics in SimpleBpmnEngine (src/core/SimpleBpmnEngine.ts:560-595).",
+        "The BpmnDocument contract is separately declared in src/types/index.ts:136-147 and produced/updated in multiple BpmnDocumentSerializer paths, so no local type mechanism guarantees nested mutable additions get a deep-clone rule.",
+        "commitMutation relies on this clone as its sole atomicity boundary before invoking arbitrary mutation callbacks (src/core/SimpleBpmnEngine.ts:496-520)."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The retained serializer necessarily bridges a typed editable index and the bpmn-moddle graph; extending the editable BPMN surface will remain a concentrated maintenance area until mutation intent/provenance is modeled explicitly.",
+    "The fixture gives useful full-graph coverage, but its single collaboration and one diagram do not document ownership rules for multiple diagrams or duplicate DI views."
+  ],
+  "testing_gaps": [
+    "No test proves that compatibility aliases cannot diverge from document.elements, document.connections, and document.sourceXml after an engine mutation or serializer call.",
+    "No clone-isolation regression covers every BpmnDocument collection and nested mutable field used by commitMutation.",
+    "No focused retained-document test describes the intended behavior for multiple BPMNDiagram instances or multiple DI shapes for one semantic element."
+  ]
+}

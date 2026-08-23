@@ -1,0 +1,139 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Output schemas are not contract-pinned",
+      "severity": "P2",
+      "file": "tests/e2e/server.test.ts",
+      "line": 750,
+      "why_it_matters": "The test derives each validator from the server response under test and only requires every schema to describe an object. A schema and handler can therefore weaken or drop an intended field together while every validation and most partial assertions still pass, so the advertised machine-readable contract is not protected against drift.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Pin normalized output-schema fingerprints (as this file already does for input schemas), or assert each tool's required properties and additionalProperties policy against a reviewed expected contract before validating results.",
+      "confidence": 0.95,
+      "evidence": [
+        "Lines 749-755 assert only the tool names and outputSchema.type === 'object', then construct Ajv validators directly from those same advertised schemas.",
+        "The scoped test has no fixed expected output-schema fingerprints or complete required-field assertions, so server-side schema drift is self-consistent by construction."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Pagination behavior never leaves the first page",
+      "severity": "P1",
+      "file": "tests/e2e/server.test.ts",
+      "line": 774,
+      "why_it_matters": "Both paginated tools can ignore caller-supplied limit and offset, return an unstable slice, or compute hasMore incorrectly and this test will remain green. That leaves the bead's explicit exhaustive pagination requirement unverified for machine consumers that need to traverse more than one page.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Create enough diagrams and elements for multiple pages, call list_diagrams and list_elements with small explicit limits and successive offsets, and assert stable non-overlapping results, returnedCount, count, offset, limit, and both true and false hasMore transitions.",
+      "confidence": 0.99,
+      "evidence": [
+        "Lines 774-782 call list_diagrams with no arguments while the directory is empty, so only offset 0, limit 100, and hasMore false are observed.",
+        "Lines 802-809 call list_elements with no arguments when only two elements exist; no explicit pagination arguments, second page, or hasMore true case appears in the scoped test."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Declared defaults are not exhaustively verified",
+      "severity": "P1",
+      "file": "tests/e2e/server.test.ts",
+      "line": 784,
+      "why_it_matters": "The test can pass if several advertised defaults change or are ignored, even though default behavior is part of the public tool contract and the stated verification intent requires exhaustive coverage. In particular, creation profiles and process type, collection/default-flow/association defaults, lane placement, and XML formatting are not all checked through their observable results.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add a table of every defaulted input in toolDefinitions and verify each omission through structured output where exposed, then through get_element or exported XML for state-only defaults; include new_bpmn type/extensionProfile, Mermaid extension profiles, data-object isCollection, connect isDefault, associationDirection, lane position, export formatted, and both pagination defaults.",
+      "confidence": 0.96,
+      "evidence": [
+        "The new_from_mermaid call at lines 784-794 omits extensionProfile but never asserts the returned default 'portable'.",
+        "The only new_bpmn call at lines 944-947 supplies type: 'collaboration', and the only add_association call at lines 875-879 supplies associationDirection: 'One', so their advertised defaults are bypassed rather than tested.",
+        "The scoped test does not query or export the state needed to prove the omitted isCollection, isDefault, lane position, or formatted defaults."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Text compatibility assertion accepts meaningless content",
+      "severity": "P1",
+      "file": "tests/e2e/server.test.ts",
+      "line": 764,
+      "why_it_matters": "Every text-returning tool could replace its legacy response with an arbitrary one-character placeholder and still satisfy this test. Text-only MCP clients would lose filenames, IDs, counts, issues, or exported XML despite the bead explicitly requiring useful compatible text to remain available.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "For JSON-text query tools, parse the text and compare it with the corresponding legacy projection of structuredContent; for prose mutation tools, assert the text contains the returned generated IDs, filenames, or counts; keep the exact XML byte-length/content assertion and add analogous semantic checks for all remaining text tools.",
+      "confidence": 0.99,
+      "evidence": [
+        "Lines 764-767 only require at least one content block and text.length > 0; no relationship between text and structuredContent is enforced by the shared helper.",
+        "Only the XML export later correlates text bytes with metadata; mutation and query text responses are otherwise allowed to be nonempty but useless."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Branch-specific structured results remain untested",
+      "severity": "P2",
+      "file": "tests/e2e/server.test.ts",
+      "line": 816,
+      "why_it_matters": "Calling every tool once does not exercise several newly structured success branches. Regressions in optional-field presence or branch-specific metadata can ship while the advertised-tool parity assertion remains green, including association/lane details, unassociated annotations, black-box pools, connection deletion, and deletion of a non-current file.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add real tools/call cases for get_element on an association and lane, add_text_annotation without associatedElementId, add_pool with blackBox true, delete_element on a connection, and delete_diagram_file for a non-current file; assert exact presence or absence of each branch-specific field.",
+      "confidence": 0.97,
+      "evidence": [
+        "Lines 816-820 call get_element only for a normal flow node even though the handler has a separate association result path and a lane view variant.",
+        "Lines 854-862 only cover an annotation with associationId present; lines 952-958 only cover a white-box pool with processId present; lines 924-932 only cover deletedKind 'element'; lines 976-982 only cover closedCurrent true.",
+        "The final calledTools set at line 997 proves name coverage, not success-branch coverage within each tool."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Validation issue semantics are only shape-checked",
+      "severity": "P2",
+      "file": "tests/e2e/server.test.ts",
+      "line": 886,
+      "why_it_matters": "A structured validation result can report the wrong valid flag, put warnings in errors, omit issues from the aggregate list, or return an unrelated summary while remaining schema-valid and keeping issues nonempty. Agents relying on these fields would make incorrect decisions even though the advertised shape passes Ajv.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Assert valid equals errors.length === 0, errors and warnings are exact severity-based partitions of issues, summary matches the counts, and at least one deterministic issue has the expected code, severity, message, and relevant elementId.",
+      "confidence": 0.94,
+      "evidence": [
+        "Lines 886-894 assert only level, array types, filename, and issues.length > 0.",
+        "The valid and summary fields required by the output schema are never semantically asserted, and no relationship among issues, errors, and warnings is checked."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "SVG metadata is not tied to its resource",
+      "severity": "P2",
+      "file": "tests/e2e/server.test.ts",
+      "line": 904,
+      "why_it_matters": "The server can return an incorrect byteLength, a URI different from the embedded resource URI, a mismatched MIME type, or empty/non-SVG resource text and the test still passes. Those metadata fields are the machine-readable handle promised for binary/embedded SVG content.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Extract the single SVG resource block and assert its uri and mimeType exactly equal structuredContent, its text is nonempty SVG, and byteLength equals Buffer.byteLength(resource.text, 'utf8').",
+      "confidence": 0.98,
+      "evidence": [
+        "Lines 904-912 accept any numeric byteLength and only require the structured URI to have a bpmn://diagram/ prefix.",
+        "Lines 764-768 check a non-text content block only by block.type === 'resource'; they never inspect resource.uri, resource.mimeType, or resource.text."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The single no-current-context error verifies the shared error envelope and absence of structuredContent, but the scoped test does not separately exercise invalid-argument, unknown-tool, or output-validation failures; their common catch path makes this lower risk than the reported semantic gaps.",
+    "Generated IDs and active filenames are schema-constrained and frequently reused or compared in the scenario, but some individual result fields are only checked for nonempty shape rather than independently resolved back through query/export operations."
+  ],
+  "testing_gaps": [
+    "No reviewed baseline pins the complete advertised output schemas for all 27 tools.",
+    "No multi-page list_diagrams or list_elements scenario covers explicit limit/offset and hasMore transitions.",
+    "Not every declared input default is verified through structured output or persisted BPMN state.",
+    "Legacy text compatibility is reduced to nonempty content for most tools.",
+    "Branch-specific outputs for associations, lanes, unassociated annotations, black-box pools, connection deletion, and non-current file deletion are not exercised.",
+    "Validation issue partitions, valid, and summary are not checked for internal consistency.",
+    "SVG metadata is not correlated with the embedded resource payload."
+  ]
+}

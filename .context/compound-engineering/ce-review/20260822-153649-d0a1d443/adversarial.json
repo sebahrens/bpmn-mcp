@@ -1,0 +1,28 @@
+{
+  "reviewer": "adversarial",
+  "findings": [
+    {
+      "title": "Plain build republishes the deleted utility",
+      "severity": "P3",
+      "file": "src/utils/AutoLayoutEnhanced.ts",
+      "line": 1,
+      "why_it_matters": "A developer who built the previous revision, updates to this deletion, runs the documented plain build, and then packs or publishes will still ship the removed JavaScript and declarations. The source cleanup therefore does not reliably remove the utility from distributable artifacts unless callers know to clean first.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Make the standard build prune stale output (for example, change the build script to `npm run clean && tsc`) and verify that `npm run build && npm pack --dry-run --json` contains no AutoLayoutEnhanced files.",
+      "confidence": 0.98,
+      "evidence": [
+        "Trigger: dist was generated before this source deletion; the checkout currently contains dist/utils/AutoLayoutEnhanced.js plus its declaration and source-map files while src/utils/AutoLayoutEnhanced.ts is deleted.",
+        "Execution path: package.json defines `build` as bare `tsc`; TypeScript emits current inputs but does not delete outputs for source files that no longer exist.",
+        "Failure outcome: package.json publishes the whole dist directory, and `npm pack --dry-run --json` currently lists all four stale dist/utils/AutoLayoutEnhanced artifacts.",
+        "The package test does not cover this sequence because `test:package` explicitly runs `clean` before `build`."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "No test covers the incremental sequence of building a revision, deleting a source module, running plain `npm run build`, and confirming stale package artifacts are pruned; `test:package` always starts with a clean dist directory."
+  ]
+}

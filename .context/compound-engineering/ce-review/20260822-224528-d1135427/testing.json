@@ -1,0 +1,26 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Compare installed LICENSE to canonical notice",
+      "severity": "P2",
+      "file": "scripts/package-smoke.mjs",
+      "line": 327,
+      "why_it_matters": "The smoke test can pass when the packed LICENSE is altered, truncated, or appended with incompatible terms, as long as it retains the three checked fragments. That leaves the claimed verification of the canonical MIT notice incomplete.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Read the repository LICENSE and assert the installed LICENSE matches it exactly (and, if desired, assert the source text matches the canonical MIT notice).",
+      "confidence": 0.91,
+      "evidence": [
+        "Lines 327-330 only require three substrings: 'MIT License', the copyright line, and the opening permission sentence.",
+        "The installed file comes from the tarball, so exact equality with the repository LICENSE would directly verify the packed/installed notice without relying on partial markers."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "The packed LICENSE is presence-checked and the installed LICENSE is marker-checked, but the smoke test does not verify the complete canonical MIT text survived packaging."
+  ]
+}

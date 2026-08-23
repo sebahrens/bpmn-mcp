@@ -1,0 +1,27 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "Advertised lane schema omits uniqueness constraint",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "line": 224,
+      "why_it_matters": "MCP clients use the advertised JSON Schema to construct tool arguments. That schema accepts duplicate flow-node IDs, but runtime validation rejects the same request, so clients can submit schema-valid calls that deterministically fail before the lane mutation.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Preserve the Zod duplicate-ID validation and add generated-schema support for `uniqueItems: true` on `add_lane.flowNodeIds`; add a parity assertion for that keyword.",
+      "confidence": 0.92,
+      "evidence": [
+        "src/server/tools.ts:224-227 rejects duplicates with `new Set(values).size === values.length`.",
+        "The generated `tools` schema for `flowNodeIds` contains only `type: array`, string `items`, and `minItems: 1`; it has no `uniqueItems: true`.",
+        "`parseToolRequest('add_lane', { poolId: 'p', name: 'lane', flowNodeIds: ['Task_1', 'Task_1'] })` throws `Flow node IDs must be unique`."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "No test asserts that the advertised add_lane flowNodeIds schema carries the duplicate-ID constraint accepted by runtime validation."
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "src/server/tools.ts",
+    "src/server/handlers.ts",
+    "tests/e2e/server.test.ts",
+    "tests/integration/handlers.test.ts",
+    "tests/unit/core/SimpleBpmnEngine.test.ts"
+  ],
+  "intent": "Advertise and return schema-validated MCP structuredContent for every BPMN tool while preserving compatible legacy content and protocol-compliant errors.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "api-contract",
+    "adversarial",
+    "agent-native",
+    "learnings-researcher",
+    "kieran-typescript"
+  ],
+  "findings": [
+    {
+      "title": "Imported query variants rejected by strict detail schemas",
+      "severity": "P1",
+      "file": "src/server/tools.ts",
+      "resolution": "Allowed finite negative imported DI coordinates and modeled evaluatesToTypeRef; both variants are exercised through the real server."
+    },
+    {
+      "title": "Advertised output contracts and behavioral branches were under-pinned",
+      "severity": "P1",
+      "file": "tests/e2e/server.test.ts",
+      "resolution": "Pinned all 27 output schemas and exhaustively verified defaults, semantic legacy content, pagination through terminal pages, result branches, validation diagnostics, IDs, and export metadata."
+    },
+    {
+      "title": "List rows and detail results shared an over-broad schema",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "resolution": "Separated strict list-row and detailed element schemas."
+    },
+    {
+      "title": "Pathological hidden BPMN filenames could collapse diagram listing",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "resolution": "Kept listing processId compatible with the engine's documented empty fallback while retaining strict BPMN IDs where actual model IDs are returned."
+    }
+  ],
+  "applied_fixes": [
+    "Added output schemas and parsed structured results for every advertised tool.",
+    "Preserved XML, SVG, text, and error compatibility while exposing stable machine-readable metadata and generated IDs.",
+    "Added exhaustive real-server schema/result parity with follow-on use of returned IDs.",
+    "Updated focused handler and engine expectations for the new successful result contract."
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "Collaboration roots continue using the engine's established processId terminology alongside an explicit type discriminator.",
+    "Output ID schemas intentionally accept valid imported NCNames beyond request-generation limits.",
+    "Malformed non-finite imported geometry remains an import-policy concern outside this output-contract bead.",
+    "Strict imported-query schemas remain hand-maintained, and no synthetic post-mutation output-validation failure is induced.",
+    "Final correctness, testing, and API-contract re-reviews reported no findings."
+  ],
+  "verdict": "Ready to merge"
+}

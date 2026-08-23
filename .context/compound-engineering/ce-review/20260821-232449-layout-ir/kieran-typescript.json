@@ -1,0 +1,74 @@
+{
+  "reviewer": "kieran-typescript",
+  "findings": [
+    {
+      "title": "Virtual and semantic nodes are not a discriminated union",
+      "severity": "P2",
+      "file": "src/core/layout/LayoutModel.ts",
+      "line": 28,
+      "why_it_matters": "LayoutNode uses a boolean virtual flag while requiring every node to carry semanticId, semanticType, ownerId, and scopeId. The validator already treats virtual nodes differently by excluding them from semantic-ID uniqueness, which proves these are distinct states, but the public type neither prevents a semantic node from omitting meaningful semantics nor gives a virtual node the edge/rank identity it actually needs. Downstream dummy-node code must invent fake semantic values and every consumer must remember runtime boolean rules the compiler could enforce.",
+      "evidence": [
+        "src/core/layout/LayoutModel.ts:28-39 defines one LayoutNode shape with virtual:boolean and unconditional semanticId/semanticType/ownerId/scopeId fields.",
+        "src/core/layout/LayoutModel.ts:289-297 branches on !node.virtual before enforcing semantic-node uniqueness, so the implementation already has separate invariants that are absent from the type.",
+        "LayoutEdgeSegment repeats virtual:boolean at src/core/layout/LayoutModel.ts:46-54 without a union describing how virtual segment endpoints relate to virtual nodes or the original semantic edge.",
+        "tests/unit/core/LayoutModel.test.ts:186-213 constructs virtual segment endpoints as bare string IDs and never creates a typed virtual LayoutNode, leaving the intended public node shape unexercised."
+      ],
+      "confidence": 0.95,
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "Model LayoutNode as a discriminated union with virtual:false semantic nodes and virtual:true routing nodes carrying explicit semanticEdgeId/rank metadata; similarly define the virtual/non-virtual segment distinction if their required fields differ. Let validator and adapters narrow on the discriminant without assertions."
+    },
+    {
+      "title": "Port ordering is enforced only by unchecked array access",
+      "severity": "P2",
+      "file": "src/core/layout/LayoutModel.ts",
+      "line": 136,
+      "why_it_matters": "createLayoutPorts is typed as an arbitrary LayoutPort[] even though callers depend on exactly one incoming port followed by exactly one outgoing port. Mermaid adaptation indexes [1] and [0], while geometry refresh searches and then asserts non-null. TypeScript therefore cannot protect either caller if ports become empty, reordered, multi-port, or bidirectional; the public LayoutPortRole already advertises bidirectional, making such evolution plausible.",
+      "evidence": [
+        "src/core/layout/LayoutModel.ts:136-165 returns LayoutPort[] rather than a tuple or a typed port collection with guaranteed incoming/outgoing members.",
+        "src/core/layout/adapters/MermaidAstLayoutAdapter.ts:83-85 assumes source.ports[1] is outgoing and target.ports[0] is incoming; noUncheckedIndexedAccess is not enabled in tsconfig.json, so both unchecked indexes compile as LayoutPort.",
+        "src/core/layout/LayoutModel.ts:195-196 uses non-null assertions on find results because the array type cannot express that the required roles exist.",
+        "LayoutNode exposes ports:LayoutPort[] at src/core/layout/LayoutModel.ts:36, so external layout adapters can legally construct an empty or incompatible collection while still satisfying the public type."
+      ],
+      "confidence": 0.96,
+      "autofix_class": "gated_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "If exactly two ports are the contract, return and store a labeled readonly tuple whose roles are literal incoming/outgoing. If variable ports are intended, stop indexing and expose a narrowing helper that returns a checked result/error for a required role; enable noUncheckedIndexedAccess so future positional assumptions fail compilation."
+    },
+    {
+      "title": "Canonical semantic types are widened back to string",
+      "severity": "P2",
+      "file": "src/core/layout/LayoutModel.ts",
+      "line": 31,
+      "why_it_matters": "The source models already provide closed semantic unions—Mermaid NodeType/EdgeType and BPMN element/connection types—but LayoutNode and LayoutEdge widen them to string at the new public boundary. Misspelled or cross-domain semantic types compile, adapters lose exhaustiveness, and apply code cannot use discriminated narrowing to prove it is preserving the right semantic kind. This weakens the 'canonical typed layout IR' precisely where semantic identity crosses adapters.",
+      "evidence": [
+        "src/core/layout/LayoutModel.ts:31 and :59 declare semanticType:string for nodes and edges.",
+        "src/converters/ASTTypes.ts defines NodeType and EdgeType unions, while src/types/index.ts:47-50 defines BpmnFlowNodeType, BpmnArtifactType, BpmnConnectionType, and BpmnElementType unions.",
+        "MermaidAstLayoutAdapter assigns node.type/edge.type and BpmnDocumentLayoutAdapter assigns element.type/connection.type, but both are widened immediately on insertion into LayoutModel.",
+        "BpmnDocumentLayoutAdapter.applyToDocument can only look up by semanticId; the type system cannot express that a BPMN layout contains BPMN semantic types rather than Mermaid or arbitrary strings."
+      ],
+      "confidence": 0.87,
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "Parameterize LayoutModel/LayoutNode/LayoutEdge over node and edge semantic-type unions, or introduce a namespaced discriminated semantic-type union. Return Mermaid-typed and BPMN-typed model aliases from their adapters so arbitrary strings and cross-domain values do not compile."
+    }
+  ],
+  "residual_risks": [
+    "normalizeLayoutModel returns mutable LayoutNode/LayoutEdge arrays rather than a readonly snapshot type, and it shallow-copies warning objects. Callers can mutate normalized output and, for warnings, mutate the source model through shared references.",
+    "The new LayoutResult alias replaces the former public LayoutNode shape rather than providing a migration type. Internal call sites compile, but external TypeScript consumers importing LayoutResult/LayoutNode from LayoutEngine will receive a declaration-level breaking change.",
+    "SimpleBpmnGenerator still contains several non-null assertions around owner and element map lookups. Current control flow establishes most of them, but the double assertion at src/core/SimpleBpmnGenerator.ts:95 will become unsafe when nested-subgraph ownership is supported unless lookup failure is narrowed explicitly.",
+    "Pre-existing any fields remain in ConversionResult and src/types/index.ts, but the scoped layout hunks introduce no new any and the canonical LayoutModel itself contains none."
+  ],
+  "testing_gaps": [
+    "No compile-time type tests assert that semantic and virtual node states are constructible only with their valid field sets.",
+    "No type-level test protects the incoming/outgoing port contract or compiles the project with noUncheckedIndexedAccess enabled.",
+    "No generic/domain-specific type test rejects a Mermaid semantic type in a BPMN layout model or an arbitrary misspelled semanticType.",
+    "npm run type-check passes, but tsconfig.json excludes tests; the focused combined Jest run exposed unrelated ContentBlock narrowing errors in SimpleBpmnEngine.test.ts that the production type-check cannot see."
+  ]
+}

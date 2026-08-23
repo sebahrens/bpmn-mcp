@@ -1,0 +1,22 @@
+{
+  "scope": "mcp-bpmn-99x conditional and default sequence-flow semantics",
+  "outcome": "pass",
+  "blocking_findings_open": 0,
+  "resolved_findings": [
+    "Explicit default-flow clearing now removes stale moddle default references",
+    "Non-boolean isDefault values are rejected at the public boundary",
+    "Imported FormalExpression objects are reused so opaque metadata survives updates",
+    "Default-flow updates use one explicit top-level contract without alias precedence",
+    "The public facade, schemas, types, and documentation expose the same conditional/default contract"
+  ],
+  "verification": [
+    "npx jest tests/unit/core tests/integration/handlers.test.ts --runInBand: 111 passed",
+    "npm run type-check: passed",
+    "npx jest tests/integration/BpmnEngine.test.ts --runInBand: 15 passed",
+    "npm test -- --runInBand: 289 passed, 6 todo"
+  ],
+  "deferred_gate": "npm run clean && npm run check was not applicable because mcp-bpmn-33g.2 remains open and dist already existed",
+  "advisory": [
+    "Broader connection CRUD/query ergonomics are outside this bead and are not required for its acceptance criteria"
+  ]
+}

@@ -39,6 +39,8 @@ const RENDERER_DOCUMENT = `<!doctype html>
  */
 export class BpmnSvgRenderer {
   private activeRenders = 0;
+  private readonly browsers = new Set<Browser>();
+  private closed = false;
 
   constructor(
     private readonly renderTimeoutMs = DEFAULT_RENDER_TIMEOUT_MS,
@@ -51,6 +53,9 @@ export class BpmnSvgRenderer {
   }
 
   async render(xml: string): Promise<string> {
+    if (this.closed) {
+      throw new Error('SVG renderer is closed');
+    }
     if (this.activeRenders >= this.maxConcurrentRenders) {
       throw new Error('SVG renderer concurrency limit reached');
     }
@@ -58,10 +63,22 @@ export class BpmnSvgRenderer {
 
     try {
       const browser = await this.launchBrowser();
+      if (this.closed) {
+        await browser.close().catch(() => undefined);
+        throw new Error('SVG renderer is closed');
+      }
+      this.browsers.add(browser);
       return await this.renderWithBrowser(browser, xml);
     } finally {
       this.activeRenders -= 1;
     }
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    await Promise.all(Array.from(this.browsers, browser => (
+      browser.close().catch(() => undefined)
+    )));
   }
 
   private async renderWithBrowser(browser: Browser, xml: string): Promise<string> {
@@ -79,6 +96,7 @@ export class BpmnSvgRenderer {
     } finally {
       if (renderTimeout) clearTimeout(renderTimeout);
       await browser.close().catch(() => undefined);
+      this.browsers.delete(browser);
     }
   }
 
@@ -102,11 +120,16 @@ export class BpmnSvgRenderer {
           namespaceURI: string | null;
           attributes: ArrayLike<BrowserAttribute>;
           outerHTML: string;
+          appendChild(child: BrowserElement): BrowserElement;
+          cloneNode(deep: boolean): BrowserElement;
           getAttribute(name: string): string | null;
+          querySelector(selector: string): BrowserElement | null;
           querySelectorAll(selector: string): ArrayLike<BrowserElement>;
+          setAttribute(name: string, value: string): void;
         };
         type BrowserDocument = {
           documentElement: BrowserElement;
+          createElementNS(namespace: string, qualifiedName: string): BrowserElement;
           querySelector(selector: string): BrowserElement | null;
         };
         type BrowserDomParser = new () => {
@@ -181,6 +204,49 @@ export class BpmnSvgRenderer {
             throw new Error('Invalid SVG viewBox');
           }
 
+          const rendererDocument = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          const poweredByLink = rendererDocument.querySelector('#canvas .bjs-powered-by');
+          const poweredByLogo = poweredByLink?.querySelector('svg');
+          if (!poweredByLink
+            || poweredByLink.getAttribute('title') !== 'Powered by bpmn.io'
+            || !/^https?:\/\/bpmn\.io\/?$/.test(poweredByLink.getAttribute('href') || '')
+            || !poweredByLogo) {
+            throw new Error('bpmn-js attribution source is missing or changed');
+          }
+
+          const [viewBoxX, viewBoxY, viewBoxWidth, viewBoxHeight] = viewBox;
+          const attributionWidth = 65;
+          const attributionHeight = 33;
+          const attributionX = viewBoxX + viewBoxWidth - attributionWidth;
+          const attributionY = viewBoxY + viewBoxHeight - attributionHeight;
+          const svgNamespace = 'http://www.w3.org/2000/svg';
+          const attribution = parsed.createElementNS(svgNamespace, 'a');
+          attribution.setAttribute('id', 'bpmn-io-attribution');
+          attribution.setAttribute('href', 'https://bpmn.io');
+          attribution.setAttribute('target', '_blank');
+          attribution.setAttribute('rel', 'noopener noreferrer');
+          attribution.setAttribute('aria-label', 'Powered by bpmn.io');
+
+          const background = parsed.createElementNS(svgNamespace, 'rect');
+          background.setAttribute('x', String(attributionX));
+          background.setAttribute('y', String(attributionY));
+          background.setAttribute('width', String(attributionWidth));
+          background.setAttribute('height', String(attributionHeight));
+          background.setAttribute('fill', '#fff');
+          attribution.appendChild(background);
+
+          const logoContainer = parsed.createElementNS(svgNamespace, 'g');
+          logoContainer.setAttribute(
+            'transform',
+            `translate(${attributionX + 6} ${attributionY + 6})`
+          );
+          logoContainer.setAttribute('color', '#404040');
+          logoContainer.appendChild(poweredByLogo.cloneNode(true));
+          attribution.appendChild(logoContainer);
+          root.appendChild(attribution);
+
           // Serializing only the root drops bpmn-js's external SVG doctype.
           return root.outerHTML;
         } finally {
@@ -198,7 +264,13 @@ export class BpmnSvgRenderer {
   private async launchBrowser(): Promise<Browser> {
     const options: LaunchOptions = {
       headless: true,
-      timeout: this.renderTimeoutMs
+      timeout: this.renderTimeoutMs,
+      // The executable's shutdown coordinator owns process signals and drains
+      // this renderer before exit. Puppeteer's default handlers would call
+      // process.exit(130/143) first and bypass that coordinated cleanup.
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      handleSIGHUP: false
     };
     const executablePath = await resolveBrowserExecutable();
     if (executablePath) options.executablePath = executablePath;

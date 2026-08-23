@@ -1,0 +1,30 @@
+{
+  "reviewer": "api-contract",
+  "findings": [
+    {
+      "title": "Collaboration element calls now require ownership",
+      "severity": "P1",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 410,
+      "why_it_matters": "Existing MCP clients can create a collaboration and invoke add_activity, add_event, or add_gateway without ownerId; this now returns an error and leaves the diagram unchanged. That is a breaking request-contract change for the normal collaboration flow, with no compatibility inference, versioning, or migration path. The tool schema marks ownerId optional, so clients that omit it discover the break only at execution time.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Choose and document a compatibility path: infer the sole non-black-box participant when unambiguous, or introduce/version a scoped collaboration operation and provide a migration path for existing calls while retaining strict rejection for ambiguous diagrams.",
+      "confidence": 0.94,
+      "evidence": [
+        "SimpleBpmnEngine.defaultProcessOwner now throws 'Flow nodes and artifacts require a process owner; add a pool first' for every collaboration context without an explicit owner at src/core/SimpleBpmnEngine.ts:408-413; createElement reaches it at lines 124-132.",
+        "The public add_event, add_activity, and add_gateway schemas expose ownerId as non-required, while handlers pass an omitted value through at src/server/tools.ts:145-151, 184-190, and 219-225 and src/server/handlers.ts:288-302, 317-328, and 343-353.",
+        "The focused test explicitly verifies that the previously valid-looking no-owner collaboration call is now an error at tests/unit/core/SimpleBpmnEngine.test.ts:286-300; the pre-change engine inserted elements without ownership validation at HEAD:src/core/SimpleBpmnEngine.ts:92-121."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "ownerId and scopeId are additive request fields for process diagrams, and ownerId/scopeId/processRef/position/size are additive query fields; no break was found in those JSON shapes.",
+    "Public connection-kind classification and connect-tool wiring remain intentionally deferred to mcp-bpmn-d6u and were not reviewed as this bead's contract finding."
+  ],
+  "testing_gaps": [
+    "No compatibility test or migration documentation covers an existing no-owner add_activity/add_event/add_gateway call against a collaboration; the current focused test only locks in the breaking rejection."
+  ]
+}

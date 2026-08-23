@@ -55,7 +55,7 @@ surface.
 | `delete_element` | C4/C6, engine mutation/cascade | Full, including incident connections and nested ownership | None |
 | `export` | C2/C3/C6, engine XML export | Full XML with typed semantics/refs/DI; SVG is G2 | Partial XML semantics; no DI or SVG |
 | `validate` | C6/G5, handler checks | Handler; basic graph checks only | Same handler logic could inspect flat maps, but candidate cannot construct live handler |
-| `auto_layout` | C4/C6/G4, engine mutation | Full horizontal layout; vertical is a Gap | None |
+| `auto_layout` | C4/C6/C9, engine mutation | Full for the advertised horizontal layout | None |
 | `list_diagrams` | C5/G6, engine persistence | Partial: files are listed, but generated process IDs are misparsed | None |
 | `delete_diagram_file` | C5, engine persistence | Full inside configured diagram root | None |
 | `get_diagrams_path` | C5, engine configuration | Full | None |
@@ -77,6 +77,8 @@ surface.
 - **C7 — Mermaid:** inline and file conversion followed by live-engine import.
 - **C8 — collaboration:** white-box and black-box participant/process refs and
   participant DI.
+- **C9 — layout contract parity:** every advertised layout algorithm succeeds
+  and reports its direction; unsupported values reject at request validation.
 
 ## Known gaps — not parity
 
@@ -88,8 +90,6 @@ asserting the current error or data loss as correct behavior:
   implementation error.
 - **G3:** unknown/custom `extensionElements` import without a parse warning but
   are dropped when the typed document is serialized after import or mutation.
-- **G4:** `auto_layout` advertises `vertical`, while the engine only implements
-  horizontal layout.
 - **G5:** `validate.level` is ignored, and `connect.condition` is logged but is
   not stored in the model or emitted as a BPMN condition expression.
 - **G6:** `listDiagrams()` splits a generated filename such as

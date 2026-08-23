@@ -1130,7 +1130,11 @@ describe('BpmnRequestHandler Integration Tests', () => {
         name: 'Still writable'
       });
       expect(valid).toEqual({
-        content: [{ type: 'text', text: 'Updated element Task_1' }]
+        content: [{ type: 'text', text: 'Updated element Task_1' }],
+        structuredContent: {
+          elementId: 'Task_1',
+          filename: diagramContext.getCurrent().filename
+        }
       });
       expect(diagramContext.getCurrent().elements.get('Task_1')?.name).toBe('Still writable');
     });
@@ -1174,7 +1178,13 @@ describe('BpmnRequestHandler Integration Tests', () => {
         content: [{
           type: 'text',
           text: 'Deleted element Task_1 and 0 associated connections'
-        }]
+        }],
+        structuredContent: {
+          elementId: 'Task_1',
+          deletedKind: 'element',
+          removedConnectionCount: 0,
+          filename: diagramContext.getCurrent().filename
+        }
       });
       expect(diagramContext.getCurrent().elements.has('Task_1')).toBe(false);
     });

@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import { extname, join } from 'path';
 import { isDeepStrictEqual } from 'util';
-import { config } from '../config/index.js';
+import { config, TOOL_INPUT_LIMITS } from '../config/index.js';
 import type { BpmnImportLimits, ResourceLimits } from '../config/index.js';
 import {
   BpmnConnectionType,
@@ -21,8 +21,8 @@ import {
   ProcessContext
 } from '../types/index.js';
 import { IdGenerator } from '../utils/IdGenerator.js';
-import { FileManager } from '../utils/FileManager.js';
-import { resolveSafeFilePath } from '../utils/SafeFilePath.js';
+import { assertBpmnId } from '../utils/BpmnId.js';
+import { BpmnFileTooLargeError, FileManager } from '../utils/FileManager.js';
 import {
   assertValidMessageFlowEndpoints,
   BpmnDocumentSerializer,
@@ -90,6 +90,7 @@ export class SimpleBpmnEngine {
       || !Number.isSafeInteger(this.resourceLimits.maxLayoutBytes)
       || !Number.isSafeInteger(this.resourceLimits.maxConcurrentLayouts)
       || !Number.isSafeInteger(this.resourceLimits.maxListingItems)
+      || !Number.isSafeInteger(this.resourceLimits.maxListingMetadataBytes)
       || !Number.isSafeInteger(this.resourceLimits.layoutTimeoutMs)
       || !Number.isFinite(this.resourceLimits.maxLayoutDensity)
       || Object.values(this.resourceLimits).some(limit => limit <= 0)) {
@@ -110,7 +111,7 @@ export class SimpleBpmnEngine {
     const context = createProcessContext(rootId, name, type, extensionProfile);
     context.filename = this.defaultFilename(context);
 
-    await this.commitMutation(context, () => undefined);
+    await this.commitMutation(context, () => undefined, undefined, false, true);
     this.processes.set(rootId, context);
     return context;
   }
@@ -123,8 +124,10 @@ export class SimpleBpmnEngine {
       }
 
       const type = definition.type;
-      const elementId = definition.id
-        || this.generateUniqueId(working.document, type.slice('bpmn:'.length));
+      const elementId = definition.id !== undefined
+        ? definition.id
+        : this.generateUniqueId(working.document, type.slice('bpmn:'.length));
+      assertBpmnId(elementId, 'element.id');
       if (this.hasId(working.document, elementId)) {
         throw new Error(`BPMN ID already exists: ${elementId}`);
       }
@@ -154,6 +157,9 @@ export class SimpleBpmnEngine {
         if (requestedProcessRef !== undefined
           && (typeof requestedProcessRef !== 'string' || requestedProcessRef.length === 0)) {
           throw new Error(`Participant ${elementId} has invalid processRef ${String(requestedProcessRef)}`);
+        }
+        if (requestedProcessRef !== undefined) {
+          assertBpmnId(requestedProcessRef, 'element.properties.processRef');
         }
         if (blackBox && requestedProcessRef !== undefined) {
           throw new Error(`Black-box participant ${elementId} cannot define processRef`);
@@ -322,29 +328,85 @@ export class SimpleBpmnEngine {
     }
 
     const context = this.getProcess(processId);
-    const associatedElement = options.associatedElementId === undefined
-      ? undefined
-      : context.elements.get(options.associatedElementId);
-    if (options.associatedElementId !== undefined && !associatedElement) {
-      throw new Error(`Associated element ${options.associatedElementId} not found`);
-    }
+    return this.commitMutation(context, working => {
+      const associatedElement = options.associatedElementId === undefined
+        ? undefined
+        : working.elements.get(options.associatedElementId);
+      if (options.associatedElementId !== undefined && !associatedElement) {
+        throw new Error(`Associated element ${options.associatedElementId} not found`);
+      }
 
-    const annotation = await this.createElement(processId, {
-      type: 'bpmn:TextAnnotation',
-      position: options.position,
-      size: options.size,
-      ownerId: associatedElement?.ownerId,
-      scopeId: associatedElement?.scopeId,
-      properties: {
+      const ownerId = associatedElement?.ownerId
+        || (working.type === 'collaboration' ? working.id : this.defaultProcessOwner(working));
+      const scopeId = associatedElement?.scopeId || ownerId;
+      const isCollaborationArtifact = working.type === 'collaboration'
+        && ownerId === working.id
+        && scopeId === working.id;
+      if (!isCollaborationArtifact) {
+        this.assertFlowScope(working.document, ownerId, scopeId);
+      }
+
+      const properties = {
         text,
         ...(options.textFormat === undefined ? {} : { textFormat: options.textFormat })
+      };
+      const annotation: BpmnDocumentElement = {
+        kind: 'artifact',
+        id: this.generateUniqueId(working.document, 'TextAnnotation'),
+        type: 'bpmn:TextAnnotation',
+        ownerId,
+        scopeId,
+        position: options.position || {
+          x: 100 + working.elements.size * 50,
+          y: 200
+        },
+        size: options.size || getDefaultElementSize('bpmn:TextAnnotation'),
+        properties
+      };
+      this.assertElementProperties(
+        working,
+        annotation.type,
+        annotation.properties,
+        ownerId,
+        scopeId
+      );
+      if (!options.position && scopeId !== ownerId) {
+        const scope = working.elements.get(scopeId)!;
+        const siblingIndex = Array.from(working.elements.values())
+          .filter(candidate => candidate.scopeId === scopeId).length;
+        annotation.position = {
+          x: scope.position.x + 40 + siblingIndex * 150,
+          y: scope.position.y + 60
+        };
       }
-    });
-    const association = associatedElement
-      ? await this.addAssociation(processId, annotation.id, associatedElement.id)
-      : undefined;
+      working.elements.set(annotation.id, annotation);
+      if (scopeId !== ownerId) {
+        this.fitExpandedFlowContainers(working, scopeId);
+      }
 
-    return { annotation, association };
+      let association: BpmnDocumentConnection | undefined;
+      if (associatedElement) {
+        const ownership = resolveAssociationOwnership(
+          working.document,
+          annotation,
+          associatedElement
+        );
+        association = {
+          id: this.generateUniqueId(working.document, 'Association'),
+          source: annotation.id,
+          target: associatedElement.id,
+          type: 'bpmn:Association',
+          ownerId: ownership.ownerId,
+          scopeId: ownership.scopeId,
+          associationDirection: 'None',
+          waypoints: calculateConnectionWaypoints(annotation, associatedElement),
+          properties: {}
+        };
+        working.connections.set(association.id, association);
+      }
+
+      return { annotation, association };
+    });
   }
 
   async connect(
@@ -498,6 +560,11 @@ export class SimpleBpmnEngine {
       }
       if (!Array.isArray(flowNodeIds) || flowNodeIds.length === 0) {
         throw new Error('A lane requires at least one flowNodeId');
+      }
+      if (flowNodeIds.length > TOOL_INPUT_LIMITS.laneFlowNodeIds.maxItems) {
+        throw new Error(
+          `A lane accepts at most ${TOOL_INPUT_LIMITS.laneFlowNodeIds.maxItems} flowNodeIds`
+        );
       }
       if (new Set(flowNodeIds).size !== flowNodeIds.length) {
         throw new Error('Lane flowNodeIds must be unique');
@@ -660,6 +727,22 @@ export class SimpleBpmnEngine {
   async deleteElement(processId: string, elementId: string): Promise<number> {
     const context = this.getProcess(processId);
     return this.commitMutation(context, working => {
+      const connection = working.connections.get(elementId);
+      if (connection) {
+        if (!isBpmnConnectionType(connection.type)) {
+          throw new Error(
+            `Connection ${elementId} has unsupported type ${String(connection.type)}`
+          );
+        }
+        working.connections.delete(elementId);
+        for (const candidate of working.elements.values()) {
+          if (candidate.kind === 'flowNode' && candidate.defaultFlow === elementId) {
+            candidate.defaultFlow = undefined;
+            candidate.defaultFlowManaged = true;
+          }
+        }
+        return 1;
+      }
       const lane = working.document.lanes.get(elementId);
       if (lane) {
         const processRef = lane.processId;
@@ -776,10 +859,12 @@ export class SimpleBpmnEngine {
 
   async exportXml(processId: string, formatted = true): Promise<string> {
     const context = this.getProcess(processId);
-    return this.withProcessLock(processId, () => this.serializer.serialize(
-      this.cloneDocument(context.document),
-      formatted
-    ));
+    return this.withProcessLock(processId, () => {
+      if (this.processes.get(processId) !== context) {
+        throw new Error(`Process ${processId} not found`);
+      }
+      return this.serializer.serialize(this.cloneDocument(context.document), formatted);
+    });
   }
 
   async save(processId: string): Promise<string> {
@@ -844,7 +929,7 @@ export class SimpleBpmnEngine {
       context.document.extensionProfile = authoredProfile;
     }
     context.filename = this.defaultFilename(context);
-    await this.commitMutation(context, () => undefined);
+    await this.commitMutation(context, () => undefined, undefined, false, true);
     this.processes.set(context.id, context);
     return context;
   }
@@ -857,7 +942,18 @@ export class SimpleBpmnEngine {
     return process;
   }
 
-  async listDiagrams(): Promise<Array<{ filename: string; path: string; name: string; processId: string }>> {
+  async listDiagrams(): Promise<DiagramListing[]>;
+  async listDiagrams(options: DiagramListingOptions): Promise<DiagramListingPage>;
+  async listDiagrams(
+    options?: DiagramListingOptions
+  ): Promise<DiagramListing[] | DiagramListingPage> {
+    if (options && (!Number.isSafeInteger(options.limit)
+      || options.limit <= 0
+      || !Number.isSafeInteger(options.offset)
+      || options.offset < 0)) {
+      throw new Error('Invalid diagram listing pagination');
+    }
+
     try {
       const filenames: string[] = [];
       const directory = await fs.opendir(this.diagramsPath);
@@ -872,8 +968,13 @@ export class SimpleBpmnEngine {
         if (!entry.isFile() || !entry.name.endsWith('.bpmn')) continue;
         filenames.push(entry.name);
       }
-      const diagrams: Array<{ filename: string; path: string; name: string; processId: string }> = [];
-      for (const filename of filenames) {
+      filenames.sort(compareStableText);
+      const selectedFilenames = options
+        ? filenames.slice(options.offset, options.offset + options.limit)
+        : filenames;
+      const diagrams: DiagramListing[] = [];
+      let metadataBytesRead = 0;
+      for (const filename of selectedFilenames) {
         const encodedMetadata = this.metadataFromDefaultFilename(filename);
         const match = filename.match(/^(.+?)_(.+)\.bpmn$/);
         let processId = encodedMetadata?.processId
@@ -881,12 +982,23 @@ export class SimpleBpmnEngine {
         let name = encodedMetadata?.name
           ?? (match ? match[2].replace(/_/g, ' ') : filename.replace('.bpmn', ''));
         if (!encodedMetadata) {
+          const remainingMetadataBytes = this.resourceLimits.maxListingMetadataBytes
+            - metadataBytesRead;
+          if (remainingMetadataBytes <= 0) {
+            throw this.metadataListingLimitError();
+          }
+          const readLimit = Math.min(this.importLimits.maxBytes, remainingMetadataBytes);
           try {
-            const xml = await this.fileManager.readBpmnFile(filename, this.importLimits.maxBytes);
+            const xml = await this.fileManager.readBpmnFile(filename, readLimit);
+            metadataBytesRead += Buffer.byteLength(xml, 'utf8');
             const context = await this.serializer.parse(xml, this.importLimits);
             processId = context.id;
             name = context.name;
-          } catch {
+          } catch (error) {
+            if (error instanceof BpmnFileTooLargeError
+              && readLimit < this.importLimits.maxBytes) {
+              throw this.metadataListingLimitError();
+            }
             // Preserve the historical filename-derived listing for files that
             // cannot be loaded; valid BPMN metadata is authoritative otherwise.
           }
@@ -898,10 +1010,15 @@ export class SimpleBpmnEngine {
           name
         });
       }
-      return diagrams;
+      if (!options) return diagrams;
+      return {
+        count: filenames.length,
+        hasMore: options.offset + diagrams.length < filenames.length,
+        diagrams
+      };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return [];
+        return options ? { count: 0, hasMore: false, diagrams: [] } : [];
       }
       throw error;
     }
@@ -920,46 +1037,46 @@ export class SimpleBpmnEngine {
     return context;
   }
 
+  /**
+   * Stop retaining a context after all operations already queued for it have
+   * settled. The identity check prevents releasing a newer context that reused
+   * the same BPMN process ID.
+   */
+  async releaseProcess(context: ProcessContext): Promise<void> {
+    await this.withProcessLock(context.id, async () => {
+      if (this.processes.get(context.id) === context) {
+        this.processes.delete(context.id);
+      }
+    });
+  }
+
+  async readMermaidFile(filename: string, maxBytes: number): Promise<string> {
+    return this.fileManager.readMermaidFile(filename, maxBytes);
+  }
+
   async deleteDiagram(filename: string): Promise<void> {
-    const activeContext = Array.from(this.processes.values())
-      .find(context => context.filename === filename);
-    const remove = async (): Promise<void> => {
-      const filepath = await resolveSafeFilePath({
-        rootDirectory: this.diagramsPath,
-        filename,
-        allowedExtensions: ['.bpmn'],
-        access: 'delete'
-      });
+    const processIds = Array.from(this.processes.values())
+      .filter(context => context.filename === filename)
+      .map(context => context.id);
+    await this.withProcessLocks(processIds, async () => {
       try {
-        // Node does not expose unlinkat(2) with a directory file descriptor, so
-        // a residual race remains between the symlink checks and this unlink.
-        await fs.unlink(filepath);
+        await this.fileManager.deleteBpmnFile(filename);
       } catch {
         throw new Error('Unable to delete BPMN file');
       }
-      if (activeContext?.filename === filename) {
-        this.processes.delete(activeContext.id);
+      for (const [processId, context] of this.processes) {
+        if (context.filename === filename) {
+          this.processes.delete(processId);
+        }
       }
-    };
-
-    if (activeContext) {
-      await this.withProcessLock(activeContext.id, remove);
-    } else {
-      await remove();
-    }
+    });
   }
 
   getDiagramsPath(): string {
     return this.diagramsPath;
   }
 
-  async applyAutoLayout(
-    processId: string,
-    algorithm: 'horizontal' | 'vertical' = 'horizontal'
-  ): Promise<BpmnLayoutResult> {
-    if (algorithm !== 'horizontal') {
-      throw new Error('Only horizontal layout algorithm is currently supported');
-    }
+  async applyAutoLayout(processId: string): Promise<BpmnLayoutResult> {
     const snapshot = await this.withProcessLock(processId, async () => {
       const context = this.getProcess(processId);
       const xml = await this.serializer.serialize(this.cloneDocument(context.document), true);
@@ -1058,9 +1175,13 @@ export class SimpleBpmnEngine {
     context: ProcessContext,
     mutation: (working: ProcessContext) => T | Promise<T>,
     filename?: string,
-    overwrite = true
+    overwrite = true,
+    allowUnregistered = false
   ): Promise<T> {
     return this.withProcessLock(context.id, async () => {
+      if (!allowUnregistered && this.processes.get(context.id) !== context) {
+        throw new Error(`Process ${context.id} not found`);
+      }
       const targetFilename = filename || context.filename;
       if (!targetFilename) {
         throw new Error(`Process ${context.id} has no active filename`);
@@ -1114,6 +1235,17 @@ export class SimpleBpmnEngine {
         this.processLocks.delete(processId);
       }
     }
+  }
+
+  private async withProcessLocks<T>(
+    processIds: string[],
+    operation: () => Promise<T>
+  ): Promise<T> {
+    const uniqueIds = Array.from(new Set(processIds)).sort();
+    const acquire = (index: number): Promise<T> => index === uniqueIds.length
+      ? operation()
+      : this.withProcessLock(uniqueIds[index], () => acquire(index + 1));
+    return acquire(0);
   }
 
   private deleteLaneHierarchy(document: BpmnDocument, laneId: string): void {
@@ -1296,8 +1428,9 @@ export class SimpleBpmnEngine {
   }
 
   private defaultFilename(process: ProcessContext): string {
+    const storageId = IdGenerator.generateUuid();
     const metadata = Buffer.from(
-      JSON.stringify([process.id, process.name]),
+      JSON.stringify([process.id, process.name, storageId]),
       'utf8'
     ).toString('base64url');
     const encodedFilename = `mcp-bpmn-v1_${metadata}.bpmn`;
@@ -1305,7 +1438,7 @@ export class SimpleBpmnEngine {
     // filesystem component.
     return Buffer.byteLength(encodedFilename, 'utf8') <= 200
       ? encodedFilename
-      : `${process.id}_${this.sanitizeFilename(process.name)}.bpmn`;
+      : `${process.id}_${this.sanitizeFilename(process.name)}_${storageId}.bpmn`;
   }
 
   private metadataFromDefaultFilename(
@@ -1316,16 +1449,24 @@ export class SimpleBpmnEngine {
     try {
       const metadata: unknown = JSON.parse(Buffer.from(match[1], 'base64url').toString('utf8'));
       if (!Array.isArray(metadata)
-        || metadata.length !== 2
+        || (metadata.length !== 2 && metadata.length !== 3)
         || typeof metadata[0] !== 'string'
         || metadata[0].length === 0
-        || typeof metadata[1] !== 'string') {
+        || typeof metadata[1] !== 'string'
+        || (metadata.length === 3
+          && (typeof metadata[2] !== 'string' || metadata[2].length === 0))) {
         return undefined;
       }
       return { processId: metadata[0], name: metadata[1] };
     } catch {
       return undefined;
     }
+  }
+
+  private metadataListingLimitError(): Error {
+    return new Error(
+      `Diagram listing rejected: metadata byte limit ${this.resourceLimits.maxListingMetadataBytes} exceeded`
+    );
   }
 
   private cloneDocument(document: BpmnDocument): BpmnDocument {
@@ -1460,6 +1601,8 @@ export class SimpleBpmnEngine {
 
   private safeImportError(error: unknown): Error {
     const message = error instanceof Error ? error.message : '';
+    const identifierError = message.match(/(?:Invalid|Duplicate) BPMN xsd:ID at [\s\S]+$/u);
+    if (identifierError) return new Error(identifierError[0]);
     if (/configured element limit/i.test(message)) {
       return new Error('BPMN import rejected: configured element limit exceeded');
     }
@@ -1604,9 +1747,12 @@ export class SimpleBpmnEngine {
     if (properties.candidateGroups !== undefined
       && (!Array.isArray(properties.candidateGroups)
         || properties.candidateGroups.length === 0
+        || properties.candidateGroups.length > TOOL_INPUT_LIMITS.candidateGroups.maxItems
         || properties.candidateGroups.some(group => typeof group !== 'string'
           || group.trim().length === 0 || group.includes(',')))) {
-      throw new Error('candidateGroups must be a non-empty string array whose entries contain no commas');
+      throw new Error(
+        `candidateGroups must contain 1-${TOOL_INPUT_LIMITS.candidateGroups.maxItems} strings whose entries contain no commas`
+      );
     }
     if (properties.isExpanded !== undefined) {
       if (!['bpmn:SubProcess', 'bpmn:Transaction'].includes(type)
@@ -1753,7 +1899,7 @@ export class SimpleBpmnEngine {
     const payload: EventDefinitionPayload = rawPayload
       ? structuredClone(rawPayload) as EventDefinitionPayload
       : {};
-    if (!payload.definitionId) {
+    if (payload.definitionId === undefined) {
       payload.definitionId = this.generateUniqueId(
         document,
         `${this.eventDefinitionPrefix(definitionType)}EventDefinition`
@@ -1765,7 +1911,7 @@ export class SimpleBpmnEngine {
         throw new Error(`${definitionType} event definition reference must be an object`);
       }
       payload.reference = { ...(payload.reference || {}) };
-      if (!payload.reference.id) {
+      if (payload.reference.id === undefined) {
         payload.reference.id = this.generateUniqueId(
           document,
           this.eventDefinitionPrefix(definitionType)
@@ -1787,10 +1933,13 @@ export class SimpleBpmnEngine {
     if (!this.isRecord(payload)) {
       throw new Error(`${definitionType} event definition requires eventDefinitionPayload`);
     }
-    if (typeof payload.definitionId !== 'string' || payload.definitionId.length === 0) {
+    if (typeof payload.definitionId !== 'string') {
       throw new Error(`${definitionType} event definition requires a non-empty definitionId`);
     }
-    this.assertBpmnIdentifier(payload.definitionId, 'Event definition ID');
+    this.assertBpmnIdentifier(
+      payload.definitionId,
+      'eventDefinitionPayload.definitionId'
+    );
 
     if (definitionType === 'timer') {
       if (!this.isRecord(payload.timer)
@@ -1826,11 +1975,13 @@ export class SimpleBpmnEngine {
     const usesRootReference = ['message', 'signal', 'error', 'escalation'].includes(definitionType);
     if (usesRootReference) {
       if (!this.isRecord(payload.reference)
-        || typeof payload.reference.id !== 'string'
-        || payload.reference.id.length === 0) {
+        || typeof payload.reference.id !== 'string') {
         throw new Error(`${definitionType} event definition requires a resolvable root reference`);
       }
-      this.assertBpmnIdentifier(payload.reference.id, `${definitionType} root reference ID`);
+      this.assertBpmnIdentifier(
+        payload.reference.id,
+        'eventDefinitionPayload.reference.id'
+      );
       for (const property of ['name', 'code'] as const) {
         if (payload.reference[property] !== undefined
           && typeof payload.reference[property] !== 'string') {
@@ -1875,11 +2026,7 @@ export class SimpleBpmnEngine {
   }
 
   private assertBpmnIdentifier(value: string, label: string): void {
-    if (!/^[A-Za-z_][A-Za-z0-9._-]*$/.test(value)) {
-      throw new Error(
-        `${label} must start with a letter or underscore and contain only letters, digits, dot, underscore, or hyphen`
-      );
-    }
+    assertBpmnId(value, label);
   }
 
   private eventDefinitionPrefix(type: EventDefinitionType): string {
@@ -1939,12 +2086,14 @@ export class SimpleBpmnEngine {
     let id: string;
     do {
       id = IdGenerator.generate(prefix);
+      assertBpmnId(id, `generated ${prefix}.id`);
     } while (document && this.hasId(document, id));
     return id;
   }
 
   private hasId(document: BpmnDocument, id: string): boolean {
     if (document.sourceIds?.has(id) === true
+      || document.definitionsId === id
       || document.processes.has(id)
       || document.collaborations.has(id)
       || document.laneSets.has(id)
@@ -1952,7 +2101,11 @@ export class SimpleBpmnEngine {
       || document.itemDefinitions.has(id)
       || document.dataObjects.has(id)
       || document.elements.has(id)
-      || document.connections.has(id)) {
+      || document.connections.has(id)
+      || document.diagram.id === id
+      || document.diagram.planeId === id
+      || document.diagram.shapes.has(id)
+      || document.diagram.edges.has(id)) {
       return true;
     }
     return Array.from(document.elements.values()).some(element => {
@@ -1978,4 +2131,28 @@ export class SimpleBpmnEngine {
     return name.replace(/[^a-zA-Z0-9-_]/g, '_').substring(0, 50);
   }
 
+}
+
+export interface DiagramListing {
+  filename: string;
+  path: string;
+  name: string;
+  processId: string;
+}
+
+export interface DiagramListingOptions {
+  limit: number;
+  offset: number;
+}
+
+export interface DiagramListingPage {
+  count: number;
+  hasMore: boolean;
+  diagrams: DiagramListing[];
+}
+
+function compareStableText(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }

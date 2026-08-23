@@ -1,0 +1,51 @@
+{
+  "run_id": "20260822-224528-d1135427",
+  "mode": "autofix",
+  "scope": {
+    "issue": "mcp-bpmn-33g.8",
+    "files": [
+      "LICENSE",
+      "package.json",
+      "README.md",
+      "scripts/package-smoke.mjs"
+    ],
+    "note": "Review was limited to the license and provenance hunks; unrelated working-tree changes were excluded."
+  },
+  "intent": "Publish the intended MIT notice and accurate oisee/mcp-bpmn npm provenance, with automated packed-artifact verification.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings-researcher"
+  ],
+  "findings": [
+    {
+      "title": "Compare installed LICENSE to canonical notice",
+      "severity": "P2",
+      "file": "scripts/package-smoke.mjs",
+      "line": 328,
+      "confidence": 0.91,
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "status": "applied_and_verified"
+    }
+  ],
+  "applied_fixes": [
+    "Compare the installed LICENSE byte-for-byte with the repository LICENSE while retaining canonical MIT marker assertions."
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "No agent-native parity gap was introduced by this packaging-only change.",
+    "No relevant docs/solutions learning or critical pattern exists in this repository."
+  ],
+  "rereview": {
+    "reviewer": "testing-rereview",
+    "findings": [],
+    "testing_gaps": []
+  },
+  "verdict": "ready_to_merge"
+}

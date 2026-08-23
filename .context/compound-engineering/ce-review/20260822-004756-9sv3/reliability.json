@@ -1,0 +1,32 @@
+{
+  "reviewer": "reliability",
+  "findings": [
+    {
+      "title": "exportXml mutates the live retained document outside the atomic commit and lock",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 320,
+      "why_it_matters": "The public export path passes the active document directly to a serializer that first rewrites diagram-index state and later replaces sourceXml/sourceIds. Unlike mutations, it neither clones the document nor takes the per-process lock. A serialization failure can therefore leave the in-memory process partially reconciled even though export rejected, and an export concurrent with a save/mutation can observe or modify the same state outside the transaction that guarantees disk/memory consistency.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Make export a pure serialization of a clone, or route it through the same per-process lock and commit-style copy-on-write boundary while keeping export non-persistent. Move synchronization side effects behind that boundary so errors cannot alter the live context.",
+      "confidence": 0.93,
+      "evidence": [
+        "exportXml calls serializer.serialize(context.document, formatted) directly (src/core/SimpleBpmnEngine.ts:320-323), whereas commitMutation clones and locks before serialization (src/core/SimpleBpmnEngine.ts:496-534).",
+        "serialize immediately invokes synchronizeDiagramInterchange, which adds/removes document.diagram shapes and edges in place (src/core/BpmnDocument.ts:150-206 and 212-215), before retained parsing or toXML can fail.",
+        "Both serializer paths assign document.sourceXml and expand sourceIds in place after serialization (src/core/BpmnDocument.ts:396-397 and 515-516); export takes no lock while commitMutation's lock is only entered by mutation/save methods."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The write path itself has strong coverage for temporary-file cleanup, failed writes, and same-process concurrent mutations, but it cannot make uncoordinated direct ProcessContext/document mutations safe.",
+    "Parsing and retained reconciliation run in-process without cancellation or a time budget; byte, element, flow, and DI limits bound input size but not CPU cost for pathological XML within those limits."
+  ],
+  "testing_gaps": [
+    "Inject a retained-serializer failure through exportXml and assert the live document's sourceXml, sourceIds, shapes, edges, and current XML remain unchanged.",
+    "Exercise exportXml concurrently with an autosaved retained-document mutation and assert deterministic XML plus no disk/context divergence.",
+    "The focused import-roundtrip test covers malformed-import atomicity, while persistence tests cover serializer/write rollback and mutation locking; neither covers export failure or export/mutation interleaving."
+  ]
+}

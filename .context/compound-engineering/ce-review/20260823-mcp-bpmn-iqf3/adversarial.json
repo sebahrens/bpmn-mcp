@@ -1,0 +1,50 @@
+{
+  "reviewer": "adversarial",
+  "findings": [
+    {
+      "title": "Imported NaN geometry poisons element queries",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "line": 317,
+      "why_it_matters": "A BPMN file can open successfully and become current, yet the first structured element query can fail solely because imported DI geometry is not JSON-representable. An agent then has an active diagram it cannot enumerate reliably and receives an ordinary tool error after a successful open, breaking schema-driven composition across open_bpmn -> list_elements/get_element.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Reject or normalize non-finite imported DI bounds and waypoints during BPMN parsing, before open_bpmn installs the context; add a real-server regression case covering the chosen behavior.",
+      "confidence": 0.96,
+      "evidence": [
+        "Trigger: import BPMN whose dc:Bounds contains x=\"NaN\". BpmnDocumentSerializer.assertImportStructureAndComplexity checks IDs and counts but not geometry (src/core/BpmnDocument.ts:1714-1813), while moddle coerces Real values with parseFloat and readPosition copies the result (src/core/BpmnDocument.ts:2386-2390). An in-memory parse in this checkout produced position { x: NaN, y: 1 } for the imported element.",
+        "Execution path: open_bpmn succeeds because its structured result contains only diagram identity and counts (src/server/handlers.ts:281-295). list_elements then forwards the imported position (src/server/handlers.ts:666-680), and get_element does likewise (src/server/handlers.ts:718-738).",
+        "Failure: outputPosition requires finite numbers at src/server/tools.ts:316-319. parseToolResult rejects the NaN, executeRequest catches that validation error at src/server/handlers.ts:192-205, and tools/call returns isError instead of the otherwise successful query. The exhaustive e2e import uses x=-25 (tests/e2e/server.test.ts:1030-1046), so it proves negative finite geometry but misses this accepted parser shape."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Hidden .bpmn file collapses diagram listing",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "line": 509,
+      "why_it_matters": "One externally created or stale file named exactly .bpmn makes list_diagrams return isError for the entire directory. This defeats the engine's deliberate filename-derived fallback for unreadable entries and prevents agents from discovering or deleting otherwise healthy diagrams.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Filter invalid BPMN basenames before pagination or ensure filename-derived fallback metadata always has a non-empty stable identifier, then cover a mixed valid/invalid directory through real tools/call.",
+      "confidence": 0.92,
+      "evidence": [
+        "Trigger: place a regular file named .bpmn in the configured diagram directory alongside valid diagrams. SimpleBpmnEngine.listDiagrams accepts every regular filename ending in .bpmn (src/core/SimpleBpmnEngine.ts:957-970).",
+        "Execution path: filename.replace('.bpmn', '') yields an empty processId (src/core/SimpleBpmnEngine.ts:977-983). Reading that basename is rejected by the safe-path stem check, but the catch intentionally preserves filename-derived metadata and still pushes the entry (src/core/SimpleBpmnEngine.ts:991-1011).",
+        "Failure: list_diagrams passes that page into textToolResult (src/server/handlers.ts:871-886), while the new advertised/runtime schema requires every diagram processId to be a non-empty outputBpmnId at src/server/tools.ts:503-510. Result validation therefore converts the complete listing into isError. The e2e suite exercises empty and generated-file pages only (tests/e2e/server.test.ts:807-817,1111-1127)."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Output validation runs after handler and engine work. A future shape drift in any mutation result can turn an already-applied side effect into isError, encouraging unsafe client retries; the current schemas did not expose another concrete reachable mutation mismatch.",
+    "The advertised schemas validate fields independently but do not encode important cross-field invariants: current=true should require diagram, SVG export should require image/svg+xml plus uri, XML export should forbid uri, and validate.errors/warnings should constrain their respective severities. Current handlers preserve these invariants, but schema-only clients cannot verify them."
+  ],
+  "testing_gaps": [
+    "The imported-output e2e case covers a negative finite coordinate but not non-finite moddle Real values or malformed DI bounds/waypoints that cross the parser-to-output boundary.",
+    "The list_diagrams e2e cases do not include unreadable or filename-only fallback entries, so one malformed hidden .bpmn file poisoning an otherwise valid page is untested.",
+    "No test deliberately causes runtime output validation to fail after a mutating handler, so the protocol result and retry implications of post-side-effect validation remain unverified."
+  ]
+}

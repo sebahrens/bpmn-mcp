@@ -21,10 +21,16 @@ interface SourceLocation {
 interface ParsedEndpoint {
   node: MermaidNode;
   end: number;
+  explicit: boolean;
   classAnnotation?: {
     index: number;
     name: string;
   };
+}
+
+interface StoredNode {
+  node: MermaidNode;
+  explicit: boolean;
 }
 
 interface EndpointFailure {
@@ -66,7 +72,7 @@ export class MermaidParser {
       edges: [],
       subgraphs: []
     };
-    const nodeMap = new Map<string, MermaidNode>();
+    const nodeMap = new Map<string, StoredNode>();
     const nodeLocations = new Map<string, SourceLocation>();
     const edgeLocations = new Map<MermaidEdge, SourceLocation>();
     const edgeIdOccurrences = new Map<string, number>();
@@ -232,7 +238,7 @@ export class MermaidParser {
     text: string,
     location: SourceLocation,
     ast: MermaidAST,
-    nodeMap: Map<string, MermaidNode>,
+    nodeMap: Map<string, StoredNode>,
     nodeLocations: Map<string, SourceLocation>,
     edgeLocations: Map<MermaidEdge, SourceLocation>,
     edgeIdOccurrences: Map<string, number>,
@@ -262,7 +268,7 @@ export class MermaidParser {
       return;
     }
 
-    this.addNode(first.node, location, false, ast, nodeMap, nodeLocations, openSubgraphs, warnings);
+    this.addNode(first.node, location, first.explicit, ast, nodeMap, nodeLocations, openSubgraphs, warnings);
     let sourceNode = first.node;
 
     while (cursor < text.length) {
@@ -289,7 +295,16 @@ export class MermaidParser {
       }
       this.addClassAnnotationWarning(target, location, warnings);
 
-      this.addNode(target.node, this.at(location, targetStart), false, ast, nodeMap, nodeLocations, openSubgraphs, warnings);
+      this.addNode(
+        target.node,
+        this.at(location, targetStart),
+        target.explicit,
+        ast,
+        nodeMap,
+        nodeLocations,
+        openSubgraphs,
+        warnings
+      );
       const edge: MermaidEdge = {
         id: this.allocateEdgeId(sourceNode.id, target.node.id, edgeIdOccurrences),
         source: sourceNode.id,
@@ -342,7 +357,8 @@ export class MermaidParser {
     if (!shapeText || /^\s/.test(shapeText) || this.looksLikeConnector(shapeText) || shapeText.startsWith(':::')) {
       return this.withClassAnnotation(text, {
         node: { id, type: 'process', label: id },
-        end: shapeStart
+        end: shapeStart,
+        explicit: false
       });
     }
 
@@ -360,7 +376,8 @@ export class MermaidParser {
       if (match && (connectorIndex < 0 || match[0].length <= connectorIndex)) {
         return this.withClassAnnotation(text, {
           node: { id, type: shape.type, label: match[1].trim() },
-          end: shapeStart + match[0].length
+          end: shapeStart + match[0].length,
+          explicit: true
         });
       }
     }
@@ -386,6 +403,7 @@ export class MermaidParser {
     return {
       ...endpoint,
       end: endpoint.end + annotation[0].length,
+      explicit: true,
       classAnnotation: { index: endpoint.end, name: annotation[1] }
     };
   }
@@ -433,21 +451,28 @@ export class MermaidParser {
     location: SourceLocation,
     explicit: boolean,
     ast: MermaidAST,
-    nodeMap: Map<string, MermaidNode>,
+    nodeMap: Map<string, StoredNode>,
     nodeLocations: Map<string, SourceLocation>,
     openSubgraphs: OpenSubgraph[],
     warnings: ParseWarning[]
   ): void {
-    if (nodeMap.has(node.id)) {
+    const stored = nodeMap.get(node.id);
+    if (stored) {
       if (explicit) {
-        warnings.push(this.warning(
-          'DUPLICATE_NODE',
-          location,
-          `Duplicate node definition: ${node.id}`
-        ));
+        if (stored.explicit) {
+          warnings.push(this.warning(
+            'DUPLICATE_NODE',
+            location,
+            `Duplicate node definition: ${node.id}`
+          ));
+        } else {
+          Object.assign(stored.node, node);
+          stored.explicit = true;
+          nodeLocations.set(node.id, location);
+        }
       }
     } else {
-      nodeMap.set(node.id, node);
+      nodeMap.set(node.id, { node, explicit });
       nodeLocations.set(node.id, location);
       ast.nodes.push(node);
     }

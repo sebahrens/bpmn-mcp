@@ -1,0 +1,13 @@
+{
+  "reviewer": "typescript",
+  "findings": [],
+  "residual_risks": [
+    "ToolResult<Name> preserves each registry entry's Zod-inferred output type, and the shared result helper runtime-validates before assigning the SDK's Record<string, unknown> structuredContent field. The remaining casts in this path are guarded object-shape conversions rather than unchecked handler payload casts.",
+    "The current and export schemas model cross-field relationships with independently optional or enumerated fields rather than discriminated variants. Current handlers preserve the intended combinations, but TypeScript and Zod would accept semantically mismatched combinations if a future handler regressed."
+  ],
+  "testing_gaps": [
+    "There is no compile-time assertion test proving that a result shape for one tool cannot be paired with another tool name at textToolResult/toolResult call sites; strict production compilation currently checks the real handlers, but does not pin this generic correlation as a reusable invariant.",
+    "The Jest TypeScript transform uses isolatedModules and the JSON-RPC test response is typed as any, so the exhaustive e2e provides runtime JSON-Schema coverage rather than compile-time checking of structuredContent accesses and casts.",
+    "Validation performed here covered npm run type-check, npm run build, the focused exhaustive structured-output case, and the complete tests/e2e/server.test.ts file (15/15). The broader npm run test:all contributor gate was not run by this specialist."
+  ]
+}

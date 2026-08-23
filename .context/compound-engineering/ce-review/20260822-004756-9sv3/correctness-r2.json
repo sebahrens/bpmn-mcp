@@ -1,0 +1,12 @@
+{
+  "reviewer": "correctness",
+  "findings": [],
+  "residual_risks": [
+    "The retained graph still deliberately exposes only a typed mutation subset; continued changes should preserve the managedIds distinction so opaque moddle constructs are never inferred to be deleted from index absence.",
+    "BpmnDocument remains publicly mutable, so callers that bypass engine mutation methods can still construct invalid model state; the engine's copy-on-write guarantees apply to its own operations."
+  ],
+  "testing_gaps": [
+    "The focused suite now covers no-DI/opaque no-op retention, rich-fixture update/create/connect/delete, malformed import atomicity, and failed mutation rollback. A future regression test could combine an opaque connection with an opaque BPMNEdge and a targeted edit, although the retained reconciliation logic now keeps both by managedIds provenance.",
+    "Focused tests/integration/import-roundtrip.test.ts (7 tests) and npm run type-check pass."
+  ]
+}

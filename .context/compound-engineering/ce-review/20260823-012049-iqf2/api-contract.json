@@ -1,0 +1,30 @@
+{
+  "reviewer": "api-contract",
+  "findings": [
+    {
+      "title": "add_lane understates its destructive behavior",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "line": 836,
+      "why_it_matters": "MCP clients receive destructiveHint: false, whose installed SDK contract says the tool performs only additive updates. add_lane can remove existing flow-node memberships from other lanes and replace persisted pool, lane, node, and connection geometry, so approval UX and policy routing can treat a destructive diagram rewrite as a safe addition.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Add a destructive non-idempotent annotation tuple (readOnlyHint false, destructiveHint true, idempotentHint false, openWorldHint false), assign it to add_lane, and add a behavior test that moves an already assigned node and verifies both the old membership removal and advertised tuple.",
+      "confidence": 0.99,
+      "evidence": [
+        "node_modules/@modelcontextprotocol/sdk/dist/esm/spec.types.d.ts:1109-1116 defines destructiveHint false as performing only additive updates.",
+        "src/core/SimpleBpmnEngine.ts:600-605 explicitly removes supplied flowNodeIds from every existing lane before adding the new lane.",
+        "src/core/SimpleBpmnEngine.ts:619 and 1377-1427 relayout existing lanes, pool dimensions, flow-node coordinates, connection waypoints, and boundary events as part of add_lane.",
+        "tests/contracts/tool-annotations.test.ts:65 locks add_lane to ADDITIVE but has no behavioral probe for moving an existing lane assignment."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "scripts/package-smoke.mjs now verifies annotations from live tools/list responses for the source executable, optional bundle, and installed packed executable, but that mutating clean/build/pack workflow was not executed under this review's read-only constraint."
+  ],
+  "testing_gaps": [
+    "No annotation contract test exercises add_lane with a flow node already assigned to another lane, the branch that makes the tool destructive rather than purely additive."
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "run_id": "20260822-083538-kwh",
+  "mode": "autofix",
+  "scope": "mcp-bpmn-kwh runtime request validation only",
+  "intent": "Derive advertised MCP schemas, runtime validation, and tool argument types from Zod and reject invalid calls before dispatch or mutation.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "security",
+    "api-contract",
+    "reliability",
+    "adversarial",
+    "kieran-typescript"
+  ],
+  "applied_fixes": [
+    "Preserved add_lane flowNodeIds uniqueItems in generated JSON Schema and runtime validation.",
+    "Preserved literal tool-name and argument-type correlation through mapped dispatchers and typed handlers.",
+    "Refreshed all pinned e2e schema fingerprints for the intentional strict-schema contract.",
+    "Added nested unknown-key, duplicate-item, and pre-mutation regression coverage.",
+    "Updated stale engine-layer error assertions to the new request-boundary errors."
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "Prototype-key and oversized-payload defenses remain in their existing separate beads.",
+    "No relevant docs/solutions knowledge base exists in this repository.",
+    "Agent-native parity review passed."
+  ],
+  "verdict": "Ready to merge"
+}

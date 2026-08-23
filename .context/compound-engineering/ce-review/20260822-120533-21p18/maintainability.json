@@ -1,0 +1,44 @@
+{
+  "reviewer": "maintainability",
+  "findings": [
+    {
+      "title": "Dead layout modules remain in coverage totals",
+      "severity": "P2",
+      "file": "jest.config.js",
+      "line": 44,
+      "why_it_matters": "The configuration now describes coverage as scoped to production-reachable modules, but its broad collection pattern still instruments both unreachable AutoLayout implementations at 0%. Aggregate coverage reports therefore mix live and dead code, contradicting the stated boundary and leaving future maintainers unsure whether to test, delete, or ignore those modules.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add explicit collectCoverageFrom exclusions for src/utils/AutoLayout.ts and src/utils/AutoLayoutEnhanced.ts, then rerun the coverage suite to verify the six per-file thresholds and live-code aggregate.",
+      "confidence": 0.98,
+      "evidence": [
+        "jest.config.js:37 still collects src/**/*.ts; the only exclusions at lines 38-39 cover declarations and test-example.ts.",
+        "jest.config.js:44-45 says legacy AutoLayout has no production imports and is not counted as live coverage, but the generated LCOV report contains src/utils/AutoLayout.ts and src/utils/AutoLayoutEnhanced.ts at 0%.",
+        "A repository import search finds no production imports of either src/utils/AutoLayout.ts or src/utils/AutoLayoutEnhanced.ts."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Empty matcher hides the directory assertion",
+      "severity": "P3",
+      "file": "tests/unit/utils/FileManager.test.ts",
+      "line": 110,
+      "why_it_matters": "toMatchObject({}) accepts every resolved stat object, so the assertion communicates no property of the created path. A maintainer has to infer that merely resolving is intended, and the test does not explicitly preserve the stronger behavior that listBpmnFiles creates a directory rather than some other filesystem entry.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Replace the empty-object matcher with expect((await fs.stat(nestedRoot)).isDirectory()).toBe(true).",
+      "confidence": 0.91,
+      "evidence": [
+        "tests/unit/utils/FileManager.test.ts:110 asserts fs.stat(nestedRoot) resolves toMatchObject({}); an empty partial object matches any resolved Stats value.",
+        "The test name and preceding call at lines 107-109 imply that directory creation is the contract being exercised, but isDirectory() is never checked."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The new LayoutEngine cases partially overlap topology and pool-direction coverage in tests/unit/core/LayoutModel.test.ts; the new assertions add distinct disconnected-component, rank-order, and pool-separation contracts, so the overlap is not strong enough to recommend removal in this pass."
+  ],
+  "testing_gaps": []
+}

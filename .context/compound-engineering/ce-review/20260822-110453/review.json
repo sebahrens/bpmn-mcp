@@ -1,0 +1,33 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "package.json",
+    "package-lock.json",
+    "src/lib/bpmn-wrapper.ts",
+    "src/types/bpmn-js.d.ts",
+    "docs/architecture/engine-contract.md"
+  ],
+  "intent": "Remove the unsupported bpmn-js runtime ownership path and its direct dependency while preserving every live server, engine, layout, and package contract.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "adversarial",
+    "kieran-typescript"
+  ],
+  "findings": [],
+  "applied_fixes": [],
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "bpmn-auto-layout@2.0.0-alpha.2 remains an intentionally pinned prerelease behind the layout adapter.",
+    "bpmn-moddle@9.0.2 still requires the narrow local ambient declaration because the package publishes no TypeScript declarations."
+  ],
+  "testing_gaps": [],
+  "learnings": "No docs/solutions directory exists in this repository.",
+  "agent_native_gaps": [],
+  "verdict": "Ready to merge",
+  "coverage_note": "The worktree contains unrelated tracked and untracked prior-loop changes; review was restricted to the selected bead's artifacts."
+}

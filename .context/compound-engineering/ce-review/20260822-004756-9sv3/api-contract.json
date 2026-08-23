@@ -1,0 +1,68 @@
+{
+  "reviewer": "api-contract",
+  "findings": [
+    {
+      "title": "ElementDefinition no longer accepts previously valid BPMN type strings",
+      "severity": "P1",
+      "file": "src/types/index.ts",
+      "line": 52,
+      "why_it_matters": "The exported ElementDefinition.type contract changed from string to a small BpmnElementType union. This is a source-breaking change for TypeScript consumers: previously valid calls for standard BPMN types outside the engine's current mutation subset (for example bpmn:Transaction or bpmn:EventSubProcess) now fail to compile, including callers of the separately exported ElementFactory that still forwards any supplied type to bpmn-js. There is no versioned replacement type or migration boundary.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Keep the externally accepted type as string (or introduce a wider documented BpmnTypeInput) and validate/narrow inside SimpleBpmnEngine; alternatively make this an explicit major-version contract change and provide a migration path. Add a compile-time public API fixture showing the intended support or rejection behavior for an existing standard BPMN type outside the editable union.",
+      "confidence": 0.99,
+      "evidence": [
+        "ElementDefinition.type was string in HEAD and is now BpmnElementType at src/types/index.ts:52-54; BpmnElementType is limited to the listed flow-node/artifact types plus Participant (src/types/index.ts:11-50).",
+        "ElementFactory.createElement, createAndConnect, and appendShape remain public methods accepting ElementDefinition and pass definition.type directly to bpmn-js (src/core/ElementFactory.ts:17-35, 64-85, and 91-127).",
+        "No compatibility overload, deprecated legacy input type, or package major-version change accompanies the narrowing."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "ProcessContext became incompatible with existing constructed contexts",
+      "severity": "P1",
+      "file": "src/types/index.ts",
+      "line": 150,
+      "why_it_matters": "ProcessContext is exported and its new document field is required, while elements and connections narrowed from Map<string, any> to typed maps. Consumers that construct a context using the former public shape now fail type-checking, and consumers that retain broader element maps cannot assign them. This is a breaking request/response-model change without an additive legacy shape or migration guidance.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Treat the typed document model as a new versioned context shape, or make document optional during a deprecation transition and normalize legacy contexts at the API boundary. Publish a constructor/factory as the supported creation contract and add a compile-time compatibility fixture for external ProcessContext consumers.",
+      "confidence": 0.98,
+      "evidence": [
+        "HEAD defined ProcessContext with id, name, type, Map<string, any> elements/connections, and optional xml only; the current exported interface adds required document and typed map values (src/types/index.ts:150-160).",
+        "The change exposes ProcessContext through public engine methods such as createProcess, importXml, loadDiagram, and getProcess (src/core/SimpleBpmnEngine.ts:60, 353, 381, and 409).",
+        "Current construction is internalized through createProcessContext (src/core/BpmnDocument.ts:117-131), but the exported interface itself provides neither a compatibility union nor a migration factory requirement."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "The promised lossless import/export contract drops unindexed sequence flows",
+      "severity": "P1",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 426,
+      "why_it_matters": "The import/export API now promises preservation of the complete imported moddle graph while exposing only a typed mutation subset. A SequenceFlow connected to a valid but unindexed BPMN node is deliberately omitted from the editable map, then the retained serializer treats the omission as a delete. An open/export operation therefore returns XML with unrelated semantic and DI objects missing, violating the behavioral contract even when the caller requests no mutation.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Represent intentional API deletions independently from parse-time omissions (for example through explicit deletion IDs), and detach only explicit deletions. Add a black-box import/export contract test with an unindexed valid BPMN endpoint, its SequenceFlow, and BPMNEdge.",
+      "confidence": 0.99,
+      "evidence": [
+        "assertImportedConnections removes a SequenceFlow from document.connections if either endpoint is outside the typed index and explicitly says it should remain in sourceXml (src/core/BpmnDocument.ts:1091-1097).",
+        "serializeRetained detaches every parsed bpmn:SequenceFlow absent from document.connections (src/core/BpmnDocument.ts:426-428).",
+        "Executable black-box reproduction: importing Transaction T -> Task A with SequenceFlow F and BPMNEdge F_di, then exporting without edits, produced indexed:[] and transaction:true, flow:false, edge:false from bpmn-moddle."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The package export currently targets the MCP server entrypoint, but these source-level exported interfaces are still part of the generated declaration surface for direct module consumers; an explicit supported-consumer policy is not documented.",
+    "The canonical rich-fixture tests pass for the represented BPMN subset, but that does not establish a compatibility promise for standard constructs outside BpmnElementType."
+  ],
+  "testing_gaps": [
+    "Add TypeScript public-contract fixtures for legacy ElementDefinition and ProcessContext construction, with an explicit expected migration policy.",
+    "Add black-box no-op and targeted-edit import/export tests covering an unindexed standard BPMN node connected by a SequenceFlow and its BPMN DI edge.",
+    "Document and test whether direct package consumers may import these generated types/modules, or provide a stable public barrel with versioned types."
+  ]
+}

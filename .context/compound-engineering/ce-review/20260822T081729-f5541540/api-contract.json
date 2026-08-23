@@ -1,0 +1,8 @@
+{
+  "reviewer": "api-contract",
+  "findings": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "No compile-time public-contract fixture explicitly asserts that existing `new BpmnEngine()` calls remain valid alongside the new optional path argument; the optional parameter and the existing no-argument construction sites are source-compatible by inspection."
+  ]
+}

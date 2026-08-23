@@ -1,0 +1,76 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "Validation accepts and persists undocked edge routes",
+      "severity": "P1",
+      "file": "src/core/layout/LayoutModel.ts",
+      "line": 466,
+      "why_it_matters": "Endpoint validation proves only that a referenced port ID exists on the endpoint node. It does not require a source to use an outgoing/bidirectional port, a target to use an incoming/bidirectional port, or the aggregate route's first and last waypoints to equal those port positions. A finite, internally continuous route located anywhere on the canvas is therefore valid and BpmnDocumentLayoutAdapter persists it into BPMN DI, recreating the detached-connector failure this canonical boundary is meant to prevent.",
+      "evidence": [
+        "src/core/layout/LayoutModel.ts:466-481 checks endpoint.portId membership only; it never inspects the matched port role or position.",
+        "src/core/layout/LayoutModel.ts:431-463 validates segment-to-edge continuity but never compares edge.waypoints[0]/last with the source/target port positions.",
+        "Executable reproduction: replacing a valid A->B edge with waypoints [{x:999,y:999},{x:1000,y:999}] via setLayoutEdgeWaypoints returns {valid:true,errors:[]}.",
+        "Applying that model through BpmnDocumentLayoutAdapter.applyToContext succeeds and writes the same detached coordinates into both context.connections.get('E').waypoints and document.diagram.edges.get('E_di').waypoints.",
+        "Changing an LR edge source portId from a:port:out to the existing a:port:in, and updating the first segment endpoint to match, also validates successfully."
+      ],
+      "confidence": 0.99,
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "Resolve each endpoint's actual port, require source roles outgoing/bidirectional and target roles incoming/bidirectional, and require the first/last aggregate waypoints (therefore the flattened segment chain) to equal the respective port positions. Add negative apply tests proving detached or wrong-role routes are rejected before document/DI mutation."
+    },
+    {
+      "title": "Reference validation leaves containment and map identity inconsistent",
+      "severity": "P2",
+      "file": "src/core/layout/LayoutModel.ts",
+      "line": 303,
+      "why_it_matters": "The validator checks that referenced IDs exist, but not that the IR's bidirectional references agree. Map keys need not equal value.id, node.containerId need not be reciprocated by container.nodeIds, child.parentId need not match parent.childContainerIds, and ownerId/scopeId are not checked against containers. Consumers that traverse from nodes versus containers can therefore see different ownership, while normalization and BPMN apply can accept a model that changes back on the next adapter round-trip.",
+      "evidence": [
+        "src/core/layout/LayoutModel.ts:303-329 validates node values but never compares the nodes Map key with node.id or verifies ownerId/scopeId/container membership reciprocity.",
+        "src/core/layout/LayoutModel.ts:374-406 checks that parent, member-node, and child IDs exist but never checks the inverse node.containerId, child.parentId, or parent.childContainerIds relationship.",
+        "Executable reproduction: clearing pool.nodeIds while both nodes retain containerId='pool' returns {valid:true,errors:[]}.",
+        "A Map entry whose key differs from LayoutNode.id can still satisfy edge lookup and port ownership checks because lookups use the key while node/port validation uses the value ID.",
+        "The fixed nested-container test asserts generated parent bounds and childContainerIds, but no negative test mutates reciprocal membership or identity."
+      ],
+      "confidence": 0.98,
+      "autofix_class": "gated_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "Validate every Map key equals value.id; require each node's containerId to list that node exactly once and each listed node to point back; require child/parent references to be reciprocal and acyclic; and validate ownerId/scopeId against the documented container/semantic ownership rules. Add malformed-reference tests for each direction."
+    },
+    {
+      "title": "Top-level diagram bounds bypass finite geometry validation",
+      "severity": "P2",
+      "file": "src/core/layout/LayoutModel.ts",
+      "line": 298,
+      "why_it_matters": "The strengthened validator checks node, container, label, port, edge, and segment coordinates but never validates LayoutModel.bounds itself. A model can advertise NaN or infinite diagram bounds, normalize and validate successfully, and pass BPMN apply even though the canonical output contract says it carries usable diagram bounds.",
+      "evidence": [
+        "src/core/layout/LayoutModel.ts:298-428 has finite/size checks for nested geometry but no validBounds(model.bounds, ...) check before returning valid.",
+        "Executable reproduction: set model.bounds.x=Number.NaN on an otherwise valid Mermaid model; validateLayoutModel returns {valid:true,errors:[]}.",
+        "normalizeLayoutModel copies the invalid bounds at src/core/layout/LayoutModel.ts:288, so deterministic serialization still exposes NaN rather than repairing or rejecting it.",
+        "tests/unit/core/LayoutModel.test.ts:299-321 covers NaN node bounds only; it does not mutate model.bounds."
+      ],
+      "confidence": 0.99,
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "Validate model.bounds with finite non-negative dimensions and, if bounds are derived rather than caller-controlled, require them to equal calculateLayoutBounds(model) under the documented padding rule. Add NaN, Infinity, negative-size, and stale-derived-bounds regressions."
+    }
+  ],
+  "residual_risks": [
+    "The five prior findings were verified fixed: cycle/gateway permutations normalize identically; virtual segment endpoint/waypoint continuity is checked; nested parent bounds include children; BPMN node/edge metadata drift is rejected before mutation; and LR/RL/TD/BT rank geometry agrees with port direction.",
+    "Virtual intermediate segment endpoint IDs are intentionally accepted without corresponding LayoutNode entries. The current test uses that representation, so downstream dummy-node work must either preserve this convention or tighten the contract and migrate the test.",
+    "refreshLayoutGeometry regenerates ports after node movement but deliberately preserves any edge route with at least two waypoints. Callers must invoke setLayoutEdgeWaypoints/routing afterward; otherwise a formerly docked route can become stale, and the missing docking validation currently fails to catch it.",
+    "Multiple participants referencing one process still collapse participantByProcess with last-write-wins selection. The adapter is internally consistent on round-trip but cannot represent the same process nodes in multiple visual participant containers."
+  ],
+  "testing_gaps": [
+    "Add wrong-role, missing-role, duplicate-port-ID, and first/last-waypoint docking tests, including rejection before BPMN document and DI mutation.",
+    "Add Map key/value ID mismatch, node/container reciprocity, parent/child reciprocity, containment-cycle, and owner/scope reference tests.",
+    "Add top-level model.bounds tests for NaN, Infinity, negative dimensions, and disagreement with calculated content bounds.",
+    "npm run type-check and the focused LayoutModel/SimpleBpmnGenerator Jest suites pass (15 tests)."
+  ]
+}

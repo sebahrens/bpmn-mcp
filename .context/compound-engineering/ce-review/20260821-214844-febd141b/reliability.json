@@ -1,0 +1,48 @@
+{
+  "reviewer": "reliability",
+  "findings": [
+    {
+      "title": "Concurrent mutations can overwrite persisted collaboration state",
+      "severity": "P1",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 223,
+      "why_it_matters": "All mutation methods change shared document maps before awaiting refreshAndSave, but the engine has no per-process serialization. Two overlapping tool calls can build different XML snapshots and race on the same BPMN path; the later write to finish can omit a successful participant, owner process, or flow mutation, so reopening loses collaboration state even though both calls returned successfully.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "confidence": 0.9,
+      "suggested_fix": "Serialize mutations and saves per process (or stage an immutable candidate and commit it only after persistence), then add a concurrent create/connect test that reopens the file and asserts every mutation is present.",
+      "evidence": [
+        "src/core/SimpleBpmnEngine.ts:162-163 and :223-224 mutate context.elements/context.connections and immediately await refreshAndSave without a lock or queue.",
+        "src/core/SimpleBpmnEngine.ts:394-404 serializes and writes the shared process filename for every operation; overlapping calls have no ordering or compare-and-swap check.",
+        "src/core/BpmnDocument.ts:203-204 builds the snapshot and reaches asynchronous bpmn-moddle XML generation at :380, leaving an interleaving window before either save completes."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Failed saves leave the in-memory ownership model committed",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 103,
+      "why_it_matters": "Participant creation adds a process root and mutation methods update shared maps/objects before serializer and filesystem errors are returned. If mkdir, serialization, or writeFile fails, the caller receives an error but the live context retains the new process/element/flow; subsequent operations can serialize an orphan process or other state that was never durably committed, while a restart reopens the prior file.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "confidence": 0.87,
+      "suggested_fix": "Stage document changes on a clone, persist the candidate atomically, and publish the candidate to the live process only after the write succeeds; otherwise restore all maps, process roots, DI, and context.xml on failure.",
+      "evidence": [
+        "src/core/SimpleBpmnEngine.ts:103-109 inserts a generated participant process root before the element is added and before refreshAndSave can fail.",
+        "src/core/SimpleBpmnEngine.ts:162-164, :223-225, :250-258, and :300-315 all publish mutations before the awaited persistence boundary.",
+        "src/core/SimpleBpmnEngine.ts:400-404 propagates filesystem errors after attempting to write the live context, with no rollback or temporary-file/rename transaction."
+      ],
+      "pre_existing": true
+    }
+  ],
+  "residual_risks": [
+    "The direct fs.writeFile save path is non-atomic and can leave a truncated BPMN file on interruption or storage failure; this behavior predates the selected collaboration ownership changes and should be tracked separately from bead mcp-bpmn-9sv.2."
+  ],
+  "testing_gaps": [
+    "No focused test runs overlapping createElement/connect/updateElement calls and then reopens the saved collaboration to detect lost writes.",
+    "No focused test injects mkdir, serializer, or writeFile failure and verifies that the live ownership/process maps and persisted XML remain unchanged after the rejected mutation."
+  ]
+}

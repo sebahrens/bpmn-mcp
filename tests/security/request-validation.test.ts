@@ -111,6 +111,12 @@ describe('MCP request validation boundary', () => {
 
     const addLaneSchema = tools.find(tool => tool.name === 'add_lane')!.inputSchema as any;
     expect(addLaneSchema.properties.flowNodeIds.uniqueItems).toBe(true);
+    expect(addLaneSchema.properties.flowNodeIds.maxItems)
+      .toBe(TOOL_INPUT_LIMITS.laneFlowNodeIds.maxItems);
+
+    const addActivitySchema = tools.find(tool => tool.name === 'add_activity')!.inputSchema as any;
+    expect(addActivitySchema.properties.properties.properties.candidateGroups.maxItems)
+      .toBe(TOOL_INPUT_LIMITS.candidateGroups.maxItems);
 
     const defaultCases: Array<[ToolName, unknown, Record<string, unknown>]> = [
       ['new_bpmn', { name: 'Defaults' }, { type: 'process' }],
@@ -214,6 +220,25 @@ describe('MCP request validation boundary', () => {
       name: 'M',
       mermaidCode: 'm'.repeat(TOOL_INPUT_LIMITS.mermaidCode.maxLength)
     })).not.toThrow();
+
+    expect(() => parseToolRequest('add_activity', {
+      activityType: 'userTask',
+      name: 'Bounded groups',
+      properties: {
+        candidateGroups: Array.from(
+          { length: TOOL_INPUT_LIMITS.candidateGroups.maxItems },
+          (_, index) => `group-${index}`
+        )
+      }
+    })).not.toThrow();
+    expect(() => parseToolRequest('add_lane', {
+      poolId: 'Participant_1',
+      name: 'Bounded lane',
+      flowNodeIds: Array.from(
+        { length: TOOL_INPUT_LIMITS.laneFlowNodeIds.maxItems },
+        (_, index) => `Task_${index}`
+      )
+    })).not.toThrow();
   });
 
   it.each([
@@ -274,6 +299,9 @@ describe('MCP request validation boundary', () => {
     ['oversized filename', 'delete_diagram_file', {
       filename: `${'f'.repeat(TOOL_INPUT_LIMITS.filename.maxLength - 4)}.bpmn`
     }],
+    ['oversized UTF-8 filename', 'save_as', {
+      filename: `${'é'.repeat(98)}.bpmn`
+    }],
     ['whitespace Mermaid code', 'new_from_mermaid', {
       name: 'Injected', mermaidCode: '   '
     }],
@@ -316,6 +344,24 @@ describe('MCP request validation boundary', () => {
       poolId: 'Participant_1',
       name: 'Lane',
       flowNodeIds: ['Task_1', 'Task_1']
+    }],
+    ['too many candidate groups', 'add_activity', {
+      activityType: 'userTask',
+      name: 'Injected',
+      properties: {
+        candidateGroups: Array.from(
+          { length: TOOL_INPUT_LIMITS.candidateGroups.maxItems + 1 },
+          (_, index) => `group-${index}`
+        )
+      }
+    }],
+    ['too many lane flow node IDs', 'add_lane', {
+      poolId: 'Participant_1',
+      name: 'Lane',
+      flowNodeIds: Array.from(
+        { length: TOOL_INPUT_LIMITS.laneFlowNodeIds.maxItems + 1 },
+        (_, index) => `Task_${index}`
+      )
     }],
     ['unknown key on a file mutation', 'delete_diagram_file', {
       filename: 'stable-diagram.bpmn',

@@ -1,0 +1,47 @@
+{
+  "reviewer": "maintainability",
+  "findings": [
+    {
+      "title": "One schema conflates list rows and details",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "line": 316,
+      "why_it_matters": "Future changes to either list_elements or get_element must expand the same broad schema with more optional fields or unions. That makes the advertised per-tool contracts accept impossible combinations and leaves maintainers unable to tell which fields each handler is responsible for without reading both implementations.",
+      "autofix_class": "gated_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Keep a small shared base for id/type, then define separate strict list-element and element-detail schemas (and discriminated association/lane variants where their shapes differ) and assign them to list_elements and get_element respectively.",
+      "confidence": 0.92,
+      "evidence": [
+        "src/server/tools.ts:316-351 defines outputQueryElement with nearly every field optional and models incoming/outgoing as number-or-array unions solely to cover two different endpoint representations.",
+        "src/server/tools.ts:455-459 reuses that schema for both list_elements.items and the complete get_element result.",
+        "src/server/handlers.ts:666-680 emits numeric incoming/outgoing counts for list rows, while src/server/handlers.ts:718-737 emits arrays plus properties for element details; association details take a third, smaller shape at lines 698-701."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Exhaustive contract check is one serial scenario",
+      "severity": "P3",
+      "file": "tests/e2e/server.test.ts",
+      "line": 718,
+      "why_it_matters": "A failure in any early lifecycle or mutation call aborts validation for every later tool, masking independent schema regressions and making unrelated contract changes share one large fixture and ordering dependency.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Extract the advertised-schema validator/session fixture and split the assertions into a few independent scenarios such as query/export, mutation, file lifecycle, and collaboration outputs; retain a separate registry-parity assertion so every advertised name must still have an exercised scenario.",
+      "confidence": 0.84,
+      "evidence": [
+        "tests/e2e/server.test.ts:718-1002 contains all structured-output coverage in one approximately 280-line it block.",
+        "The scenario repeatedly creates, closes, reopens, renames, and deletes shared current-diagram state before later tool schemas can be checked (lines 784-983).",
+        "The completeness assertion against calledTools is only reached at lines 997-998, so any earlier failure prevents the test from identifying which other advertised tools have schema mismatches."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "The exhaustive success path does not exercise the distinct list/get query shapes for lanes and associations, so those polymorphic structured outputs are not contract-asserted through the real server.",
+    "Optional output branches are not exercised for an annotation without associationId, a black-box pool without processId, or delete_element's connection result.",
+    "No test deliberately injects a schema-invalid success payload to prove the shared output-validation boundary converts it into a protocol-compliant isError response without structuredContent."
+  ]
+}

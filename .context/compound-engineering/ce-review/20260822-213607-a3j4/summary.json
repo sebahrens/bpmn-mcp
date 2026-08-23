@@ -1,0 +1,34 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "src/server/handlers.ts (request scheduling changes only)",
+    "tests/e2e/server.test.ts (pipelined queue regression test only)",
+    "tests/e2e/fixtures/delayed-engine.mjs"
+  ],
+  "intent": "Serialize MCP calls that depend on the singleton current diagram in invocation order, preserve safe overlapping exports behind a snapshot-read barrier, and keep the queue live after a rejected request.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "performance",
+    "reliability",
+    "api-contract",
+    "adversarial",
+    "kieran-typescript"
+  ],
+  "findings": [],
+  "applied_fixes": [
+    "Added explicit filename narrowing in the e2e test instead of relying on non-null assertions.",
+    "Added a delayed export-followed-by-close interleaving to verify the snapshot-read barrier."
+  ],
+  "residual_risks": [
+    "FIFO ordering does not add request admission control; a client can still accumulate pending work by flooding the stdio server."
+  ],
+  "testing_gaps": [],
+  "agent_native": "Pass: the change strengthens the ordering semantics of the existing MCP tool interface without creating a human-only capability.",
+  "learnings": "No docs/solutions directory exists in this repository, so no prior solution matched this change.",
+  "verdict": "Ready to merge"
+}

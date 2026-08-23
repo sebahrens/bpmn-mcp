@@ -1,0 +1,46 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "Dead AutoLayout still pollutes coverage reports",
+      "severity": "P2",
+      "file": "jest.config.js",
+      "line": 36,
+      "why_it_matters": "Coverage runs still instrument AutoLayout.ts and report it at 0%, so the aggregate coverage report continues to include code that this change explicitly describes as excluded from live-code coverage claims.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add '!src/utils/AutoLayout.ts' to collectCoverageFrom, then rerun the coverage suite and confirm AutoLayout.ts is absent from the report.",
+      "confidence": 0.99,
+      "evidence": [
+        "jest.config.js:36-40 collects every src/**/*.ts file and contains no exclusion for src/utils/AutoLayout.ts.",
+        "jest.config.js:43-45 claims AutoLayout.ts is not counted as live coverage, but the full coverage run listed utils/AutoLayout.ts at 0% and included it in the utils and All files aggregates."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "LayoutEngine is not production-reachable",
+      "severity": "P2",
+      "file": "jest.config.js",
+      "line": 77,
+      "why_it_matters": "The new threshold and behavior matrix create a passing coverage signal for a class that the shipped server never imports, so they do not protect a production execution path and contradict the stated live-module scope.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Decide whether LayoutEngine should be wired into the production server/conversion path; if not, remove it from the six live-module coverage claim and treat it consistently with other unreachable layout implementations.",
+      "confidence": 0.98,
+      "evidence": [
+        "Repository-wide source search finds LayoutEngine only at its class definition in src/core/LayoutEngine.ts; every import and construction is under tests/.",
+        "package.json exports only dist/server/index.js, whose import graph starts at src/server/index.ts and does not import LayoutEngine.",
+        "jest.config.js:77-82 nevertheless adds LayoutEngine.ts as one of the production-reachable per-file thresholds."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The full coverage command passed all 31 suites and the six new thresholds, but ts-jest emitted a non-fatal TS1343 failure while collecting src/server/index.ts; that pre-existing out-of-scope warning means the aggregate report is not fully complete."
+  ],
+  "testing_gaps": [
+    "No automated check verifies that modules labeled production-reachable by coverage configuration are actually reachable from the shipped server entry point."
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "Imported condition details fail strict output validation",
+      "severity": "P1",
+      "file": "src/server/tools.ts",
+      "line": 342,
+      "why_it_matters": "After opening any BPMN file containing a conditional sequence flow, get_element on its source node returns an isError text response instead of the advertised structured result. The importer materializes an evaluatesToTypeRef key on every condition object, including when its value is undefined; handlers.ts forwards that object unchanged, and the strict condition output schema rejects the undeclared key before structuredContent can be returned.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Add evaluatesToTypeRef: outputBpmnId.optional() to the outgoing condition output schema (or explicitly project condition objects to the advertised fields), then add an e2e case that reopens/imports a diagram with a conditional flow and calls get_element on the source node.",
+      "confidence": 0.99,
+      "evidence": [
+        "src/server/tools.ts:342-346 declares the strict outgoing condition schema with body, language, and type only, omitting evaluatesToTypeRef.",
+        "src/server/handlers.ts:729-735 assigns condition: c.condition directly into get_element structured output, so all enumerable condition keys reach parseToolResult.",
+        "src/core/BpmnDocument.ts:2253-2258 constructs imported conditions with body, type, language, and evaluatesToTypeRef; the last key exists even when its value is undefined.",
+        "A source-level reproduction using BpmnDocumentSerializer on a minimal valid conditional sequence flow produced condition keys [body,type,language,evaluatesToTypeRef], after which parseToolResult('get_element', value) failed with unrecognized_keys at outgoing.0.condition."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Imported negative coordinates fail query output validation",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "line": 327,
+      "why_it_matters": "A BPMN file with negative DI x/y coordinates opens successfully, but list_elements or get_element then becomes an isError response because structured output validation reuses the non-negative request-position schema. Negative canvas coordinates are representable by BPMN DI and are preserved by the importer, so adding output validation regresses queries for diagrams that previously loaded and could be inspected.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Define an output-specific finite coordinate schema without request-only min/max bounds and use it for outputQueryElement.position and waypoints; retain the bounded position schema for tool inputs. Add an e2e fixture with a negative BPMNShape coordinate and assert open_bpmn plus list_elements/get_element return schema-valid structuredContent.",
+      "confidence": 0.98,
+      "evidence": [
+        "src/server/tools.ts:231-239 defines position with minimum 0 and maximum 1,000,000 for request protection; src/server/tools.ts:327 and :329 reuse it for output positions and waypoints.",
+        "src/core/BpmnDocument.ts:2386-2390 copies imported dc:Bounds x/y values without imposing non-negative bounds.",
+        "A source-level reproduction parsed a minimal BPMNShape with dc:Bounds x=\"-10\" successfully, yielding position {x:-10,y:20}; parseToolResult('get_element', value) then failed at position.x with Number must be greater than or equal to 0.",
+        "tests/e2e/server.test.ts:718-1002 exercises only server-generated positive geometry, so its every-tool schema validation does not cover this imported-data branch."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The strict query-element schema is hand-maintained against several element variants; imported fields outside the generated happy path can still turn a domain-level success into an isError result when parseToolResult encounters another undeclared key or request-only constraint."
+  ],
+  "testing_gaps": [
+    "The exhaustive advertised-tool test does not call get_element after importing or reopening a conditional sequence flow.",
+    "The exhaustive advertised-tool test does not query imported BPMN DI with negative coordinates or negative waypoints.",
+    "Only one success shape is exercised for tools with optional structured fields, such as an associated annotation and a white-box pool; the no-association and black-box variants are not schema-validated.",
+    "Pagination metadata is checked only on default small/empty pages; no real call asserts a nonzero offset or hasMore: true result against the advertised schema."
+  ]
+}

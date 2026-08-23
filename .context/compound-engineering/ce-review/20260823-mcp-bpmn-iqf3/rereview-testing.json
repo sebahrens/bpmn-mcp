@@ -1,0 +1,44 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Diagram pagination never proves its terminal page",
+      "severity": "P1",
+      "file": "tests/e2e/server.test.ts",
+      "line": 1246,
+      "why_it_matters": "A non-empty diagram listing can report hasMore forever, overstate count, or repeat pages and this exhaustive contract test will still pass. Machine clients following the advertised pagination metadata can therefore loop indefinitely or miss diagrams despite the acceptance criterion requiring pagination parity through real tools/call responses.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Page through list_diagrams until the non-empty terminal page, then assert hasMore is false, each page is non-overlapping, returnedCount matches the page length, and the collected unique filenames equal count.",
+      "confidence": 0.98,
+      "evidence": [
+        "tests/e2e/server.test.ts:1246-1262 checks only offsets 0 and 1 and explicitly expects hasMore true on both non-empty pages; it never requests the last non-empty page.",
+        "The earlier empty-directory assertion at lines 901-909 cannot catch a regression such as hasMore = count > 0 or an overstated count for every non-empty listing."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Validation results are not pinned to a known issue",
+      "severity": "P2",
+      "file": "tests/e2e/server.test.ts",
+      "line": 1089,
+      "why_it_matters": "The server can replace the actual validation diagnostics with any schema-valid issue and arbitrary summary while the test remains green. Agents would receive internally partitioned but semantically wrong validation output, leaving the acceptance criterion for machine-readable validation issues unverified.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Assert one deliberately induced issue by exact code, severity, message, and elementId, and assert summary equals the documented string derived from valid, errors.length, and warnings.length.",
+      "confidence": 0.94,
+      "evidence": [
+        "tests/e2e/server.test.ts:1089-1101 verifies only that issues is non-empty, errors/warnings partition that array, valid matches the error count, and summary is some string.",
+        "A fabricated warning with a non-empty code/message plus summary \"anything\" satisfies the output schema and all current assertions without representing the diagram's actual validation result."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "list_diagrams does not verify a non-empty terminal page, complete unique traversal, or final hasMore=false transition.",
+    "validate does not assert a deterministic issue or the documented summary/count relationship."
+  ]
+}

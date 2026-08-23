@@ -7,6 +7,12 @@ import { BpmnValidator } from '../../../src/core/BpmnValidator.js';
 import { BpmnRequestHandler } from '../../../src/server/handlers.js';
 import { diagramContext } from '../../../src/core/DiagramContext.js';
 import { IdGenerator } from '../../../src/utils/IdGenerator.js';
+import {
+  BPMN_FLOW_NODE_TYPES,
+  type BpmnDocumentElement,
+  type BpmnFlowNodeType,
+  type BpmnParticipantElement
+} from '../../../src/types/index.js';
 
 interface SemanticSummary {
   roots: Array<{ id: string; type: string }>;
@@ -16,6 +22,22 @@ interface SemanticSummary {
   shapes: Array<{ id: string; element: string }>;
   edges: Array<{ id: string; element: string; waypoints: Array<{ x: number; y: number }> }>;
 }
+
+const BPMN_GATEWAY_TYPES = new Set<BpmnFlowNodeType>([
+  'bpmn:ExclusiveGateway',
+  'bpmn:ParallelGateway',
+  'bpmn:InclusiveGateway',
+  'bpmn:EventBasedGateway',
+  'bpmn:ComplexGateway'
+]);
+
+const MESSAGE_FLOW_ENDPOINT_CASES = [
+  ...BPMN_FLOW_NODE_TYPES,
+  'bpmn:Participant' as const
+].flatMap(type => [
+  { type, endpoint: 'source' as const },
+  { type, endpoint: 'target' as const }
+]);
 
 describe('SimpleBpmnEngine schema-aware document model', () => {
   let directory: string;
@@ -1055,6 +1077,101 @@ describe('SimpleBpmnEngine schema-aware document model', () => {
     expect(definitions.diagrams[0].plane.bpmnElement.id).toBe(context.id);
   });
 
+  it.each(MESSAGE_FLOW_ENDPOINT_CASES)(
+    'enforces InteractionNode inheritance for $type as message-flow $endpoint',
+    async ({ type, endpoint }) => {
+      const context = await engine.createProcess('Interaction endpoints', 'collaboration');
+      const sourceParticipant = await engine.createElement(context.id, {
+        type: 'bpmn:Participant', name: 'Source'
+      });
+      const targetParticipant = await engine.createElement(context.id, {
+        type: 'bpmn:Participant', name: 'Target'
+      });
+      if (sourceParticipant.kind !== 'participant' || targetParticipant.kind !== 'participant'
+        || !sourceParticipant.processRef || !targetParticipant.processRef) {
+        throw new Error('Expected white-box participants with processRefs');
+      }
+
+      const createEndpoint = async (
+        participant: BpmnParticipantElement,
+        endpointType: BpmnFlowNodeType | 'bpmn:Participant'
+      ): Promise<BpmnDocumentElement> => {
+        if (endpointType === 'bpmn:Participant') return participant;
+        const properties = endpointType === 'bpmn:BoundaryEvent'
+          ? {
+              attachTo: (await engine.createElement(context.id, {
+                type: 'bpmn:Task',
+                ownerId: participant.processRef,
+                scopeId: participant.processRef
+              })).id
+            }
+          : undefined;
+        return engine.createElement(context.id, {
+          type: endpointType,
+          ownerId: participant.processRef,
+          scopeId: participant.processRef,
+          properties
+        });
+      };
+
+      const selectedParticipant = endpoint === 'source' ? sourceParticipant : targetParticipant;
+      const otherParticipant = endpoint === 'source' ? targetParticipant : sourceParticipant;
+      const selected = await createEndpoint(selectedParticipant, type);
+      const other = await createEndpoint(otherParticipant, 'bpmn:Task');
+      const source = endpoint === 'source' ? selected : other;
+      const target = endpoint === 'target' ? selected : other;
+      const beforeConnections = Array.from(context.connections.entries());
+      const beforeXml = await engine.exportXml(context.id);
+      const isInteractionNode = type === 'bpmn:Participant'
+        || !BPMN_GATEWAY_TYPES.has(type);
+
+      if (!isInteractionNode) {
+        const generateId = jest.spyOn(IdGenerator, 'generate');
+        try {
+          await expect(engine.connect(
+            context.id, source.id, target.id, undefined, 'bpmn:MessageFlow'
+          )).rejects.toThrow(`Message flow endpoint ${selected.id} is not a BPMN interaction node`);
+          expect(generateId).not.toHaveBeenCalled();
+        } finally {
+          generateId.mockRestore();
+        }
+        expect(Array.from(context.connections.entries())).toEqual(beforeConnections);
+        expect(await engine.exportXml(context.id)).toBe(beforeXml);
+        return;
+      }
+
+      const messageFlow = await engine.connect(
+        context.id, source.id, target.id, undefined, 'bpmn:MessageFlow'
+      );
+      const definitions = (await moddle.fromXML(await engine.exportXml(context.id))).rootElement;
+      const collaboration = definitions.rootElements.find((root: any) => root.id === context.id);
+      const semanticFlow = collaboration.messageFlows.find((flow: any) => flow.id === messageFlow.id);
+      expect(semanticFlow.sourceRef.id).toBe(source.id);
+      expect(semanticFlow.targetRef.id).toBe(target.id);
+      expect(semanticFlow.sourceRef.$instanceOf('bpmn:InteractionNode')).toBe(true);
+      expect(semanticFlow.targetRef.$instanceOf('bpmn:InteractionNode')).toBe(true);
+    }
+  );
+
+  it('rejects imported message flows with gateway endpoints before persistence', async () => {
+    const invalidXml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  id="Definitions_InvalidMessage" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:process id="Process_Source"><bpmn:exclusiveGateway id="Gateway_Source" /></bpmn:process>
+  <bpmn:process id="Process_Target"><bpmn:task id="Task_Target" /></bpmn:process>
+  <bpmn:collaboration id="Collaboration_InvalidMessage">
+    <bpmn:participant id="Participant_Source" processRef="Process_Source" />
+    <bpmn:participant id="Participant_Target" processRef="Process_Target" />
+    <bpmn:messageFlow id="Message_Invalid" sourceRef="Gateway_Source" targetRef="Task_Target" />
+  </bpmn:collaboration>
+</bpmn:definitions>`;
+
+    await expect(engine.importXml(invalidXml)).rejects.toThrow(
+      'BPMN import rejected: flow crosses process boundaries or has invalid references'
+    );
+    await expect(fs.readdir(directory)).resolves.toEqual([]);
+  });
+
   it('rejects invalid and ambiguous flow endpoint scopes before mutation', async () => {
     const context = await engine.createProcess('Endpoint scopes', 'collaboration');
     const buyer = await engine.createElement(context.id, { type: 'bpmn:Participant', name: 'Buyer' });
@@ -1502,6 +1619,129 @@ describe('SimpleBpmnEngine schema-aware document model', () => {
     const definitions = (await moddle.fromXML(await engine.exportXml(context.id))).rootElement;
     expect(findSemantic(definitions, annotation.id)).toBeUndefined();
     expect(findSemantic(definitions, second.id)).toBeUndefined();
+  });
+
+  it.each([
+    { caseName: 'sequence flow', type: 'bpmn:SequenceFlow' as const },
+    { caseName: 'message flow', type: 'bpmn:MessageFlow' as const },
+    { caseName: 'association', type: 'bpmn:Association' as const },
+    { caseName: 'conditional sequence flow', type: 'bpmn:SequenceFlow' as const, conditional: true },
+    { caseName: 'default sequence flow', type: 'bpmn:SequenceFlow' as const, isDefault: true }
+  ])('deletes a $caseName without deleting either endpoint', async testCase => {
+    const context = await engine.createProcess(
+      `Delete ${testCase.caseName}`,
+      testCase.type === 'bpmn:MessageFlow' ? 'collaboration' : 'process'
+    );
+    let source: BpmnDocumentElement;
+    let target: BpmnDocumentElement;
+    if (testCase.type === 'bpmn:MessageFlow') {
+      const sourcePool = await engine.createElement(context.id, {
+        type: 'bpmn:Participant', name: 'Source pool'
+      });
+      const targetPool = await engine.createElement(context.id, {
+        type: 'bpmn:Participant', name: 'Target pool'
+      });
+      if (sourcePool.kind !== 'participant' || targetPool.kind !== 'participant'
+        || !sourcePool.processRef || !targetPool.processRef) {
+        throw new Error('Expected two white-box participants');
+      }
+      source = await engine.createElement(context.id, {
+        type: 'bpmn:SendTask', ownerId: sourcePool.processRef, scopeId: sourcePool.processRef
+      });
+      target = await engine.createElement(context.id, {
+        type: 'bpmn:ReceiveTask', ownerId: targetPool.processRef, scopeId: targetPool.processRef
+      });
+    } else {
+      source = await engine.createElement(context.id, { type: 'bpmn:Task', name: 'Source' });
+      target = await engine.createElement(context.id, { type: 'bpmn:Task', name: 'Target' });
+    }
+    const connection = testCase.type === 'bpmn:Association'
+      ? await engine.addAssociation(context.id, source.id, target.id)
+      : await engine.connect(context.id, source.id, target.id, undefined, testCase.type, {
+          condition: testCase.conditional ? '${approved}' : undefined,
+          isDefault: testCase.isDefault
+        });
+    const filename = context.filename!;
+    const edgeId = Array.from(context.document.diagram.edges.values()).find(
+      edge => edge.connectionId === connection.id
+    )?.id;
+    expect(edgeId).toBeDefined();
+    expect(Array.from(context.connections.values()).filter(item => item.source === source.id))
+      .toHaveLength(1);
+    expect(Array.from(context.connections.values()).filter(item => item.target === target.id))
+      .toHaveLength(1);
+    if (context.elements.get(source.id)?.kind === 'flowNode') {
+      expect(context.elements.get(source.id)?.defaultFlow)
+        .toBe(testCase.isDefault ? connection.id : undefined);
+    }
+
+    diagramContext.setCurrent(context, context.name);
+    const deleted = await handler.handleRequest('delete_element', { elementId: connection.id });
+
+    expect(deleted).toEqual({
+      content: [{
+        type: 'text',
+        text: `Deleted ${testCase.caseName.replace('conditional ', '').replace('default ', '')} ${connection.id}`
+      }],
+      structuredContent: {
+        elementId: connection.id,
+        deletedKind: 'connection',
+        removedConnectionCount: 0,
+        filename
+      }
+    });
+    expect(context.elements.has(source.id)).toBe(true);
+    expect(context.elements.has(target.id)).toBe(true);
+    expect(context.connections.has(connection.id)).toBe(false);
+    expect(Array.from(context.connections.values()).filter(item => item.source === source.id))
+      .toHaveLength(0);
+    expect(Array.from(context.connections.values()).filter(item => item.target === target.id))
+      .toHaveLength(0);
+    expect(context.document.diagram.edges.has(edgeId!)).toBe(false);
+    if (context.elements.get(source.id)?.kind === 'flowNode') {
+      expect(context.elements.get(source.id)?.defaultFlow).toBeUndefined();
+    }
+
+    const parsed = await moddle.fromXML(context.xml!);
+    expect(parsed.elementsById[connection.id]).toBeUndefined();
+    expect(parsed.elementsById[edgeId!]).toBeUndefined();
+    expect(parsed.elementsById[source.id]).toBeDefined();
+    expect(parsed.elementsById[target.id]).toBeDefined();
+    await expect(fs.readFile(join(directory, filename), 'utf8')).resolves.toBe(context.xml);
+
+    const reopened = await new SimpleBpmnEngine(directory).loadDiagram(filename);
+    expect(reopened.connections.has(connection.id)).toBe(false);
+    expect(reopened.elements.has(source.id)).toBe(true);
+    expect(reopened.elements.has(target.id)).toBe(true);
+    if (reopened.elements.get(source.id)?.kind === 'flowNode') {
+      expect(reopened.elements.get(source.id)?.defaultFlow).toBeUndefined();
+    }
+  });
+
+  it('rejects an unsupported indexed connection type without mutating or saving', async () => {
+    const context = await engine.createProcess('Unsupported connection deletion');
+    const source = await engine.createElement(context.id, { type: 'bpmn:Task' });
+    const target = await engine.createElement(context.id, { type: 'bpmn:Task' });
+    const connection = await engine.connect(context.id, source.id, target.id);
+    const beforeXml = context.xml;
+    const beforeDisk = await fs.readFile(join(directory, context.filename!), 'utf8');
+    connection.type = 'bpmn:DataAssociation' as typeof connection.type;
+    diagramContext.setCurrent(context, context.name);
+
+    const result = await handler.handleRequest('delete_element', { elementId: connection.id });
+
+    expect(result).toEqual({
+      content: [{
+        type: 'text',
+        text: `Error: Connection ${connection.id} has unsupported type bpmn:DataAssociation`
+      }],
+      isError: true
+    });
+    expect(context.connections.get(connection.id)).toBe(connection);
+    expect(context.elements.has(source.id)).toBe(true);
+    expect(context.elements.has(target.id)).toBe(true);
+    expect(context.xml).toBe(beforeXml);
+    await expect(fs.readFile(join(directory, context.filename!), 'utf8')).resolves.toBe(beforeDisk);
   });
 
   it('creates expanded subprocess children across flow-node kinds and rejects boundary crossings', async () => {

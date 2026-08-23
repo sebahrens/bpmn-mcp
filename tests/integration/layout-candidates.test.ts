@@ -100,7 +100,7 @@ async function currentProjectLayout(xml: string): Promise<{ xml: string; warning
     );
     const engine = new SimpleBpmnEngine(directory, undefined, adapter);
     const context = await engine.importXml(xml);
-    const result = await engine.applyAutoLayout(context.id, 'horizontal');
+    const result = await engine.applyAutoLayout(context.id);
     return {
       xml: await engine.exportXml(context.id),
       warnings: result.warnings.map(warning =>

@@ -67,16 +67,19 @@ describe('FileManager behavior matrix', () => {
     await expect(fs.readFile(path.join(root, 'stable.bpmn'), 'utf8')).resolves.toBe('replacement');
   });
 
-  it('leaves the previous file intact and removes temporary output after an atomic rename failure', async () => {
-    await fileManager.saveBpmnFile('previous', { filename: 'atomic.bpmn', overwrite: true });
-    jest.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('injected rename failure'));
+  it('rejects an overlong atomic output before staging and leaves the previous file intact', async () => {
+    const filename = `${'a'.repeat(245)}.bpmn`;
+    await fs.writeFile(path.join(root, filename), 'previous', 'utf8');
 
     await expect(fileManager.saveBpmnFile('next', {
-      filename: 'atomic.bpmn',
+      filename,
       overwrite: true
-    })).resolves.toEqual({ success: false, error: 'Unable to save BPMN file' });
-    await expect(fs.readFile(path.join(root, 'atomic.bpmn'), 'utf8')).resolves.toBe('previous');
-    await expect(fs.readdir(root)).resolves.toEqual(['atomic.bpmn']);
+    })).resolves.toEqual({
+      success: false,
+      error: 'Filename must not exceed 200 UTF-8 bytes'
+    });
+    await expect(fs.readFile(path.join(root, filename), 'utf8')).resolves.toBe('previous');
+    await expect(fs.readdir(root)).resolves.toEqual([filename]);
   });
 
   it('enforces independent BPMN and Mermaid byte and extension policies', async () => {

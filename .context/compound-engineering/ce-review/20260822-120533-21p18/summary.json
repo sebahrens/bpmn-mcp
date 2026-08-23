@@ -1,0 +1,29 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "jest.config.js",
+    "tests/unit/utils/FileManager.test.ts"
+  ],
+  "intent": "Add focused live-module unit coverage and enforce per-file thresholds without dead-stack inflation.",
+  "verdict": "ready",
+  "findings": [],
+  "applied_fixes": [
+    "Excluded confirmed production-unreachable legacy modules from coverage instrumentation.",
+    "Removed the stale LayoutEngine live-module threshold and redundant new dead-module suite.",
+    "Aligned the ts-jest ESM transform override and enabled isolated compilation so server/index.ts coverage collection succeeds.",
+    "Replaced a vacuous filesystem matcher with an explicit directory assertion."
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "Coverage thresholds are enforced by explicit coverage runs, not the repository check command.",
+    "The direct FileManager atomic-failure unit case intentionally remains because the selected bead assigns atomic failure behavior to the focused FileManager matrix; unrelated integration coverage was preserved."
+  ],
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings-researcher"
+  ]
+}

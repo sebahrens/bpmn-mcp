@@ -1,0 +1,54 @@
+{
+  "run_id": "20260822-214924-owa3",
+  "mode": "autofix",
+  "scope": [
+    "src/core/SimpleBpmnEngine.ts (context release and filename-wide deletion changes only)",
+    "src/server/handlers.ts (current-context replacement and close release changes only)",
+    "tests/integration/context-release.test.ts"
+  ],
+  "intent": "Release unaddressable BPMN engine contexts and settled process locks after serialized handler work drains, retain persisted files for reopen, and remove every retained context when its file is deleted.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "security",
+    "performance",
+    "api-contract",
+    "reliability",
+    "adversarial",
+    "kieran-typescript"
+  ],
+  "execution_note": "Repository instructions required sequential main-thread review; no reviewer subagents were dispatched.",
+  "applied_fixes": [
+    {
+      "severity": "P2",
+      "file": "tests/integration/context-release.test.ts",
+      "issue": "Same-process-ID replacement did not explicitly prove identity-safe release",
+      "route": "safe_auto -> review-fixer",
+      "verification": "Reopening the same file replaces the context object while retaining exactly one engine entry"
+    },
+    {
+      "severity": "P2",
+      "file": "tests/integration/context-release.test.ts",
+      "issue": "Queued post-release coverage exercised mutations but not snapshot reads",
+      "route": "safe_auto -> review-fixer",
+      "verification": "Both queued mutation and export reject after release, with no lock or persisted-state leak"
+    }
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "No docs/solutions directory or critical-patterns file exists in this checkout, so no institutional learning matched.",
+    "Agent-native parity passed: cleanup is internal to the existing MCP create, open, close, and delete tool paths.",
+    "The request queue remains the production boundary that drains whole context-sensitive calls, including layout work performed outside a process lock."
+  ],
+  "coverage": {
+    "suppressed_findings": 0,
+    "selected_files_reviewed": true,
+    "unrelated_dirty_files_excluded": true,
+    "validation": "Focused context-release suite: 3 passed; type-check passed; lint passed; npm run test:all passed 622 tests across Jest and renderer suites with 4 existing todos.",
+    "verdict": "Ready to merge"
+  }
+}

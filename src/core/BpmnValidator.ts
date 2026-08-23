@@ -1,4 +1,12 @@
 import BpmnModdle, { type ParseResult } from 'bpmn-moddle';
+import { isBpmnInteractionNode } from './BpmnDocument.js';
+import {
+  bpmnModdleIdPath,
+  inspectBpmnXmlIdentifiers,
+  invalidBpmnIdMessage,
+  isBpmnId,
+  parseBpmnXml
+} from '../utils/BpmnId.js';
 import type {
   BpmnValidationIssue,
   ValidationLevel,
@@ -91,9 +99,26 @@ export class BpmnValidator {
     }
 
     const issues: BpmnValidationIssue[] = [];
+    const xmlIdentifierProblems = inspectBpmnXmlIdentifiers(xml);
+    for (const problem of xmlIdentifierProblems) {
+      this.addIssue(issues, {
+        code: problem.code,
+        severity: 'error',
+        message: problem.code === 'BPMN_INVALID_ID'
+          ? invalidBpmnIdMessage(problem.value, problem.path)
+          : `Duplicate BPMN xsd:ID at ${problem.path}: ${JSON.stringify(problem.value)}`
+            + ` is already used at ${problem.previousPath}`,
+        elementId: problem.value
+      });
+    }
+    const invalidAuthoredValues = new Set(
+      xmlIdentifierProblems
+        .filter(problem => problem.code === 'BPMN_INVALID_ID')
+        .map(problem => problem.value)
+    );
     let parseResult: ParseResult;
     try {
-      parseResult = await this.moddle.fromXML(xml);
+      parseResult = await parseBpmnXml(this.moddle, xml);
     } catch (error) {
       this.addIssue(issues, {
         code: 'BPMN_PARSE_ERROR',
@@ -103,8 +128,32 @@ export class BpmnValidator {
       return this.result(level, issues);
     }
 
+    const parsedElements = Array.from(new Set(Object.values(parseResult.elementsById)));
+    for (const element of parsedElements) {
+      if (isBpmnId(element?.id) || invalidAuthoredValues.has(element?.id)) continue;
+      const path = bpmnModdleIdPath(element);
+      this.addIssue(issues, {
+        code: 'BPMN_INVALID_ID',
+        severity: 'error',
+        message: invalidBpmnIdMessage(element?.id, path),
+        elementId: typeof element?.id === 'string' ? element.id : undefined
+      });
+    }
+
     const unresolvedReferenceIds = new Set<string>();
     for (const reference of parseResult.references) {
+      if (!isBpmnId(reference.id) && !invalidAuthoredValues.has(reference.id)) {
+        const elementPath = bpmnModdleIdPath(reference.element).replace(/\.id$/u, '');
+        const property = typeof reference.property === 'string'
+          ? reference.property
+          : 'reference';
+        this.addIssue(issues, {
+          code: 'BPMN_INVALID_ID',
+          severity: 'error',
+          message: invalidBpmnIdMessage(reference.id, `${elementPath}.${property}`),
+          elementId: reference.id
+        });
+      }
       if (!Object.prototype.hasOwnProperty.call(parseResult.elementsById, reference.id)) {
         unresolvedReferenceIds.add(reference.id);
         this.addIssue(issues, {
@@ -320,12 +369,12 @@ export class BpmnValidator {
       for (const flow of collaboration.element.messageFlows || []) {
         const source = semanticById.get(flow.sourceRef?.id);
         const target = semanticById.get(flow.targetRef?.id);
-        if (!source || !target || !this.isInteractionNode(source.element)
-          || !this.isInteractionNode(target.element)) {
+        if (!source || !target || !isBpmnInteractionNode(source.element)
+          || !isBpmnInteractionNode(target.element)) {
           this.addIssue(issues, {
             code: 'BPMN_INVALID_MESSAGE_FLOW_ENDPOINT',
             severity: 'error',
-            message: 'Message flow endpoints must be participants or flow nodes',
+            message: 'Message flow endpoints must be BPMN interaction nodes',
             elementId: flow.id
           });
           continue;
@@ -627,10 +676,6 @@ export class BpmnValidator {
 
   private isInstance(element: any, type: string): boolean {
     return typeof element?.$instanceOf === 'function' && element.$instanceOf(type);
-  }
-
-  private isInteractionNode(element: any): boolean {
-    return element?.$type === 'bpmn:Participant' || this.isInstance(element, 'bpmn:FlowNode');
   }
 
   private belongsToCollaboration(

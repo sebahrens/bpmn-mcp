@@ -1,0 +1,9 @@
+{
+  "reviewer": "maintainability",
+  "findings": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "No direct unit test verifies that a later bare standalone declaration (for example, `A`) upgrades an edge-created placeholder without a duplicate warning.",
+    "No direct unit test verifies that a class-only declaration (for example, `A:::highlighted`) upgrades an edge-created placeholder and preserves its unsupported-class warning."
+  ]
+}

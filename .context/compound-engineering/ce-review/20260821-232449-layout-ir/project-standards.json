@@ -1,0 +1,8 @@
+{
+  "reviewer": "project-standards",
+  "findings": [],
+  "residual_risks": [
+    "AGENTS.md and CLAUDE.md define Beads workflow, non-interactive shell-operation, and conservative git/sync rules, but they contain no TypeScript naming, module-structure, layout-contract, portability, or test-content standards applicable to the scoped implementation. No explicit-rule violation was found in the reviewed code or focused test."
+  ],
+  "testing_gaps": []
+}

@@ -1,0 +1,26 @@
+{
+  "reviewer": "adversarial",
+  "findings": [
+    {
+      "title": "Retry cascade duplicates persisted Mermaid imports",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "line": 593,
+      "why_it_matters": "A trusted client can treat idempotentHint as permission to retry an interrupted call. Each retry of open_mermaid_file succeeds and persists another UUID-named BPMN diagram, so a timeout or aggressive retry loop can fill the local store with duplicates while every annotation verification layer still reports success.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Classify open_mermaid_file as ADDITIVE with idempotentHint: false, update its explicit expected tuple, and add a repeated-call probe asserting that identical calls produce distinct files so the non-idempotent behavior cannot be relabeled accidentally.",
+      "confidence": 1.0,
+      "evidence": [
+        "Trigger: src/server/tools.ts:593 assigns IDEMPOTENT_UPDATE, whose idempotentHint is true, to open_mermaid_file.",
+        "Execution path: src/server/handlers.ts:298-313 converts and imports on every call; src/core/SimpleBpmnEngine.ts:931-933 assigns a default filename and persists it; defaultFilename at lines 1430-1441 embeds a fresh UUID.",
+        "Observed failure: two identical open_mermaid_file calls both succeeded, changed the active filename, and grew the temporary directory from one generated .bpmn file to two generated .bpmn files.",
+        "Verification cascade: tests/contracts/tool-annotations.test.ts:52 copies the incorrect tuple, while its repeat probe at lines 152-171 exercises only update_element and save; scripts/package-smoke.mjs:432-446 derives expected annotations from the same built tool definitions, so source, bundle, and packed executable all agree on the same false hint and the checks pass."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": []
+}

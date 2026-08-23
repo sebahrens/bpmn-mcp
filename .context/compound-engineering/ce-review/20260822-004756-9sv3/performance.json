@@ -1,0 +1,33 @@
+{
+  "reviewer": "performance",
+  "findings": [
+    {
+      "title": "A retained edit performs quadratic DI lookups on an import-size document",
+      "severity": "P1",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 647,
+      "why_it_matters": "The configured limits accept a 5 MiB document with up to 10,000 semantic elements and 30,000 DI elements. For every shape and edge in the primary plane, retained reconciliation searches plane.planeElement from the beginning with Array.find. An unrelated one-field update therefore becomes O(shapes^2 + edges*planeElements) before XML writing, on the Node event loop and while the process lock is held. At accepted diagram sizes, repeated add/update/connect/save requests queue behind multi-second CPU work rather than just paying the unavoidable parse/serialize cost.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Before the reconciliation loops, build Map<string, any> indexes of plane elements by id (and, if needed, by bpmnElement id). Use O(1) lookup for each BpmnShape/BPMNEdge and update the map when appending a newly created DI object. Keep the existing full-document serialization semantics; this removes only the repeated scans.",
+      "confidence": 0.98,
+      "evidence": [
+        "reconcileRetainedDiagram loops over document.diagram.shapes and executes `plane.planeElement.find(...)` for each shape (src/core/BpmnDocument.ts:647-652), then repeats the same scan for every edge (lines 661-666). No index is built for either loop.",
+        "Each mutation reaches this code after cloning the complete document and reparsing retained sourceXml (src/core/SimpleBpmnEngine.ts:507-520; src/core/BpmnDocument.ts:407-414), and withProcessLock retains the lock until serialization and file save finish (src/core/SimpleBpmnEngine.ts:502, 537-557).",
+        "Executable benchmark using accepted generated BPMN documents with one process, N tasks, and N shapes: a single `updateElement('T0', { name: 'x' })` took 82 ms at N=1,000, 147 ms at N=2,000, 394 ms at N=4,000, and 1,150 ms at N=8,000. The steep growth occurs before the configured 10,000-element / 30,000-DI limits, so it is not an extreme-scale theoretical concern."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Every retained mutation intentionally clones, reparses, and writes the full BPMN document. Those linear costs are bounded by the configured limits but should be measured under representative documents after the quadratic DI scans are removed.",
+    "ImportXml parses the document for indexing and immediately reparses sourceXml during its autosave commit. This adds import latency, but it is a one-shot cost and optimizing it safely requires a design for atomic retained-moddle state rather than a local micro-optimization.",
+    "The focused fixture is small, so its passing tests cannot reveal lock hold time or event-loop latency at the accepted import limits."
+  ],
+  "testing_gaps": [
+    "Add a performance regression test or benchmark that imports an 8,000-10,000-element document with matching DI and times a targeted update; assert the reconciliation phase remains approximately linear after indexing plane elements.",
+    "Benchmark repeated add/connect/save operations on the same retained document, because each operation serializes under the per-process lock and is the user-visible high-frequency path.",
+    "Measure documents with multiple diagrams and dense edges up to maxDiElements to establish a practical latency budget for import and mutation."
+  ]
+}

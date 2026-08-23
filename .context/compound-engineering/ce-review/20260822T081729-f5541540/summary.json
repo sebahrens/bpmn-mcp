@@ -1,0 +1,29 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "src/core/BpmnEngine.ts",
+    "tests/helpers/tempDiagrams.ts",
+    "tests/integration/BpmnEngine.test.ts (sandbox hooks only)",
+    "tests/integration/handlers.test.ts (sandbox hooks only)",
+    "tests/integration/handlers-new.test.ts (sandbox hooks and unique filename only)"
+  ],
+  "intent": "Isolate handler filesystem tests from the user's default diagrams directory with per-test temporary resources, deterministic cleanup, and worker-safe filenames.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native-reviewer",
+    "learnings-researcher",
+    "kieran-typescript",
+    "api-contract"
+  ],
+  "findings": [],
+  "applied_fixes": [],
+  "residual_actionable_work": [],
+  "advisory": [
+    "The suites are intentionally non-concurrent within each Jest worker; separate files receive separate module environments and unique temporary directories.",
+    "The default-directory fingerprint covers BPMN files, which are the only files written by the scoped engine and handler operations."
+  ],
+  "verdict": "Ready to merge"
+}

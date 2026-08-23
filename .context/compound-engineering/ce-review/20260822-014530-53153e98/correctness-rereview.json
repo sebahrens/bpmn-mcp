@@ -1,0 +1,30 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "Trailing stdout corruption escapes protocol validation",
+      "severity": "P2",
+      "file": "tests/e2e/server.test.ts",
+      "line": 238,
+      "why_it_matters": "A server can emit a valid response followed by malformed or otherwise unexpected stdout in the same chunk and this strict e2e will still pass. Real MCP clients continue parsing the stdio stream and can fail or desynchronize on those bytes, so the harness can certify a protocol-broken server.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Keep one stdout parser for the lifetime of ServerLaunch, validate every non-empty line, and route valid responses by id instead of removing the stdout listener as soon as one request resolves. Add a synthetic child that writes a matching response and then an invalid line in the same stdout write, and assert that the harness rejects it.",
+      "confidence": 0.96,
+      "evidence": [
+        "tests/e2e/server.test.ts:201 creates responseBuffer inside each individual sendRequest call rather than at the launched-server stream boundary.",
+        "tests/e2e/server.test.ts:208 removes the only stdout data listener when finish runs.",
+        "tests/e2e/server.test.ts:237-239 calls finish and immediately returns on the first matching id, leaving any later lines already present in responseBuffer unparsed; for output `<matching response>\\nnot-json\\n`, the request resolves and the invalid line is discarded."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The request helper deliberately supports only one in-flight request; concurrent calls would attach competing stdout listeners and make response ownership ambiguous.",
+    "Startup readiness accepts any stderr buffer beginning with the expected marker and does not independently fail on later stderr, so the startup diagnostic check is not an exact-line assertion."
+  ],
+  "testing_gaps": [
+    "No synthetic lifecycle case emits a valid matching response followed by malformed stdout in the same write to prove that the full stdio stream remains protocol-valid after request resolution."
+  ]
+}

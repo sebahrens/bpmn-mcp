@@ -1,0 +1,49 @@
+{
+  "reviewer": "kieran-typescript",
+  "findings": [
+    {
+      "title": "The retained-document core disables type checking across its mutation boundary",
+      "severity": "P1",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 414,
+      "why_it_matters": "The lossless path's correctness depends on distinguishing BPMN roots, typed elements, connections, shapes, and edges, but its central moddle graph is Map<string, any> and every reconcile helper accepts any. TypeScript therefore cannot catch a misspelled moddle property, an invalid $type/collection pairing, or an undefined reference being installed into a retained graph; those failures surface only after a user edits and re-exports BPMN.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Introduce a small local structural ModdleElement model (id, $type, $parent, optional BPMN/DI collections and references) plus narrowed Process/Collaboration/Shape/Edge interfaces. Type the parser result and semantic map with that model, retaining an explicit escape hatch only for unknown extension payloads. Add compile-time fixtures or narrow runtime guards for each modeled $type.",
+      "confidence": 0.98,
+      "evidence": [
+        "src/core/BpmnDocument.ts:414 constructs new Map<string, any>(Object.entries(parsed.elementsById)); that map drives all retained semantic mutation at lines 418-510.",
+        "The same untyped value flows through detachSemantic (line 520), attachElement (lines 538-557), attachConnection (lines 559-580), applyRetainedProperties (lines 582-608), reconcileRetainedDiagram (lines 610-672), and parser/indexing helpers (lines 690-1135).",
+        "The new BpmnDocument.ts contains 42 explicit any annotations/usages, including definitions, semantic values, diagrams, planes, imported nodes, connections, and DI points; npm run type-check succeeds because these annotations opt out of checking rather than prove the graph operations safe."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "One 1,136-line serializer owns incompatible lifecycle responsibilities",
+      "severity": "P2",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 209,
+      "why_it_matters": "BpmnDocumentSerializer now creates clean documents, synchronizes DI, serializes generated documents, reparses and reconciles retained documents, manages attachment/detachment, parses imports into mutation indexes, validates import limits, and reads geometry. The lossless behavior is consequently hard to isolate and test: a change to import indexing or DI reconciliation requires reasoning about unrelated new-document serialization in the same stateful class.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Keep the public serializer facade, but extract the retained moddle reconciler and import-to-index reader into dedicated modules with narrow inputs/outputs. This makes the critical lossless path independently typed and testable while preserving the existing engine call sites.",
+      "confidence": 0.84,
+      "evidence": [
+        "The new file is 1,136 lines; BpmnDocumentSerializer spans lines 209-1136.",
+        "serialize handles generated-document construction at lines 212-399, serializeRetained handles parsed graph reconciliation at lines 407-518, and parse/import indexing plus limits occupies lines 690-1135.",
+        "These paths have different invariants and failure modes but share mutable serializer state and the same untyped semantic map, increasing the chance that future edits accidentally couple generated and retained document behavior."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The bpmn-moddle declaration used by this code declares all parser and creator outputs as any, so successful tsc checks cannot establish the safety of the retained moddle graph.",
+    "Focused tests prove selected runtime round trips but cannot protect against misspelled or incompatible moddle properties introduced in future reconciliation branches."
+  ],
+  "testing_gaps": [
+    "Add compile-time tests for the local narrowed moddle interfaces once introduced, especially root/container, BPMNShape/BPMNEdge, and connection reference variants.",
+    "Split retained reconcile/import tests by module boundary after extraction so mutation, DI synchronization, and source indexing failures are independently diagnosable."
+  ]
+}

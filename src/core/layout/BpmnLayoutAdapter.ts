@@ -30,6 +30,18 @@ export interface LayoutComplexityLimits {
 }
 
 let activeLayoutSubprocesses = 0;
+const layoutSubprocesses = new Set<ReturnType<typeof spawn>>();
+
+export async function closeActiveLayoutSubprocesses(): Promise<void> {
+  await Promise.all(Array.from(layoutSubprocesses, child => new Promise<void>((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve();
+      return;
+    }
+    child.once('close', () => resolve());
+    child.kill('SIGKILL');
+  })));
+}
 
 export class BpmnLayoutError extends Error {
   readonly code: string;
@@ -206,6 +218,7 @@ async function loadSelectedLayoutInSubprocess(
     const child = spawn(process.execPath, ['--input-type=module', '--eval', runner], {
       stdio: ['pipe', 'pipe', 'pipe']
     });
+    layoutSubprocesses.add(child);
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -231,6 +244,7 @@ async function loadSelectedLayoutInSubprocess(
       if (!timeoutError) finish(error);
     });
     child.on('close', code => {
+      layoutSubprocesses.delete(child);
       if (timeoutError) {
         finish(timeoutError);
         return;

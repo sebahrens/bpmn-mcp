@@ -1,0 +1,65 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Unicode aliases leak through retained unknown attributes",
+      "severity": "P2",
+      "file": "src/utils/BpmnId.ts",
+      "line": 132,
+      "why_it_matters": "A retained BPMN document with an extension attribute whose value is a valid Unicode ID is silently rewritten to an internal ASCII alias. This corrupts authored extension metadata during parse/export and directly breaks the Unicode round-trip contract.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Restore string values inside `$attrs` before skipping other moddle-internal `$` properties, then rerun the focused NCName suites.",
+      "confidence": 1.0,
+      "evidence": [
+        "src/utils/BpmnId.ts:131-133 skips every property beginning with `$`, including moddle's `$attrs` map where unknown extension attributes are stored.",
+        "The current focused run fails tests/unit/utils/BpmnId.test.ts:49: expected custom:mirror to be `Å_Task`, received `__mcp_bpmn_unicode_id_1`."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Empty optional references bypass NCName validation",
+      "severity": "P2",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 201,
+      "why_it_matters": "The empty-string boundary is correctly rejected by the shared predicate but is not consistently routed through the new path-aware document assertion. Some optional references therefore produce unrelated lookup errors, while an empty participant processRef is silently serialized as an absent reference, contrary to the reject-without-sanitizing requirement.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Replace truthiness guards for optional ID/reference fields with explicit undefined/null checks and extend the path table with empty-string cases for itemSubjectRef, parentLaneId, processRef, defaultFlow, and evaluatesToTypeRef.",
+      "confidence": 0.98,
+      "evidence": [
+        "src/core/BpmnDocument.ts:201,208,227,230,283 uses truthiness checks before calling the NCName assertion, unlike the explicit undefined/null checks at lines 233-249.",
+        "A direct serializer probe with participant processRef set to an empty string emitted `<bpmn:participant id=\"Pool_1\" />` with no processRef instead of throwing a path-aware invalid-ID error; an empty dataObject.itemSubjectRef produced only a generic lookup error.",
+        "tests/unit/core/BpmnIds.test.ts:66-105 exercises document paths with `a:b` only, while tests/unit/utils/BpmnId.test.ts:22 checks the empty string solely at predicate level."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Imported duplicate IDs lack regression coverage",
+      "severity": "P2",
+      "file": "tests/unit/core/BpmnIds.test.ts",
+      "line": 107,
+      "why_it_matters": "The acceptance criteria require imported as well as authored semantic and DI IDs to be globally unique. The implementation currently relies on bpmn-moddle duplicate-ID warnings during import, but no focused test protects that dependency or proves the validator and engine reject duplicate semantic/DI IDs before persistence.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add duplicate-ID XML cases covering semantic-to-semantic and semantic-to-DI collisions, and assert serializer.parse, all validator levels, and engine.importXml reject them without registering or writing a document.",
+      "confidence": 0.94,
+      "evidence": [
+        "tests/unit/core/BpmnIds.test.ts:107-114 covers one authored semantic-to-DI collision before serialization, but the import test at lines 145-155 covers syntax only.",
+        "A raw bpmn-moddle probe showed duplicate IDs collapse in elementsById and are reported through parser warnings, making the current import guarantee dependent on warning handling rather than the explicit uniqueness assertion tested for authored documents."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The focused NCName suites were not green on the reviewed tree because the retained-unknown-attribute Unicode test failed; type-check and git diff --check passed.",
+    "The broader non-e2e Jest run reached 671 passing tests but failed one out-of-scope SimpleBpmnEngine test with a SafeFilePath worker EPIPE, so it did not provide a clean repository-wide signal."
+  ],
+  "testing_gaps": [
+    "The Unicode round-trip test asserts semantic/event IDs but does not inspect the reopened BPMNShape ID and bpmnElement reference for the Unicode task, leaving Unicode DI restoration implicit.",
+    "Tool-boundary coverage proves Unicode acceptance for event definition IDs but does not directly assert NCName rejection for the many reference fields changed to the shared bpmnId schema."
+  ]
+}

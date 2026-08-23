@@ -37,9 +37,3 @@ jobs:
 
       - name: Run contributor quality gate
         run: npm run check
-
-      - name: Verify package entrypoints
-        run: npm run test:package
-
-      - name: Audit production dependencies
-        run: npm run audit:prod

@@ -1,0 +1,8 @@
+{
+  "reviewer": "security",
+  "findings": [],
+  "residual_risks": [
+    "Prototype-pollution and oversized-payload defenses remain separate blocked beads. The Zod request-boundary change does not introduce a regression in either area."
+  ],
+  "testing_gaps": []
+}

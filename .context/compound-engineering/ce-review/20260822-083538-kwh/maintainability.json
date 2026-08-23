@@ -1,0 +1,25 @@
+{
+  "reviewer": "maintainability",
+  "findings": [
+    {
+      "title": "Preserve per-tool Zod argument types",
+      "severity": "P2",
+      "file": "src/server/handlers.ts",
+      "line": 25,
+      "why_it_matters": "The new validation boundary is presented as the source of runtime validation and argument types, but the dispatch map widens every entry to the union of all tool arguments and every target handler still accepts any. A later schema rename or removal can therefore leave a handler reading a stale field with no compiler feedback, recreating the drift this refactor is intended to eliminate.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Type the dispatcher map per key (for example, a mapped ToolName-to-ToolArguments<Name> type) and change each handler parameter from any to its corresponding ToolArguments<'tool_name'>. Keep the parsed request correlated when selecting the dispatcher, using a small typed dispatch helper if needed.",
+      "confidence": 0.92,
+      "evidence": [
+        "src/server/handlers.ts:25-28 declares every dispatcher as `(args: ToolArguments<ToolName>)`, which is a union rather than the argument type for that dispatcher key.",
+        "src/server/handlers.ts:82,98,120 and the remaining argument-taking handlers retain `args: any`, so the derived ToolArguments type is not consumed by handler implementations.",
+        "The new `ParsedToolRequest` in src/server/tools.ts:308-310 preserves name/args correlation, but the widened dispatcher signature at src/server/handlers.ts:25-28 discards it before dispatch."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": []
+}

@@ -27,6 +27,17 @@ import {
   ProcessContext,
   Size
 } from '../types/index.js';
+import {
+  assertBpmnId,
+  assertBpmnXmlIdentifiers,
+  bpmnModdleIdPath,
+  invalidBpmnIdMessage,
+  isBpmnId,
+  isBpmnQName,
+  parseBpmnXml
+} from '../utils/BpmnId.js';
+
+export { isBpmnId, isBpmnQName };
 
 const TARGET_NAMESPACE = 'http://bpmn.io/schema/bpmn';
 const CAMUNDA_7_NAMESPACE = 'http://camunda.org/schema/1.0/bpmn';
@@ -70,16 +81,27 @@ const ROOT_EVENT_REFERENCE_PROPERTIES: Partial<Record<EventDefinitionType, strin
 };
 
 const FLOW_NODE_TYPES = new Set<string>(BPMN_FLOW_NODE_TYPES);
+const INTERACTION_NODE_TYPES = new Set<string>([
+  'bpmn:Participant',
+  'bpmn:StartEvent',
+  'bpmn:EndEvent',
+  'bpmn:IntermediateThrowEvent',
+  'bpmn:IntermediateCatchEvent',
+  'bpmn:BoundaryEvent',
+  'bpmn:Task',
+  'bpmn:UserTask',
+  'bpmn:ServiceTask',
+  'bpmn:ScriptTask',
+  'bpmn:BusinessRuleTask',
+  'bpmn:ManualTask',
+  'bpmn:ReceiveTask',
+  'bpmn:SendTask',
+  'bpmn:SubProcess',
+  'bpmn:Transaction',
+  'bpmn:CallActivity'
+]);
 const ARTIFACT_TYPES = new Set<string>(BPMN_ARTIFACT_TYPES);
 const CONNECTION_TYPES = new Set<string>(BPMN_CONNECTION_TYPES);
-const NC_NAME_START_CHARACTERS = String.raw`A-Z_a-z\xC0-\xD6\xD8-\xF6\xF8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD\u{10000}-\u{EFFFF}`;
-const NC_NAME_CHARACTERS = `${NC_NAME_START_CHARACTERS}\\-.0-9\\xB7\\u0300-\\u036F\\u203F-\\u2040`;
-// The ranges are the XML 1.0 NCName productions, not user-visible grapheme matching.
-// eslint-disable-next-line no-misleading-character-class
-const BPMN_QNAME_PATTERN = new RegExp(
-  `^[${NC_NAME_START_CHARACTERS}][${NC_NAME_CHARACTERS}]*(?::[${NC_NAME_START_CHARACTERS}][${NC_NAME_CHARACTERS}]*)?$`,
-  'u'
-);
 const CONTAINED_ARTIFACT_TYPES = new Set<BpmnArtifactType>([
   'bpmn:TextAnnotation',
   'bpmn:Group'
@@ -89,14 +111,15 @@ export function isBpmnFlowNodeType(type: string): type is BpmnFlowNodeType {
   return FLOW_NODE_TYPES.has(type);
 }
 
-/**
- * BPMN CallActivity.calledElement is an optional XML Schema QName. It is a
- * callable reference and may therefore name a process outside this document;
- * this check intentionally validates lexical QName form without resolving it
- * against the document's local process IDs.
- */
-export function isBpmnQName(value: unknown): value is string {
-  return typeof value === 'string' && BPMN_QNAME_PATTERN.test(value);
+/** Types that inherit BPMN InteractionNode: Participant, Event, or Activity. */
+export function isBpmnInteractionNodeType(type: string): boolean {
+  return INTERACTION_NODE_TYPES.has(type);
+}
+
+/** Test moddle inheritance without broadening InteractionNode to every FlowNode. */
+export function isBpmnInteractionNode(element: any): boolean {
+  return typeof element?.$instanceOf === 'function'
+    && element.$instanceOf('bpmn:InteractionNode');
 }
 
 export function isBpmnArtifactType(type: string): type is BpmnArtifactType {
@@ -134,6 +157,156 @@ function isFlowContainerType(type: string): boolean {
   return type === 'bpmn:SubProcess' || type === 'bpmn:Transaction';
 }
 
+function assertParsedBpmnIds(elementsById: Record<string, any>): void {
+  const visited = new Set<object>();
+  for (const element of Object.values(elementsById)) {
+    if (!element || typeof element !== 'object' || visited.has(element)) continue;
+    visited.add(element);
+    if (!isBpmnId(element.id)) {
+      throw new Error(invalidBpmnIdMessage(element.id, bpmnModdleIdPath(element)));
+    }
+  }
+}
+
+function assertBpmnDocumentIds(document: BpmnDocument, includeDi: boolean): void {
+  const seen = new Map<string, { identity: string; path: string }>();
+  const add = (value: unknown, path: string, identity = path): void => {
+    assertBpmnId(value, path);
+    const previous = seen.get(value);
+    if (!previous) {
+      seen.set(value, { identity, path });
+    } else if (previous.identity !== identity) {
+      throw new Error(
+        `Duplicate BPMN xsd:ID at ${path}: ${JSON.stringify(value)} is already used at ${previous.path}`
+      );
+    }
+  };
+  const reference = (value: unknown, path: string): void => assertBpmnId(value, path);
+  const keyedPath = (collection: string, key: string, property = 'id'): string =>
+    `${collection}[${JSON.stringify(key)}].${property}`;
+
+  add(document.definitionsId, 'definitions.id');
+  for (const [key, process] of document.processes) {
+    add(process.id, keyedPath('processes', key));
+  }
+  for (const [key, collaboration] of document.collaborations) {
+    add(collaboration.id, keyedPath('collaborations', key));
+  }
+  for (const itemDefinitionId of document.itemDefinitions) {
+    add(itemDefinitionId, keyedPath('itemDefinitions', itemDefinitionId));
+  }
+  for (const [key, dataObject] of document.dataObjects) {
+    add(dataObject.id, keyedPath('dataObjects', key));
+    reference(dataObject.ownerId, keyedPath('dataObjects', key, 'ownerId'));
+    reference(dataObject.scopeId, keyedPath('dataObjects', key, 'scopeId'));
+    if (dataObject.itemSubjectRef !== undefined && dataObject.itemSubjectRef !== null) {
+      reference(dataObject.itemSubjectRef, keyedPath('dataObjects', key, 'itemSubjectRef'));
+    }
+  }
+  for (const [key, laneSet] of document.laneSets) {
+    add(laneSet.id, keyedPath('laneSets', key));
+    reference(laneSet.processId, keyedPath('laneSets', key, 'processId'));
+    if (laneSet.parentLaneId !== undefined && laneSet.parentLaneId !== null) {
+      reference(laneSet.parentLaneId, keyedPath('laneSets', key, 'parentLaneId'));
+    }
+    laneSet.laneIds.forEach((laneId, index) => {
+      reference(laneId, `${keyedPath('laneSets', key, 'laneIds')}[${index}]`);
+    });
+  }
+  for (const [key, lane] of document.lanes) {
+    add(lane.id, keyedPath('lanes', key));
+    reference(lane.processId, keyedPath('lanes', key, 'processId'));
+    reference(lane.laneSetId, keyedPath('lanes', key, 'laneSetId'));
+    lane.flowNodeRefs.forEach((flowNodeId, index) => {
+      reference(flowNodeId, `${keyedPath('lanes', key, 'flowNodeRefs')}[${index}]`);
+    });
+  }
+  for (const [key, element] of document.elements) {
+    add(element.id, keyedPath('elements', key));
+    reference(element.ownerId, keyedPath('elements', key, 'ownerId'));
+    reference(element.scopeId, keyedPath('elements', key, 'scopeId'));
+    if (element.kind === 'participant'
+      && element.processRef !== undefined && element.processRef !== null) {
+      reference(element.processRef, keyedPath('elements', key, 'processRef'));
+    }
+    if (element.kind === 'flowNode'
+      && element.defaultFlow !== undefined && element.defaultFlow !== null) {
+      reference(element.defaultFlow, keyedPath('elements', key, 'defaultFlow'));
+    }
+    for (const property of ['attachTo', 'dataObjectRef', 'itemSubjectRef'] as const) {
+      const value = element.properties[property];
+      if (value !== undefined && value !== null) {
+        reference(value, keyedPath('elements', key, `properties.${property}`));
+      }
+    }
+    const multiInstance = element.properties.multiInstance;
+    if (multiInstance && typeof multiInstance === 'object' && !Array.isArray(multiInstance)) {
+      for (const property of ['loopDataInputRef', 'loopDataOutputRef'] as const) {
+        const value = (multiInstance as Record<string, unknown>)[property];
+        if (value !== undefined) {
+          reference(
+            value,
+            keyedPath('elements', key, `properties.multiInstance.${property}`)
+          );
+        }
+      }
+    }
+
+    const payload = element.properties.eventDefinitionPayload;
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      const eventPayload = payload as EventDefinitionPayload;
+      if (eventPayload.definitionId !== undefined) {
+        add(
+          eventPayload.definitionId,
+          keyedPath('elements', key, 'properties.eventDefinitionPayload.definitionId')
+        );
+      }
+      if (eventPayload.reference?.id !== undefined) {
+        const definitionType = String(element.properties.eventDefinition || 'unknown');
+        add(
+          eventPayload.reference.id,
+          keyedPath('elements', key, 'properties.eventDefinitionPayload.reference.id'),
+          `event-root:${definitionType}:${eventPayload.reference.id}`
+        );
+      }
+      if (eventPayload.activityRef !== undefined) {
+        reference(
+          eventPayload.activityRef,
+          keyedPath('elements', key, 'properties.eventDefinitionPayload.activityRef')
+        );
+      }
+    }
+  }
+  for (const [key, connection] of document.connections) {
+    add(connection.id, keyedPath('connections', key));
+    reference(connection.source, keyedPath('connections', key, 'source'));
+    reference(connection.target, keyedPath('connections', key, 'target'));
+    reference(connection.ownerId, keyedPath('connections', key, 'ownerId'));
+    reference(connection.scopeId, keyedPath('connections', key, 'scopeId'));
+    if (connection.condition?.evaluatesToTypeRef !== undefined
+      && connection.condition.evaluatesToTypeRef !== null) {
+      reference(
+        connection.condition.evaluatesToTypeRef,
+        keyedPath('connections', key, 'condition.evaluatesToTypeRef')
+      );
+    }
+  }
+
+  add(document.diagram.id, 'diagram.id');
+  add(document.diagram.planeId, 'diagram.planeId');
+  reference(document.diagram.planeElementId, 'diagram.planeElementId');
+  if (!includeDi) return;
+
+  for (const [key, shape] of document.diagram.shapes) {
+    add(shape.id, keyedPath('diagram.shapes', key));
+    reference(shape.elementId, keyedPath('diagram.shapes', key, 'elementId'));
+  }
+  for (const [key, edge] of document.diagram.edges) {
+    add(edge.id, keyedPath('diagram.edges', key));
+    reference(edge.connectionId, keyedPath('diagram.edges', key, 'connectionId'));
+  }
+}
+
 /**
  * Resolve and validate the participant boundary represented by a message-flow
  * endpoint. Flow nodes inherit that boundary from the participant whose
@@ -145,7 +318,7 @@ export function resolveMessageFlowParticipant(
   collaborationId: string,
   endpoint: BpmnDocumentElement
 ): BpmnParticipantElement {
-  if (endpoint.kind === 'artifact') {
+  if (!isBpmnInteractionNodeType(endpoint.type)) {
     throw new Error(`Message flow endpoint ${endpoint.id} is not a BPMN interaction node`);
   }
   if (endpoint.kind === 'participant') {
@@ -213,6 +386,7 @@ export function createBpmnDocument(
   type: 'process' | 'collaboration',
   extensionProfile: BpmnExtensionProfile = 'portable'
 ): BpmnDocument {
+  assertBpmnId(rootId, `${type}.id`);
   const document: BpmnDocument = {
     definitionsId: `Definitions_${rootId}`,
     targetNamespace: TARGET_NAMESPACE,
@@ -406,11 +580,14 @@ export class BpmnDocumentSerializer {
   private readonly moddle = new BpmnModdle({ camunda: camundaDescriptor });
 
   async serialize(document: BpmnDocument, formatted = true): Promise<string> {
+    assertBpmnDocumentIds(document, true);
     if (document.sourceXml) {
       synchronizeDiagramInterchange(document, false);
+      assertBpmnDocumentIds(document, true);
       return this.serializeRetained(document, formatted);
     }
     synchronizeDiagramInterchange(document);
+    assertBpmnDocumentIds(document, true);
 
     const definitions = this.moddle.create('bpmn:Definitions', {
       id: document.definitionsId,
@@ -661,10 +838,12 @@ export class BpmnDocumentSerializer {
    * DI) remain owned by bpmn-moddle and survive later mutations.
    */
   private async serializeRetained(document: BpmnDocument, formatted: boolean): Promise<string> {
-    const parsed = await this.moddle.fromXML(document.sourceXml!);
+    assertBpmnXmlIdentifiers(document.sourceXml!);
+    const parsed = await parseBpmnXml(this.moddle, document.sourceXml!);
     if (parsed.warnings.length > 0) {
       throw new Error('Retained BPMN document can no longer be parsed safely');
     }
+    assertParsedBpmnIds(parsed.elementsById);
 
     const definitions = parsed.rootElement;
     const semanticById = new Map<string, any>(Object.entries(parsed.elementsById));
@@ -830,7 +1009,7 @@ export class BpmnDocumentSerializer {
       format: formatted,
       preamble: true
     });
-    const verification = await this.moddle.fromXML(xml);
+    const verification = await parseBpmnXml(this.moddle, xml);
     const unresolvedReferences = verification.references.filter(
       reference => !Object.prototype.hasOwnProperty.call(verification.elementsById, reference.id)
     );
@@ -1348,7 +1527,9 @@ export class BpmnDocumentSerializer {
     let sourceIds = new Set<string>();
     let elementsById: Record<string, any> = {};
     try {
-      const result = await this.moddle.fromXML(xml);
+      assertBpmnXmlIdentifiers(xml);
+      const result = await parseBpmnXml(this.moddle, xml);
+      assertParsedBpmnIds(result.elementsById);
       const hasUnresolvedReferences = result.references.some(
         reference => !Object.prototype.hasOwnProperty.call(result.elementsById, reference.id)
       );

@@ -6,7 +6,7 @@ import { SimpleBpmnEngine } from '../../../src/core/SimpleBpmnEngine.js';
 import { BpmnRequestHandler } from '../../../src/server/handlers.js';
 import { diagramContext } from '../../../src/core/DiagramContext.js';
 import { IdGenerator } from '../../../src/utils/IdGenerator.js';
-import { tools } from '../../../src/server/tools.js';
+import { TOOL_INPUT_LIMITS, tools } from '../../../src/server/tools.js';
 
 describe('lane semantics', () => {
   let directory: string;
@@ -170,5 +170,52 @@ describe('lane semantics', () => {
       .laneSets[0].lanes;
     expect(lanes.map((lane: any) => lane.id)).toEqual(['Lane_2']);
     expect(lanes[0].flowNodeRef || []).toHaveLength(0);
+  });
+
+  it('enforces flow-node count bounds at the direct engine boundary without mutation', async () => {
+    const context = await engine.createProcess('Bounded lane', 'collaboration');
+    const participant = await engine.createElement(context.id, {
+      type: 'bpmn:Participant', name: 'Company'
+    });
+    if (participant.kind !== 'participant' || !participant.processRef) {
+      throw new Error('Expected a white-box participant');
+    }
+    const flowNodeIds = Array.from(
+      { length: TOOL_INPUT_LIMITS.laneFlowNodeIds.maxItems },
+      (_, index) => `Task_${index}`
+    );
+    flowNodeIds.forEach((id, index) => context.elements.set(id, {
+      kind: 'flowNode',
+      id,
+      type: 'bpmn:Task',
+      name: `Task ${index}`,
+      ownerId: participant.processRef!,
+      scopeId: participant.processRef!,
+      position: { x: 100 + index, y: 200 },
+      size: { width: 100, height: 80 },
+      properties: {}
+    }));
+    jest.spyOn((engine as unknown as {
+      serializer: { serialize: () => Promise<string> };
+    }).serializer, 'serialize').mockResolvedValue('<bpmn:definitions />');
+
+    await expect(engine.addLane(
+      context.id, participant.id, 'Maximum members', flowNodeIds
+    )).resolves.toMatchObject({ flowNodeRefs: flowNodeIds });
+
+    const lanesBefore = Array.from(context.document.lanes.entries());
+    const xmlBefore = context.xml;
+    const diskBefore = await fs.readFile(join(directory, context.filename!), 'utf8');
+    await expect(engine.addLane(
+      context.id,
+      participant.id,
+      'One member too many',
+      [...flowNodeIds, 'Task_Overflow']
+    )).rejects.toThrow(
+      `A lane accepts at most ${TOOL_INPUT_LIMITS.laneFlowNodeIds.maxItems} flowNodeIds`
+    );
+    expect(Array.from(context.document.lanes.entries())).toEqual(lanesBefore);
+    expect(context.xml).toBe(xmlBefore);
+    await expect(fs.readFile(join(directory, context.filename!), 'utf8')).resolves.toBe(diskBefore);
   });
 });

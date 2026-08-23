@@ -5,11 +5,11 @@ import type { ResourceLimits } from '../config/index.js';
 import { TypeMappings } from '../utils/TypeMappings.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { MermaidConverter } from '../converters/MermaidConverter.js';
-import { FileManager } from '../utils/FileManager.js';
 import { diagramContext } from '../core/DiagramContext.js';
 import { BpmnValidator } from '../core/BpmnValidator.js';
 import {
   BpmnAutoLayoutV2Adapter,
+  closeActiveLayoutSubprocesses,
   formatBpmnLayoutDiagnostic
 } from '../core/layout/BpmnLayoutAdapter.js';
 import type {
@@ -18,14 +18,17 @@ import type {
   BpmnDocumentElement,
   BpmnLane,
   Position,
+  ProcessContext,
   Size,
   ValidationLevel
 } from '../types/index.js';
 import {
   parseToolRequest,
+  parseToolResult,
   type ParsedToolRequest,
   type ToolArguments,
-  type ToolName
+  type ToolName,
+  type ToolResult
 } from './tools.js';
 
 type ToolDispatchers = {
@@ -63,8 +66,11 @@ export class BpmnRequestHandler {
   private mermaidConverter: MermaidConverter;
   private validator: BpmnValidator;
   private svgRenderer: BpmnSvgRenderer;
-  private fileManager: FileManager;
   private resourceLimits: ResourceLimits;
+  private requestQueue: Promise<void> = Promise.resolve();
+  private readonly activeSnapshotReads = new Set<Promise<void>>();
+  private acceptingRequests = true;
+  private shutdownPromise: Promise<void> | undefined;
   private readonly dispatchers: ToolDispatchers = {
     new_bpmn: args => this.newBpmn(args),
     new_from_mermaid: args => this.newFromMermaid(args),
@@ -72,7 +78,7 @@ export class BpmnRequestHandler {
     open_mermaid_file: args => this.openMermaidFile(args),
     save: () => this.save(),
     save_as: args => this.saveAs(args),
-    close: () => this.close(),
+    close: () => this.closeDiagram(),
     current: () => this.current(),
     add_event: args => this.addEvent(args),
     add_activity: args => this.addActivity(args),
@@ -112,11 +118,78 @@ export class BpmnRequestHandler {
     );
     this.validator = new BpmnValidator();
     this.svgRenderer = svgRenderer;
-    this.fileManager = new FileManager(engine.getDiagramsPath());
     this.resourceLimits = { ...resourceLimits };
   }
 
-  async handleRequest(name: string, args: unknown): Promise<CallToolResult> {
+  /**
+   * Execute context-changing tool calls in invocation order. Adjacent exports
+   * may run as one read batch after earlier calls finish; later calls wait for
+   * that batch, so each export keeps a stable current-diagram snapshot. The
+   * recovered queue tail keeps later calls runnable after any rejection.
+   */
+  handleRequest(name: string, args: unknown): Promise<CallToolResult> {
+    if (!this.acceptingRequests) {
+      return Promise.resolve({
+        content: [{ type: 'text', text: 'Error: Server is shutting down' }],
+        isError: true
+      });
+    }
+
+    if (name === 'export') {
+      return this.enqueueSnapshotRead(name, args);
+    }
+
+    const precedingCalls = [this.requestQueue, ...this.activeSnapshotReads];
+    const result = Promise.all(precedingCalls).then(() => this.executeRequest(name, args));
+    this.requestQueue = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
+  }
+
+  beginShutdown(): void {
+    this.acceptingRequests = false;
+  }
+
+  shutdown(): Promise<void> {
+    this.beginShutdown();
+    this.shutdownPromise ??= this.finishShutdown();
+    return this.shutdownPromise;
+  }
+
+  async forceCloseResources(): Promise<void> {
+    this.beginShutdown();
+    await Promise.allSettled([
+      this.svgRenderer.close(),
+      closeActiveLayoutSubprocesses()
+    ]);
+  }
+
+  private async finishShutdown(): Promise<void> {
+    await Promise.all([this.requestQueue, ...this.activeSnapshotReads]);
+
+    if (diagramContext.hasCurrent()) {
+      const context = diagramContext.getCurrent();
+      await this.engine.releaseProcess(context);
+      diagramContext.clear();
+    }
+
+    await this.forceCloseResources();
+  }
+
+  private enqueueSnapshotRead(name: string, args: unknown): Promise<CallToolResult> {
+    const result = this.requestQueue.then(() => this.executeRequest(name, args));
+    const completion = result.then(
+      () => undefined,
+      () => undefined
+    );
+    this.activeSnapshotReads.add(completion);
+    void completion.then(() => this.activeSnapshotReads.delete(completion));
+    return result;
+  }
+
+  private async executeRequest(name: string, args: unknown): Promise<CallToolResult> {
     try {
       const request = parseToolRequest(name, args);
       return await this.dispatch(request);
@@ -170,17 +243,15 @@ export class BpmnRequestHandler {
   private async newBpmn(args: ToolArguments<'new_bpmn'>): Promise<CallToolResult> {
     const { name, type = 'process', extensionProfile = 'portable' } = args;
     const context = await this.engine.createProcess(name, type, extensionProfile);
-    
-    diagramContext.setCurrent(context, name);
-    
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Created new ${type} diagram "${name}"\nExtension profile: ${context.extensionProfile}`
-        }
-      ]
-    };
+    await this.replaceCurrent(context, name);
+
+    return textToolResult('new_bpmn', {
+      processId: context.id,
+      name,
+      type,
+      extensionProfile: context.extensionProfile,
+      filename: activeFilename(context)
+    }, `Created new ${type} diagram "${name}"\nExtension profile: ${context.extensionProfile}`);
   }
 
   private async newFromMermaid(args: ToolArguments<'new_from_mermaid'>): Promise<CallToolResult> {
@@ -192,17 +263,18 @@ export class BpmnRequestHandler {
     
     // Import the XML into the engine
     const context = await this.engine.importXml(conversionResult.xml, name, extensionProfile);
+    await this.replaceCurrent(context, name);
     
-    diagramContext.setCurrent(context, name);
-    
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Created new BPMN diagram "${name}" from Mermaid\nExtension profile: ${context.extensionProfile}\nElements: ${conversionResult.stats.nodeCount} nodes, ${conversionResult.stats.edgeCount} flows${this.conversionWarningText(conversionResult.warnings)}`
-        }
-      ]
-    };
+    return textToolResult('new_from_mermaid', {
+      processId: context.id,
+      name,
+      type: context.type,
+      extensionProfile: context.extensionProfile,
+      filename: activeFilename(context),
+      nodeCount: conversionResult.stats.nodeCount,
+      flowCount: conversionResult.stats.edgeCount,
+      warnings: conversionResult.warnings
+    }, `Created new BPMN diagram "${name}" from Mermaid\nExtension profile: ${context.extensionProfile}\nElements: ${conversionResult.stats.nodeCount} nodes, ${conversionResult.stats.edgeCount} flows${this.conversionWarningText(conversionResult.warnings)}`);
   }
 
   // File operations
@@ -210,22 +282,23 @@ export class BpmnRequestHandler {
     const { filename } = args;
     
     const context = await this.engine.loadDiagram(filename);
-    diagramContext.setCurrent(context, context.name);
+    await this.replaceCurrent(context, context.name);
     
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Opened BPMN diagram "${context.name}" from ${filename}\nExtension profile: ${context.extensionProfile}\nElements: ${context.elements.size}, Connections: ${context.connections.size}`
-        }
-      ]
-    };
+    return textToolResult('open_bpmn', {
+      processId: context.id,
+      name: context.name,
+      type: context.type,
+      extensionProfile: context.extensionProfile,
+      filename: activeFilename(context),
+      elementCount: context.elements.size,
+      connectionCount: context.connections.size
+    }, `Opened BPMN diagram "${context.name}" from ${filename}\nExtension profile: ${context.extensionProfile}\nElements: ${context.elements.size}, Connections: ${context.connections.size}`);
   }
 
   private async openMermaidFile(args: ToolArguments<'open_mermaid_file'>): Promise<CallToolResult> {
     const { filename, extensionProfile = 'portable' } = args;
     
-    const mermaidCode = await this.fileManager.readMermaidFile(
+    const mermaidCode = await this.engine.readMermaidFile(
       filename,
       this.resourceLimits.maxMermaidBytes
     );
@@ -237,17 +310,19 @@ export class BpmnRequestHandler {
     // Extract name from filename
     const name = filename.replace(/\.(mmd|mermaid|txt)$/i, '');
     const context = await this.engine.importXml(conversionResult.xml, name, extensionProfile);
+    await this.replaceCurrent(context, name);
     
-    diagramContext.setCurrent(context, name);
-    
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Opened and converted Mermaid file "${filename}" to BPMN\nExtension profile: ${context.extensionProfile}\nElements: ${conversionResult.stats.nodeCount} nodes, ${conversionResult.stats.edgeCount} flows${this.conversionWarningText(conversionResult.warnings)}`
-        }
-      ]
-    };
+    return textToolResult('open_mermaid_file', {
+      processId: context.id,
+      name,
+      type: context.type,
+      extensionProfile: context.extensionProfile,
+      filename: activeFilename(context),
+      sourceFilename: filename,
+      nodeCount: conversionResult.stats.nodeCount,
+      flowCount: conversionResult.stats.edgeCount,
+      warnings: conversionResult.warnings
+    }, `Opened and converted Mermaid file "${filename}" to BPMN\nExtension profile: ${context.extensionProfile}\nElements: ${conversionResult.stats.nodeCount} nodes, ${conversionResult.stats.edgeCount} flows${this.conversionWarningText(conversionResult.warnings)}`);
   }
 
   private async save(): Promise<CallToolResult> {
@@ -263,14 +338,11 @@ export class BpmnRequestHandler {
     const context = diagramContext.getCurrent();
     await this.engine.save(context.id);
     
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Saved diagram "${info.name}" to ${info.filename}`
-        }
-      ]
-    };
+    return textToolResult('save', {
+      processId: context.id,
+      name: info.name,
+      filename: info.filename
+    }, `Saved diagram "${info.name}" to ${info.filename}`);
   }
 
   private async saveAs(args: ToolArguments<'save_as'>): Promise<CallToolResult> {
@@ -279,57 +351,56 @@ export class BpmnRequestHandler {
     const info = diagramContext.getCurrentInfo()!;
     const activeFilename = await this.engine.saveAs(context.id, filename);
     
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Saved diagram "${info.name}" as ${activeFilename}`
-        }
-      ]
-    };
+    return textToolResult('save_as', {
+      processId: context.id,
+      name: info.name,
+      filename: activeFilename
+    }, `Saved diagram "${info.name}" as ${activeFilename}`);
   }
 
-  private async close(): Promise<CallToolResult> {
+  private async closeDiagram(): Promise<CallToolResult> {
     const info = diagramContext.getCurrentInfo();
     if (!info) {
       throw new Error('No current diagram to close');
     }
     
+    const context = diagramContext.getCurrent();
     const name = info.name;
+    const filename = activeFilename(context);
+    await this.engine.releaseProcess(context);
     diagramContext.clear();
     
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Closed diagram "${name}"`
-        }
-      ]
-    };
+    return textToolResult('close', {
+      processId: context.id,
+      name,
+      filename
+    }, `Closed diagram "${name}"`);
+  }
+
+  private async replaceCurrent(context: ProcessContext, name: string): Promise<void> {
+    const previous = diagramContext.hasCurrent()
+      ? diagramContext.getCurrent()
+      : undefined;
+    if (previous && previous !== context) {
+      await this.engine.releaseProcess(previous);
+    }
+    diagramContext.setCurrent(context, name);
   }
 
   private async current(): Promise<CallToolResult> {
     const info = diagramContext.getCurrentInfo();
     
     if (!info) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: 'No current diagram'
-          }
-        ]
-      };
+      return textToolResult('current', { current: false }, 'No current diagram');
     }
     
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(info, null, 2)
-        }
-      ]
-    };
+    return textToolResult('current', {
+      current: true,
+      diagram: {
+        ...info,
+        filename: activeFilename(diagramContext.getCurrent())
+      }
+    }, JSON.stringify(info, null, 2));
   }
 
   // Element manipulation methods
@@ -364,14 +435,11 @@ export class BpmnRequestHandler {
 
     const element = await this.engine.createElement(context.id, elementDef);
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Added ${eventType} event "${name || 'Unnamed'}" with ID: ${element.id}`
-        }
-      ]
-    };
+    return textToolResult('add_event', {
+      elementId: element.id,
+      elementType: element.type,
+      filename: activeFilename(context)
+    }, `Added ${eventType} event "${name || 'Unnamed'}" with ID: ${element.id}`);
   }
 
   private async addActivity(args: ToolArguments<'add_activity'>): Promise<CallToolResult> {
@@ -390,14 +458,11 @@ export class BpmnRequestHandler {
 
     const element = await this.engine.createElement(context.id, elementDef);
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Added ${activityType} "${name}" with ID: ${element.id}`
-        }
-      ]
-    };
+    return textToolResult('add_activity', {
+      elementId: element.id,
+      elementType: element.type,
+      filename: activeFilename(context)
+    }, `Added ${activityType} "${name}" with ID: ${element.id}`);
   }
 
   private async addGateway(args: ToolArguments<'add_gateway'>): Promise<CallToolResult> {
@@ -415,14 +480,11 @@ export class BpmnRequestHandler {
 
     const element = await this.engine.createElement(context.id, elementDef);
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Added ${gatewayType} gateway "${name || 'Gateway'}" with ID: ${element.id}`
-        }
-      ]
-    };
+    return textToolResult('add_gateway', {
+      elementId: element.id,
+      elementType: element.type,
+      filename: activeFilename(context)
+    }, `Added ${gatewayType} gateway "${name || 'Gateway'}" with ID: ${element.id}`);
   }
 
   private async addDataObject(args: ToolArguments<'add_data_object'>): Promise<CallToolResult> {
@@ -443,12 +505,11 @@ export class BpmnRequestHandler {
       scopeId
     });
 
-    return {
-      content: [{
-        type: 'text',
-        text: `Added data object "${name}" with reference ID: ${reference.id} and backing ID: ${dataObject.id}`
-      }]
-    };
+    return textToolResult('add_data_object', {
+      referenceId: reference.id,
+      dataObjectId: dataObject.id,
+      filename: activeFilename(context)
+    }, `Added data object "${name}" with reference ID: ${reference.id} and backing ID: ${dataObject.id}`);
   }
 
   private async addTextAnnotation(
@@ -463,14 +524,13 @@ export class BpmnRequestHandler {
       associatedElementId
     });
 
-    return {
-      content: [{
-        type: 'text',
-        text: association
-          ? `Added text annotation ${annotation.id} with association ${association.id} to ${associatedElementId}`
-          : `Added text annotation ${annotation.id}`
-      }]
-    };
+    return textToolResult('add_text_annotation', {
+      annotationId: annotation.id,
+      associationId: association?.id,
+      filename: activeFilename(context)
+    }, association
+      ? `Added text annotation ${annotation.id} with association ${association.id} to ${associatedElementId}`
+      : `Added text annotation ${annotation.id}`);
   }
 
   private async connect(args: ToolArguments<'connect'>): Promise<CallToolResult> {
@@ -485,21 +545,20 @@ export class BpmnRequestHandler {
     } = args;
     const context = diagramContext.getCurrent();
 
-    await this.engine.connect(context.id, sourceId, targetId, label, {
+    const connection = await this.engine.connect(context.id, sourceId, targetId, label, {
       condition,
       conditionLanguage,
       conditionType,
       isDefault
     });
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Connected ${sourceId} to ${targetId}${label ? ` with label "${label}"` : ''}`
-        }
-      ]
-    };
+    return textToolResult('connect', {
+      connectionId: connection.id,
+      connectionType: connection.type,
+      sourceId,
+      targetId,
+      filename: activeFilename(context)
+    }, `Connected ${sourceId} to ${targetId}${label ? ` with label "${label}"` : ''}`);
   }
 
   private async addAssociation(args: ToolArguments<'add_association'>): Promise<CallToolResult> {
@@ -512,12 +571,13 @@ export class BpmnRequestHandler {
       associationDirection
     );
 
-    return {
-      content: [{
-        type: 'text',
-        text: `Added association ${association.id} from ${sourceId} to ${targetId} (${associationDirection})`
-      }]
-    };
+    return textToolResult('add_association', {
+      associationId: association.id,
+      sourceId,
+      targetId,
+      associationDirection,
+      filename: activeFilename(context)
+    }, `Added association ${association.id} from ${sourceId} to ${targetId} (${associationDirection})`);
   }
 
   private async addPool(args: ToolArguments<'add_pool'>): Promise<CallToolResult> {
@@ -538,14 +598,12 @@ export class BpmnRequestHandler {
 
     const element = await this.engine.createElement(context.id, elementDef);
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Added pool "${name}" with ID: ${element.id}`
-        }
-      ]
-    };
+    return textToolResult('add_pool', {
+      elementId: element.id,
+      processId: element.kind === 'participant' ? element.processRef : undefined,
+      blackBox,
+      filename: activeFilename(context)
+    }, `Added pool "${name}" with ID: ${element.id}`);
   }
 
   private async addLane(args: ToolArguments<'add_lane'>): Promise<CallToolResult> {
@@ -553,12 +611,12 @@ export class BpmnRequestHandler {
     const context = diagramContext.getCurrent();
     const lane = await this.engine.addLane(context.id, poolId, name, flowNodeIds, position);
 
-    return {
-      content: [{
-        type: 'text',
-        text: `Added lane "${name}" with ID: ${lane.id}; assigned ${lane.flowNodeRefs.length} flow node(s)`
-      }]
-    };
+    return textToolResult('add_lane', {
+      laneId: lane.id,
+      poolId,
+      assignedFlowNodeCount: lane.flowNodeRefs.length,
+      filename: activeFilename(context)
+    }, `Added lane "${name}" with ID: ${lane.id}; assigned ${lane.flowNodeRefs.length} flow node(s)`);
   }
 
   // Query and manipulation methods
@@ -622,21 +680,15 @@ export class BpmnRequestHandler {
       };
     });
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            count: filteredElements.length,
-            returnedCount: elementList.length,
-            offset,
-            limit,
-            hasMore: offset + elementList.length < filteredElements.length,
-            elements: elementList
-          }, null, 2)
-        }
-      ]
+    const result = {
+      count: filteredElements.length,
+      returnedCount: elementList.length,
+      offset,
+      limit,
+      hasMore: offset + elementList.length < filteredElements.length,
+      elements: elementList
     };
+    return textToolResult('list_elements', result, JSON.stringify(result, null, 2));
   }
 
   private async getElement(args: ToolArguments<'get_element'>): Promise<CallToolResult> {
@@ -645,12 +697,8 @@ export class BpmnRequestHandler {
     
     const connection = context.connections.get(elementId);
     if (connection?.type === 'bpmn:Association') {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify(associationQueryView(connection), null, 2)
-        }]
-      };
+      const result = associationQueryView(connection);
+      return textToolResult('get_element', result, JSON.stringify(result, null, 2));
     }
 
     const lane = context.document.lanes.get(elementId);
@@ -689,14 +737,7 @@ export class BpmnRequestHandler {
       properties: element.properties
     };
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(details, null, 2)
-        }
-      ]
-    };
+    return textToolResult('get_element', details, JSON.stringify(details, null, 2));
   }
 
   private async updateElement(args: ToolArguments<'update_element'>): Promise<CallToolResult> {
@@ -708,36 +749,40 @@ export class BpmnRequestHandler {
       ...(Object.prototype.hasOwnProperty.call(args, 'defaultFlow') ? { defaultFlow } : {})
     });
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Updated element ${elementId}`
-        }
-      ]
-    };
+    return textToolResult('update_element', {
+      elementId,
+      filename: activeFilename(context)
+    }, `Updated element ${elementId}`);
   }
 
   private async deleteElement(args: ToolArguments<'delete_element'>): Promise<CallToolResult> {
     const { elementId } = args;
     const context = diagramContext.getCurrent();
     const connection = context.connections.get(elementId);
-    if (connection?.type === 'bpmn:Association') {
-      await this.engine.deleteAssociation(context.id, elementId);
-      return {
-        content: [{ type: 'text', text: `Deleted association ${elementId}` }]
-      };
+    if (connection) {
+      await this.engine.deleteElement(context.id, elementId);
+      const connectionKind = connection.type === 'bpmn:SequenceFlow'
+        ? 'sequence flow'
+        : connection.type === 'bpmn:MessageFlow'
+          ? 'message flow'
+          : connection.type === 'bpmn:Association'
+            ? 'association'
+            : 'connection';
+      return textToolResult('delete_element', {
+        elementId,
+        deletedKind: 'connection',
+        removedConnectionCount: 0,
+        filename: activeFilename(context)
+      }, `Deleted ${connectionKind} ${elementId}`);
     }
     const removedConnectionCount = await this.engine.deleteElement(context.id, elementId);
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Deleted element ${elementId} and ${removedConnectionCount} associated connections`
-        }
-      ]
-    };
+    return textToolResult('delete_element', {
+      elementId,
+      deletedKind: 'element',
+      removedConnectionCount,
+      filename: activeFilename(context)
+    }, `Deleted element ${elementId} and ${removedConnectionCount} associated connections`);
   }
 
   // Utility methods
@@ -748,30 +793,33 @@ export class BpmnRequestHandler {
     if (format === 'svg') {
       const xml = await this.engine.exportXml(context.id, true);
       const svg = await this.svgRenderer.render(xml);
-      return {
-        content: [
-          {
-            type: 'resource',
-            resource: {
-              uri: `bpmn://diagram/${encodeURIComponent(context.id)}.svg`,
-              mimeType: 'image/svg+xml',
-              text: svg
-            }
-          }
-        ]
-      };
+      const uri = `bpmn://diagram/${encodeURIComponent(context.id)}.svg`;
+      return toolResult('export', {
+        processId: context.id,
+        filename: activeFilename(context),
+        format,
+        mimeType: 'image/svg+xml',
+        byteLength: Buffer.byteLength(svg, 'utf8'),
+        uri
+      }, [{
+        type: 'resource',
+        resource: {
+          uri,
+          mimeType: 'image/svg+xml',
+          text: svg
+        }
+      }]);
     }
     
     const content = await this.engine.exportXml(context.id, formatted);
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: content
-        }
-      ]
-    };
+    return textToolResult('export', {
+      processId: context.id,
+      filename: activeFilename(context),
+      format,
+      mimeType: 'application/xml',
+      byteLength: Buffer.byteLength(content, 'utf8')
+    }, content);
   }
 
   private async validate(args: ToolArguments<'validate'>): Promise<CallToolResult> {
@@ -780,14 +828,11 @@ export class BpmnRequestHandler {
     const xml = await this.engine.exportXml(context.id, true);
     const result = await this.validator.validate(xml, level);
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(result, null, 2)
-        }
-      ]
+    const structuredResult = {
+      ...result,
+      filename: activeFilename(context)
     };
+    return textToolResult('validate', structuredResult, JSON.stringify(result, null, 2));
   }
 
   private async autoLayout(args: ToolArguments<'auto_layout'>): Promise<CallToolResult> {
@@ -798,19 +843,18 @@ export class BpmnRequestHandler {
     const connectionCount = context.connections.size;
     
     // Apply auto-layout
-    const layout = await this.engine.applyAutoLayout(context.id, algorithm);
+    const layout = await this.engine.applyAutoLayout(context.id);
     const warningText = layout.warnings.length === 0
       ? ''
       : `\n\nWarnings:\n${layout.warnings.map(formatBpmnLayoutDiagnostic).join('\n')}`;
     
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Applied ${algorithm} auto-layout to current diagram\n\nRepositioned ${elementCount} elements and ${connectionCount} connections.${warningText}`
-        }
-      ]
-    };
+    return textToolResult('auto_layout', {
+      algorithm,
+      elementCount,
+      connectionCount,
+      warnings: layout.warnings,
+      filename: activeFilename(context)
+    }, `Applied ${algorithm} auto-layout to current diagram\n\nRepositioned ${elementCount} elements and ${connectionCount} connections.${warningText}`);
   }
 
   private conversionWarningText(warnings: string[]): string {
@@ -828,59 +872,68 @@ export class BpmnRequestHandler {
     args: ToolArguments<'list_diagrams'>
   ): Promise<CallToolResult> {
     const { limit, offset } = args;
-    const diagrams = (await this.engine.listDiagrams())
-      .sort((left, right) => compareStableText(left.filename, right.filename));
-    const page = diagrams.slice(offset, offset + limit);
+    const page = await this.engine.listDiagrams({ limit, offset });
     
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            count: diagrams.length,
-            returnedCount: page.length,
-            offset,
-            limit,
-            hasMore: offset + page.length < diagrams.length,
-            diagrams: page,
-            path: this.engine.getDiagramsPath()
-          }, null, 2)
-        }
-      ]
+    const result = {
+      count: page.count,
+      returnedCount: page.diagrams.length,
+      offset,
+      limit,
+      hasMore: page.hasMore,
+      diagrams: page.diagrams,
+      path: this.engine.getDiagramsPath()
     };
+    return textToolResult('list_diagrams', result, JSON.stringify(result, null, 2));
   }
 
   private async deleteDiagramFile(
     args: ToolArguments<'delete_diagram_file'>
   ): Promise<CallToolResult> {
     const { filename } = args;
+    const closedCurrent = diagramContext.getCurrentInfo()?.filename === filename;
     await this.engine.deleteDiagram(filename);
-    if (diagramContext.getCurrentInfo()?.filename === filename) {
+    if (closedCurrent) {
       diagramContext.clear();
     }
     
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Deleted diagram file: ${filename}`
-        }
-      ]
-    };
+    return textToolResult('delete_diagram_file', {
+      filename,
+      closedCurrent
+    }, `Deleted diagram file: ${filename}`);
   }
 
   private async getDiagramsPath(): Promise<CallToolResult> {
     const path = this.engine.getDiagramsPath();
     
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `BPMN diagrams are saved to: ${path}\n\nYou can set a custom path using the environment variable: MCP_BPMN_DIAGRAMS_PATH`
-        }
-      ]
-    };
+    return textToolResult('get_diagrams_path', { path },
+      `BPMN diagrams are saved to: ${path}\n\nYou can set a custom path using the environment variable: MCP_BPMN_DIAGRAMS_PATH`);
   }
+}
+
+function toolResult<Name extends ToolName>(
+  name: Name,
+  structuredContent: ToolResult<Name>,
+  content: CallToolResult['content']
+): CallToolResult {
+  return {
+    content,
+    structuredContent: parseToolResult(name, structuredContent)
+  };
+}
+
+function textToolResult<Name extends ToolName>(
+  name: Name,
+  structuredContent: ToolResult<Name>,
+  text: string
+): CallToolResult {
+  return toolResult(name, structuredContent, [{ type: 'text', text }]);
+}
+
+function activeFilename(context: ProcessContext): string {
+  if (!context.filename) {
+    throw new Error(`Diagram ${context.id} has no active filename`);
+  }
+  return context.filename;
 }
 
 function compareStableText(left: string, right: string): number {

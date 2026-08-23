@@ -1,0 +1,47 @@
+{
+  "reviewer": "maintainability",
+  "findings": [
+    {
+      "title": "Opaque hashes hide the asserted schema contract",
+      "severity": "P3",
+      "file": "tests/e2e/server.test.ts",
+      "line": 43,
+      "why_it_matters": "A legitimate tool-schema change produces only a digest mismatch, so the expected properties, required fields, enums, and defaults cannot be reviewed from this test. Updating the gate becomes a copy-the-new-hash workflow, which makes it easy to bless an unintended schema change while preserving a green but semantically opaque test.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Keep the normalization step, but compare the normalized schemas with readable checked-in JSON fixtures or Jest snapshots so failures show the exact structural change; derive the expected tool-name ordering from that same fixture.",
+      "confidence": 0.84,
+      "evidence": [
+        "Lines 43-68 encode all 24 expected schemas only as SHA-256 strings rather than reviewable schema structures.",
+        "Lines 416-423 compare only name/digest pairs, so Jest can report which tool changed and the new hash, but not which schema keyword changed.",
+        "Lines 13-38 and 43-68 maintain tool identity in two parallel fixtures, with line 415 adding an assertion solely to keep those duplicate sources synchronized."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Independent gates are coupled into one long scenario",
+      "severity": "P3",
+      "file": "tests/e2e/server.test.ts",
+      "line": 363,
+      "why_it_matters": "The 150-line test stops at the first assertion failure, so an initialization or inventory mismatch prevents the persistence and semantic-export gates from running. This masks simultaneous regressions and makes future maintainers rerun or temporarily edit one broad test instead of selecting the failing contract area directly.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Extract a small server/session fixture that owns startup, initialization, teardown, and temporary storage, then split tool-advertisement assertions from the create/connect/persist/export workflow while keeping the latter as one end-to-end scenario.",
+      "confidence": 0.82,
+      "evidence": [
+        "The single test beginning at line 363 covers initialize metadata (lines 374-394), tool inventory and schemas (401-424), tool behavior (426-463), semantic XML export (465-505), and disk persistence (507-510).",
+        "Jest aborts the test body on the first failed expectation; the finally block cleans up but no later gate in this scenario executes.",
+        "The protocol-advertisement checks do not depend on the BPMN process created later, so their coupling is test-structure rather than domain-flow complexity."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The custom stdio request helper is intentionally sequential; concurrent requests would attach competing stdout listeners and are not supported by its current shape."
+  ],
+  "testing_gaps": [
+    "The lifecycle table proves startup-timeout cleanup, but no targeted case forces a post-start response timeout and verifies that the enclosing cleanup path leaves no child process."
+  ]
+}

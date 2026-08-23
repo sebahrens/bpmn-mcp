@@ -1,0 +1,10 @@
+{
+  "reviewer": "correctness",
+  "findings": [],
+  "residual_risks": [
+    "The sandbox hooks restore and remove their temporary directory after normal test and assertion failures, but cleanup is not wrapped in a finally block around engine.clear() or diagramContext.clear(). If either teardown call throws, the subsequent sandbox.cleanup() is skipped, leaving MCP_BPMN_DIAGRAMS_PATH set to the temporary directory and leaking it. The current implementations are synchronous map clears and the focused tests pass, so this is a low-confidence teardown robustness risk rather than a confirmed defect."
+  ],
+  "testing_gaps": [
+    "No teardown regression test forces engine.clear() or diagramContext.clear() to throw and verifies that the temporary directory is removed and MCP_BPMN_DIAGRAMS_PATH is restored."
+  ]
+}

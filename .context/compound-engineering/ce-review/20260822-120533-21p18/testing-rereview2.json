@@ -1,0 +1,8 @@
+{
+  "reviewer": "testing",
+  "findings": [],
+  "residual_risks": [
+    "Coverage thresholds are enforced only by the explicit test:coverage or equivalent --coverage command; the repository's test:all and check scripts invoke Jest without coverage collection."
+  ],
+  "testing_gaps": []
+}

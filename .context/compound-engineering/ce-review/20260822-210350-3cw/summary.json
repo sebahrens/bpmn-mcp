@@ -1,0 +1,42 @@
+{
+  "run_id": "20260822-210350-3cw",
+  "mode": "autofix",
+  "scope": "mcp-bpmn-3cw file-operation containment and TOCTOU hardening",
+  "intent": "Prevent BPMN and Mermaid file tools from escaping the configured diagrams root, including synchronized root and leaf replacement races, while preserving valid operations and persistence semantics.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "security",
+    "performance",
+    "api-contract",
+    "reliability",
+    "adversarial",
+    "kieran-typescript"
+  ],
+  "findings": [],
+  "applied_fixes": [
+    "Pinned each FileManager to one root device/inode identity and retained that identity across failed operations and retries.",
+    "Routed BPMN reads, Mermaid reads, writes, and deletes through one shared SafeFileStore.",
+    "Performed basename-only operations in a cwd-anchored helper with no-follow/post-open identity checks and atomic entry-relative writes/deletes.",
+    "Reused the helper during mutation bursts and added bounded idle shutdown after the initial per-operation process design regressed the resource-limit test timeout.",
+    "Added synchronized root/leaf swap, retry, cross-interface, atomic no-clobber, and staging-failure regressions."
+  ],
+  "residual_risks": [
+    "The configured root identity is trusted at first successful resolution, so its parent must not be writable by an untrusted local principal beforehand.",
+    "A same-account process can still race which in-root entry occupies a basename; the containment guarantee prevents redirection to an outside path rather than serializing hostile same-account filesystem mutation."
+  ],
+  "testing_gaps": [
+    "Windows traversal/drive/UNC forms are table-tested, but synchronized runtime replacement tests were executed on macOS rather than a Windows host."
+  ],
+  "validation": [
+    "npm run type-check",
+    "npm run lint",
+    "focused file security, FileManager, persistence, and resource-exhaustion suites",
+    "npm run test:all"
+  ],
+  "verdict": "Ready to merge"
+}

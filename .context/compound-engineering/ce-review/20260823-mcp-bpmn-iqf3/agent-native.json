@@ -1,0 +1,71 @@
+{
+  "summary": "This is an MCP-first BPMN authoring server with 27 composable agent tools sharing one current-diagram context and one persisted diagrams workspace. The scoped change is a substantial agent-native improvement: every advertised tool now has an outputSchema, every successful handler response is runtime-validated into structuredContent, mutation results expose generated IDs and active filenames, query results expose pagination and relationship data, and the exhaustive e2e scenario invokes every advertised tool while reusing returned values in later calls. There is no scoped UI/action-parity gap. Two public-contract details still prevent schema-guaranteed composition for valid collaboration and imported-ID cases, so the overall assessment is NEEDS WORK rather than PASS.",
+  "gaps": [
+    {
+      "title": "A collaboration root is advertised as a processId even though it is not usable as a process scope",
+      "severity": "warning",
+      "priority": "P2",
+      "confidence": 0.95,
+      "locations": [
+        "src/server/tools.ts:305",
+        "src/server/handlers.ts:248",
+        "tests/e2e/server.test.ts:1065"
+      ],
+      "agent_impact": "For type=collaboration, new_bpmn/current/export expose context.id under processId, but that ID identifies the collaboration root. The actual process ID needed by add_activity.ownerId/scopeId is only returned later by add_pool. A schema-driven agent can reasonably feed new_bpmn.processId into a process-scoped mutation and receive a runtime error, so the new field name does not satisfy the promise that returned identifiers are directly composable.",
+      "evidence": [
+        "outputDiagram requires processId for both process and collaboration variants rather than discriminating their root identifier semantics.",
+        "newBpmn assigns context.id to processId regardless of the requested root type.",
+        "The e2e collaboration path implicitly demonstrates the distinction: it does not reuse collaboration.structuredContent.processId for ownerId/scopeId and instead uses add_pool.structuredContent.processId."
+      ],
+      "recommendation": "Use a neutral rootId/diagramId for the shared root identity, or advertise a discriminated output where process roots return processId and collaboration roots return collaborationId. Keep add_pool.processId for the participant-owned process and describe which downstream inputs each identifier can satisfy."
+    },
+    {
+      "title": "Returned BPMN IDs are not guaranteed to satisfy follow-up tool inputs",
+      "severity": "warning",
+      "priority": "P2",
+      "confidence": 0.93,
+      "locations": [
+        "src/server/tools.ts:251",
+        "src/server/tools.ts:300",
+        "tests/e2e/server.test.ts:845"
+      ],
+      "agent_impact": "All ID-bearing inputs cap identifiers at TOOL_INPUT_LIMITS.identifier.maxLength (255), while outputBpmnId checks only non-emptiness and the XML NCName pattern. A valid imported BPMN element with an NCName longer than 255 characters can therefore appear in list_elements/get_element structuredContent but cannot be passed back to get_element, connect, update_element, delete_element, ownerId, scopeId, or related primitives. That breaks the core list/read -> mutate composition loop for data the server accepts.",
+      "evidence": [
+        "bpmnId() applies minLength, maxLength, and BPMN_ID_PATTERN to tool inputs.",
+        "outputBpmnId applies minLength and BPMN_ID_PATTERN but omits the matching maxLength.",
+        "The exhaustive e2e reuses generated short IDs but does not exercise an imported boundary-length ID or assert that every returned ID validates against its downstream input schema."
+      ],
+      "recommendation": "Define input and output BPMN IDs from one shared reusable constraint, or relax the input cap if standards-valid imported IDs must remain operable. Add an e2e round trip that lists an imported boundary-length ID and feeds it into get_element plus a mutation tool."
+    },
+    {
+      "title": "State-dependent output invariants are not expressed in the advertised schemas",
+      "severity": "observation",
+      "priority": "P3",
+      "confidence": 0.9,
+      "locations": [
+        "src/server/tools.ts:409",
+        "src/server/tools.ts:482",
+        "src/server/tools.ts:491"
+      ],
+      "agent_impact": "The current schema permits current=true without diagram and current=false with diagram; export permits XML with an SVG URI/MIME pairing or SVG without uri; validation errors and warnings are not individually constrained to their matching severities. Current handlers and e2e assertions maintain the intended relationships, so this is not a present runtime failure, but schema-only planners cannot derive these guarantees from tools/list and output validation would not catch a future drift.",
+      "evidence": [
+        "current is modeled as a boolean plus an independently optional diagram instead of a discriminated union.",
+        "export models format, mimeType, and optional uri independently.",
+        "validate reuses the same mixed-severity issue schema for issues, errors, and warnings."
+      ],
+      "recommendation": "When JSON Schema generation support permits, advertise discriminated success variants for current and export, and specialize the validation error/warning item schemas."
+    }
+  ],
+  "positives": [
+    "All 27 advertised MCP tools define object output schemas from the same registry that defines their input schemas and descriptions.",
+    "Successful results pass through parseToolResult before serialization, preventing silent handler/schema drift and giving clients dependable structuredContent.",
+    "The handlers preserve useful legacy text or resource content while adding machine-readable metadata rather than replacing one client mode with another.",
+    "Mutation primitives return the IDs needed for follow-up operations: elementId, connectionId, associationId, laneId, data-object reference/backing IDs, pool process IDs, and active filenames.",
+    "Query tools expose stable ordering and explicit pagination continuation data; get_element exposes relationship IDs that can be passed to other primitives.",
+    "Validation and layout return structured diagnostics, while XML/SVG export separates large payload content from actionable metadata and supplies a resource URI for SVG.",
+    "The e2e test pins every advertised output schema, validates each real tools/call result with the advertised schema, invokes every registered tool, exercises optional result branches, and chains structured values through realistic process and collaboration workflows.",
+    "Agents and human-managed files share the configured diagrams directory and the same current diagram context; no separate agent-only workspace or sync bridge is introduced.",
+    "The tool surface remains a set of composable BPMN primitives and lifecycle operations rather than encoding agent decisions or opaque business workflows."
+  ],
+  "verdict": "NEEDS WORK"
+}

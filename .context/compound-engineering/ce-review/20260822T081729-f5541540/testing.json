@@ -1,0 +1,8 @@
+{
+  "reviewer": "testing",
+  "findings": [],
+  "residual_risks": [
+    "The default-directory fingerprint only covers .bpmn entries; writes to other extensions would not be detected by the guard, although the scoped handler operations persist BPMN files."
+  ],
+  "testing_gaps": []
+}

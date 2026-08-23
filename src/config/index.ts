@@ -5,6 +5,7 @@ export interface Config {
   bpmnDiagramsPath: string;
   bpmnImportLimits: BpmnImportLimits;
   resourceLimits: ResourceLimits;
+  shutdownTimeoutMs: number;
 }
 
 export interface BpmnImportLimits {
@@ -22,6 +23,7 @@ export interface ResourceLimits {
   maxLayoutBytes: number;
   maxConcurrentLayouts: number;
   maxListingItems: number;
+  maxListingMetadataBytes: number;
   layoutTimeoutMs: number;
 }
 
@@ -47,8 +49,11 @@ export const DEFAULT_RESOURCE_LIMITS: Readonly<ResourceLimits> = Object.freeze({
   maxLayoutBytes: DEFAULT_IMPORT_LIMITS.maxBytes,
   maxConcurrentLayouts: 2,
   maxListingItems: 10_000,
+  maxListingMetadataBytes: DEFAULT_IMPORT_LIMITS.maxBytes,
   layoutTimeoutMs: 5_000
 });
+
+export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 15_000;
 
 function positiveIntegerFromEnvironment(name: string, fallback: number): number {
   const value = process.env[name];
@@ -82,6 +87,10 @@ export function getConfig(): Config {
   
   return {
     bpmnDiagramsPath: customPath || defaultPath,
+    shutdownTimeoutMs: positiveIntegerFromEnvironment(
+      'MCP_BPMN_SHUTDOWN_TIMEOUT_MS',
+      DEFAULT_SHUTDOWN_TIMEOUT_MS
+    ),
     bpmnImportLimits: {
       maxBytes: positiveIntegerFromEnvironment(
         'MCP_BPMN_MAX_IMPORT_BYTES',
@@ -129,6 +138,10 @@ export function getConfig(): Config {
         'MCP_BPMN_MAX_LISTING_ITEMS',
         DEFAULT_RESOURCE_LIMITS.maxListingItems
       ),
+      maxListingMetadataBytes: positiveIntegerFromEnvironment(
+        'MCP_BPMN_MAX_LISTING_METADATA_BYTES',
+        DEFAULT_RESOURCE_LIMITS.maxListingMetadataBytes
+      ),
       layoutTimeoutMs: positiveIntegerFromEnvironment(
         'MCP_BPMN_LAYOUT_TIMEOUT_MS',
         DEFAULT_RESOURCE_LIMITS.layoutTimeoutMs
@@ -138,3 +151,40 @@ export function getConfig(): Config {
 }
 
 export const config = getConfig();
+
+/**
+ * Public request limits shared by schema validation and direct engine/file
+ * boundaries. Keeping the collection cap aligned with arbitrary JSON arrays
+ * avoids a second, larger allocation path; 256 also reduces the previously
+ * accepted 10,000-item stress case by more than an order of magnitude while
+ * remaining well above practical lane and candidate-group counts.
+ *
+ * Portable filenames use UTF-8 bytes rather than JavaScript string length.
+ * Atomic writes prepend one dot and append `.<pid>.<uuid>.tmp` (at most 53
+ * ASCII bytes with a 10-digit PID), so a 200-byte target remains at most 253
+ * bytes under the common portable 255-byte component ceiling.
+ */
+export const MAX_INPUT_ARRAY_ITEMS = 256;
+export const TOOL_INPUT_LIMITS = Object.freeze({
+  coordinate: Object.freeze({ min: 0, max: 1_000_000 }),
+  dimension: Object.freeze({ min: 1, max: 1_000_000 }),
+  name: Object.freeze({ minLength: 1, maxLength: 256 }),
+  label: Object.freeze({ minLength: 1, maxLength: 1_024 }),
+  filename: Object.freeze({
+    minLength: 1,
+    maxLength: 200,
+    maxUtf8Bytes: 200,
+    maxComponentBytes: 255,
+    maxAtomicWriteSuffixBytes: 53
+  }),
+  identifier: Object.freeze({ minLength: 1, maxLength: 255 }),
+  annotationText: Object.freeze({ minLength: 1, maxLength: 8_192 }),
+  expression: Object.freeze({ minLength: 1, maxLength: 8_192 }),
+  language: Object.freeze({ minLength: 1, maxLength: 256 }),
+  candidateGroups: Object.freeze({ minItems: 1, maxItems: MAX_INPUT_ARRAY_ITEMS }),
+  laneFlowNodeIds: Object.freeze({ minItems: 1, maxItems: MAX_INPUT_ARRAY_ITEMS }),
+  mermaidCode: Object.freeze({
+    minLength: 1,
+    maxLength: config.resourceLimits.maxMermaidBytes
+  })
+});

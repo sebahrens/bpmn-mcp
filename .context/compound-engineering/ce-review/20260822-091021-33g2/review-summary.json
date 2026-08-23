@@ -1,0 +1,32 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "package.json:23",
+    "README.md:34-35",
+    "README.md:526",
+    "README.md:549",
+    "README.md:586"
+  ],
+  "intent": "Provide one deterministic contributor and automation quality-gate command that cleans generated output and fails on type-check, lint, build, unit/integration, or e2e failures.",
+  "reviewers": {
+    "correctness": [],
+    "testing": [],
+    "maintainability": [],
+    "project-standards": [],
+    "agent-native": [],
+    "learnings": [],
+    "cli-readiness": []
+  },
+  "applied_fixes": [],
+  "residual_actionable_work": [],
+  "advisory_outputs": [],
+  "coverage": {
+    "suppressed_findings": 0,
+    "testing_gaps": [],
+    "residual_risks": [],
+    "learnings_search": "No docs/solutions directory or critical-patterns file exists in this repository.",
+    "agent_native": "The quality gate is non-interactive, shell-accessible, and reports failures through its exit status.",
+    "excluded_untracked_files": "Pre-existing untracked working-tree files outside the selected bead were not reviewed."
+  },
+  "verdict": "Ready to merge"
+}

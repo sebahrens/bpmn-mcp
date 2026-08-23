@@ -1,0 +1,26 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "Participant structural properties are not applied during updates",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 237,
+      "why_it_matters": "The public update_element path accepts participant properties such as blackBox and processRef, but only the generic properties map is changed. The participant's structural processRef field and process-root lifecycle remain unchanged, so converting a white-box pool to black-box leaves a process root and processRef in exported BPMN, while setting processRef on a black-box pool has no effect.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Either reject structural participant properties in update_element or implement an atomic participant update that validates processRef/blackBox, synchronizes the participant field, creates/removes owned process roots and contents safely, and persists the result.",
+      "confidence": 0.98,
+      "evidence": [
+        "src/core/SimpleBpmnEngine.ts:237-253 merges update.properties and assigns only element.properties; no participant.processRef or document.processes update occurs.",
+        "src/core/BpmnDocument.ts:242-250 serializes participant.processRef, not properties.processRef, so properties.processRef is ignored and properties.blackBox cannot remove a processRef.",
+        "Reproduction: create a white-box participant, updateElement(..., {properties:{blackBox:true}}), then export; the participant still has its original processRef and the generated process root remains.",
+        "src/server/tools.ts exposes update_element with an unrestricted properties object, making this reachable through the MCP surface."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": []
+}

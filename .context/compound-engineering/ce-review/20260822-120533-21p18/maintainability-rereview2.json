@@ -1,0 +1,25 @@
+{
+  "reviewer": "maintainability",
+  "findings": [
+    {
+      "title": "Atomic rename test duplicates integration coverage",
+      "severity": "P3",
+      "file": "tests/unit/utils/FileManager.test.ts",
+      "line": 70,
+      "why_it_matters": "The same direct FileManager failure path now has two nearly identical tests in different suites, so future changes to atomic-save errors or cleanup must update parallel assertions that can drift while adding no distinct integration-level contract.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Keep this focused unit case and remove the equivalent direct-FileManager case at tests/integration/persistence.test.ts:160, then rerun the unit and integration suites.",
+      "confidence": 0.96,
+      "evidence": [
+        "tests/unit/utils/FileManager.test.ts:70-80 saves an existing atomic.bpmn, injects an fs.rename rejection, asserts a failed save, verifies the previous contents, and verifies that no temporary file remains.",
+        "tests/integration/persistence.test.ts:160-174 performs the same setup, injected fs.rename failure, failed-save assertion, previous-content assertion, and directory-cleanup assertion.",
+        "The existing integration-suite case constructs and calls FileManager directly; it does not pass through SimpleBpmnEngine or a request handler, so it does not preserve a distinct higher-layer behavior contract."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": []
+}

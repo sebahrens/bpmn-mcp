@@ -1,0 +1,50 @@
+{
+  "reviewer": "adversarial",
+  "findings": [
+    {
+      "title": "Deleting one participant erases shared-process sequence flows kept by the remaining participant",
+      "severity": "P1",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 305,
+      "why_it_matters": "The supported shared-process participant path leaves the process and owned nodes alive when one participant is deleted, but still deletes every connection owned by that process. The remaining participant therefore reopens with its flow nodes disconnected and data silently lost.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Only remove process-owned connections when the deleted participant was the last participant referencing that process; add a shared-process delete/reopen regression test.",
+      "confidence": 0.99,
+      "evidence": [
+        "createElement permits a second participant to use the first participant's processRef (src/core/SimpleBpmnEngine.ts:93-116), so shared process roots are an intentional supported state.",
+        "deleteElement correctly detects another participant with the same processRef and keeps the process root (src/core/SimpleBpmnEngine.ts:282-294), but its connection cleanup unconditionally matches connection.ownerId/scopeId to that process whenever the deleted element is a participant (src/core/SimpleBpmnEngine.ts:300-307).",
+        "Reproduction: create two participants sharing Process_1, add StartEvent -> Task and Flow_1 under Process_1, delete the first participant; the second participant and both nodes remain but context.connections becomes empty and the reopened XML has no Flow_1."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Duplicate Mermaid subgraph IDs route every node to the last pool and orphan the first pool",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnGenerator.ts",
+      "line": 63,
+      "why_it_matters": "A parser-produced AST can contain duplicate subgraph IDs. Ownership resolution treats equal IDs as the same owner while processBySubgraph overwrites the first process, so the first participant becomes empty, all nodes move to the last process, and cross-pool edges are misclassified as internal sequence flows.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Reject duplicate subgraph IDs before creating participants/processes, or assign an internal unique owner key while preserving the displayed pool ID.",
+      "confidence": 0.9,
+      "evidence": [
+        "MermaidParser.parse appends each subgraph without checking ID uniqueness (src/converters/MermaidParser.ts:64-70 and :352-361).",
+        "resolveSubgraphOwners deliberately does not reject an existingOwner equal to the current subgraph.id (src/core/SimpleBpmnGenerator.ts:197-205), while processBySubgraph.set(subgraph.id, subgraphProcessId) overwrites the earlier process mapping (src/core/SimpleBpmnGenerator.ts:54-63).",
+        "Reproduction with subgraphs P[First] containing A and P[Second] containing B yields two process roots but both A and B under the second root; A -> B is emitted as SequenceFlow and the first pool has no owned nodes."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "MCP connect still cannot request MessageFlow; classification at the public handler/tool boundary is deferred to mcp-bpmn-d6u.",
+    "Concurrent mutations and non-atomic persistence can lose collaboration state; the redesign is outside mcp-bpmn-9sv.2.",
+    "Participant processRef/blackBox structural fields are not synchronized when arbitrary participant properties are updated; black-box round-trip itself passes."
+  ],
+  "testing_gaps": [
+    "No regression test deletes one of multiple participants sharing a process and verifies that the remaining process connections survive reopen.",
+    "No Mermaid conversion test rejects duplicate subgraph IDs or verifies that duplicate-ID input cannot produce an empty/orphan pool."
+  ]
+}

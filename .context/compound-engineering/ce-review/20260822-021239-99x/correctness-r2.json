@@ -1,0 +1,49 @@
+{
+  "reviewer": "correctness-r2",
+  "scope": "Bounded re-review of two previously reported correctness defects",
+  "results": [
+    {
+      "title": "Clearing an imported default flow leaves the old default in XML",
+      "original_severity": "P1",
+      "status": "resolved",
+      "confidence": 1.0,
+      "evidence": [
+        "Imported/default-managed flow nodes carry defaultFlowManaged state, and updateElement sets it true when defaultFlow is explicitly cleared.",
+        "BpmnDocument.reconcileConditionalAndDefaultFlows clears elementSemantic.default when defaultFlowManaged is true before applying any current defaultFlow at src/core/BpmnDocument.ts:880-899.",
+        "tests/unit/core/SimpleBpmnEngine.test.ts:864-896 reopens a persisted diagram, reassigns its default, clears with defaultFlow:null, parses exported XML to assert the moddle default is absent, then reopens again and asserts typed defaultFlow remains absent.",
+        "tests/integration/handlers.test.ts:243-249 clears defaultFlow through update_element and asserts the live XML no longer contains the source default reference."
+      ],
+      "verification": {
+        "command": "npx jest tests/unit/core/SimpleBpmnEngine.test.ts tests/integration/handlers.test.ts --runInBand",
+        "result": "passed"
+      }
+    },
+    {
+      "title": "Non-boolean isDefault values can silently create default flows",
+      "original_severity": "P2",
+      "status": "resolved",
+      "confidence": 1.0,
+      "evidence": [
+        "SimpleBpmnEngine.connect rejects every defined isDefault whose runtime type is not boolean before resolving endpoints or mutating state at src/core/SimpleBpmnEngine.ts:189-193.",
+        "BpmnRequestHandler.connect forwards only the canonical isDefault value to the engine at src/server/handlers.ts:359-376, so MCP inputs cannot bypass the runtime guard through alias normalization.",
+        "tests/unit/core/SimpleBpmnEngine.test.ts:918-921 asserts a string isDefault rejects and leaves the connection map empty.",
+        "tests/integration/handlers.test.ts:252-261 sends isDefault as a string through the MCP handler, asserts an error, and verifies that no connection was created."
+      ],
+      "verification": {
+        "command": "npx jest tests/unit/core/SimpleBpmnEngine.test.ts tests/integration/handlers.test.ts --runInBand",
+        "result": "passed"
+      }
+    }
+  ],
+  "summary": {
+    "resolved": 2,
+    "open": 0,
+    "test_suites_passed": 2,
+    "tests_passed": 72
+  },
+  "residual_risks": [
+    "ProcessContext maps remain directly mutable, so callers bypassing engine mutation methods can still create inconsistent default-flow state; this is outside the two bounded defects.",
+    "The focused non-boolean tests use a string example, although the single typeof guard also rejects numbers, objects, arrays, and null is treated as non-boolean when supplied."
+  ],
+  "testing_gaps": []
+}

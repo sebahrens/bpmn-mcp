@@ -1,0 +1,37 @@
+{
+  "mode": "autofix",
+  "scope": "mcp-bpmn-2f6 SVG export implementation only",
+  "intent": "Render current BPMN XML as deterministic, self-contained SVG through a real bpmn-js browser renderer and return an MCP image/svg+xml resource.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "security",
+    "performance",
+    "api-contract",
+    "reliability",
+    "adversarial",
+    "kieran-typescript"
+  ],
+  "applied_fixes": [
+    {
+      "severity": "P1",
+      "title": "Concurrent exports can exhaust browser processes",
+      "files": [
+        "src/core/BpmnSvgRenderer.ts",
+        "tests/integration/handlers.test.ts"
+      ],
+      "resolution": "Added one-active-render concurrency enforcement, explicit browser launch/render deadlines, cleanup on timeout, and focused concurrent-request coverage."
+    }
+  ],
+  "findings": [],
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "Operational validation: watch SVG render latency and errors containing 'SVG renderer' after release; repeated timeout or browser-launch errors are a rollback/mitigation trigger.",
+    "No relevant docs/solutions knowledge base or critical-pattern file exists in this repository."
+  ],
+  "verdict": "Ready to merge"
+}

@@ -1,0 +1,24 @@
+{
+  "mode": "autofix",
+  "scope": "mcp-bpmn-9sv.3 retained imported BPMN semantics and DI",
+  "verdict": "ready",
+  "applied_fixes": [
+    "Distinguished API-managed IDs from opaque retained moddle IDs",
+    "Preserved no-DI imports and valid unindexed connections during no-op and targeted edits",
+    "Removed dependent lane, data-association, connection, and DI references on delete",
+    "Made retained post-mutation reference validation atomic",
+    "Replaced quadratic DI lookups with an ID index",
+    "Serialized exports from a locked clone instead of mutating live state",
+    "Expanded golden coverage across update, add, connect, save, reopen, delete, and failure paths"
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "bpmn-moddle's local declaration surface remains dynamically typed",
+    "The retained raw graph and typed mutation indexes must keep their provenance sets aligned"
+  ],
+  "pre_existing": [
+    "The advertised connect.condition input is handled by a separate feature gap and was not changed",
+    "Legacy handler tests require CallToolResult text-content narrowing after the SDK type update",
+    "The repository has no ESLint configuration, so npm run lint cannot execute"
+  ]
+}

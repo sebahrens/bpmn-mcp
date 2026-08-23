@@ -1,0 +1,12 @@
+{
+  "reviewer": "correctness",
+  "findings": [],
+  "residual_risks": [
+    "The stdio request helper is deliberately sequential; adding concurrent in-flight requests would attach competing stdout listeners and make response ownership ambiguous.",
+    "Startup readiness accepts any stderr buffer beginning with the expected marker and ignores later stderr after readiness, so a diagnostic emitted immediately after the marker is captured but is not independently treated as a test failure."
+  ],
+  "testing_gaps": [
+    "No targeted case forces a post-start response timeout and verifies both prompt rejection and child cleanup through the end-to-end test's finally path.",
+    "The scenario proves that the configured temporary directory receives the persisted BPMN file, but it does not place a sentinel around the real default diagrams directory; a hypothetical dual-write regression could therefore escape this gate."
+  ]
+}

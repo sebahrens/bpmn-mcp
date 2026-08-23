@@ -1,0 +1,8 @@
+{
+  "reviewer": "correctness",
+  "findings": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "The production-reachability exclusions in jest.config.js are manually maintained; no automated check detects future drift between the shipped server import graph and the coverage scope."
+  ]
+}

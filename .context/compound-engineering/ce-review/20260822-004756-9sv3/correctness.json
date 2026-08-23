@@ -1,0 +1,50 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "Retained sequence flows to unindexed BPMN nodes are deleted on import",
+      "severity": "P1",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 418,
+      "why_it_matters": "The lossless path explicitly removes sequence flows from the typed index when either endpoint is a valid moddle construct outside the mutation API, but the subsequent retained serialization interprets every absent indexed connection as a deletion request. Thus merely importing (which autosaves) a BPMN model containing, for example, a Transaction linked to a Task permanently removes that flow and its BPMN edge, contrary to the full-graph retention contract.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Track explicit API deletions separately from constructs omitted from the editable index, or restrict detachSemantic to IDs that were indexed at parse time and then explicitly removed. Add a no-mutation round-trip regression with a supported SequenceFlow whose endpoint is an unindexed valid BPMN type (such as bpmn:Transaction) and its BPMN DI edge.",
+      "confidence": 0.99,
+      "evidence": [
+        "readFlowContainer indexes every bpmn:SequenceFlow, but assertImportedConnections deletes it when source or target is not in document.elements (src/core/BpmnDocument.ts:1091-1097) and comments that it should remain in sourceXml.",
+        "serializeRetained then iterates parsed semantics and calls detachSemantic for every bpmn:SequenceFlow missing from document.connections (src/core/BpmnDocument.ts:426-428), removing it from the parent flowElements and its incoming/outgoing references.",
+        "Executable reproduction: import a Process with bpmn:Transaction T, bpmn:Task A, SequenceFlow F (T -> A), and BPMNEdge F_di, then export without mutation. The imported connection map is empty and bpmn-moddle reports transaction:true, flow:false, edge:false."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "A no-DI import is rewritten to add a diagram and shape without a requested mutation",
+      "severity": "P2",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 118,
+      "why_it_matters": "Every serialize call begins by synthesizing shape records for all indexed elements. ImportXml immediately serializes the newly parsed document, so an otherwise valid source model with no BPMNDiagram is changed during import: serializeRetained creates a BPMNDiagram/BPMNPlane and emits generated shapes. That violates the stated requirement to retain the imported full graph and mutate only indexed targets; callers cannot obtain a lossless no-op round trip for valid non-DI BPMN.",
+      "autofix_class": "gated_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "For retained documents, reconcile only DI entries that already exist or that correspond to an explicit create/layout operation; do not invoke unconditional DI synthesis during no-op import/export. Add a canonical no-mutation round-trip test for a valid process with no BPMNDiagram, asserting that diagrams and generated *_di IDs remain absent.",
+      "confidence": 0.98,
+      "evidence": [
+        "synchronizeDiagramInterchange unconditionally creates `${element.id}_di` for every document element missing a shape (src/core/BpmnDocument.ts:118-136).",
+        "serialize invokes that routine before choosing the retained sourceXml path (src/core/BpmnDocument.ts:212-216), and importXml invokes commitMutation immediately after parse (src/core/SimpleBpmnEngine.ts:375-377).",
+        "Executable reproduction: importing a Definitions/Process/Task document with no bpmndi content and exporting it yields diagrams:1, generated shape A_di:true, and generated plane BPMNPlane_P:true."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The focused fixture exercises one complete collaboration graph and passes, but it contains only types represented in the typed index and always includes DI, so it cannot detect either data-loss path above.",
+    "Imported multiple diagrams and multiple DI representations of one semantic element are retained from sourceXml, but only the primary diagram is represented in the editable index; future layout behavior needs dedicated coverage to ensure it changes only the intended diagram."
+  ],
+  "testing_gaps": [
+    "Add no-op and targeted-mutation retention tests for a SequenceFlow whose endpoint is a valid unindexed BPMN flow node, asserting both semantic flow and its BPMNEdge remain.",
+    "Add no-op import/export coverage for a valid BPMN model without BPMNDiagram/DI, asserting that no BPMNDiagram, BPMNPlane, or generated shape is added.",
+    "Focused Jest suite tests/integration/import-roundtrip.test.ts and npm run type-check pass."
+  ]
+}

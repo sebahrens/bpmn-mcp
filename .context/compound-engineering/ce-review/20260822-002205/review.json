@@ -1,0 +1,35 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "src/core/BpmnValidator.ts",
+    "src/server/handlers.ts",
+    "src/server/tools.ts",
+    "src/types/index.ts",
+    "tests/unit/core/BpmnValidator.test.ts"
+  ],
+  "intent": "Implement cumulative syntax, semantic, and full BPMN validation with owner-aware rules and stable structured issues for mcp-bpmn-9sv.5.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "api-contract",
+    "adversarial",
+    "kieran-typescript"
+  ],
+  "applied_fixes": [
+    "Reject message-flow endpoints owned by another collaboration.",
+    "Validate association endpoints against their process or collaboration owner.",
+    "Apply start-event definition rules based on process, embedded-subprocess, and event-subprocess context.",
+    "Add handler-level validation-level forwarding coverage."
+  ],
+  "findings": [],
+  "residual_actionable_work": [],
+  "advisory": [
+    "No relevant docs/solutions entries exist in this repository.",
+    "The repository lint command cannot run because no ESLint configuration exists; this is pre-existing and outside the selected bead."
+  ],
+  "verdict": "Ready to merge"
+}

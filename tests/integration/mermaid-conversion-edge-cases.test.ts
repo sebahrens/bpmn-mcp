@@ -134,6 +134,52 @@ describe('Mermaid conversion handler edge cases', () => {
   );
 
   it.each(entryPoints)(
+    '%s upgrades a prior implicit endpoint in conversion output and statistics',
+    async entryPoint => {
+      const source = [
+        'flowchart TD',
+        '  A --> E((End))',
+        '  A[Actual label]:::highlighted'
+      ].join('\n');
+      const invoke = await prepareInvocation(handler, sandbox!, entryPoint, source);
+
+      const result = await invoke();
+      const xml = diagramContext.getCurrent().xml!;
+      const flowElements = await parseActiveFlowElements();
+      const byId = new Map(flowElements.map(element => [element.id, element]));
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content[0]).toMatchObject({
+        type: 'text',
+        text: expect.stringContaining('Elements: 2 nodes, 1 flows')
+      });
+      expect(byId.get('Task_A')).toMatchObject({
+        $type: 'bpmn:Task',
+        name: 'Actual label'
+      });
+      expect(flowElements.filter(element => element.id === 'Task_A')).toHaveLength(1);
+
+      const moddle = new BpmnModdle();
+      const parsed = await moddle.fromXML(xml);
+      const roundTrippedXml = (await moddle.toXML(parsed.rootElement)).xml;
+      const reparsed = await moddle.fromXML(roundTrippedXml);
+      const process = reparsed.rootElement.rootElements.find(
+        (element: FlowElement) => element.$type === 'bpmn:Process'
+      );
+
+      expect(parsed.warnings).toEqual([]);
+      expect(reparsed.warnings).toEqual([]);
+      expect(process.flowElements.filter(
+        (element: FlowElement) => element.$type !== 'bpmn:SequenceFlow'
+      ).map((element: FlowElement) => ({ id: element.id, type: element.$type, name: element.name })))
+        .toEqual([
+          { id: 'Task_A', type: 'bpmn:Task', name: 'Actual label' },
+          { id: 'EndEvent_E', type: 'bpmn:EndEvent', name: undefined }
+        ]);
+    }
+  );
+
+  it.each(entryPoints)(
     '%s terminates on a cycle and preserves every node and flow',
     async entryPoint => {
       const source = [

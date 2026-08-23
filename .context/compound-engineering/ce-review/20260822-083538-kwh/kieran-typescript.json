@@ -1,0 +1,27 @@
+{
+  "reviewer": "kieran-typescript",
+  "findings": [
+    {
+      "title": "Dispatcher widens each tool's arguments to a union",
+      "severity": "P2",
+      "file": "src/server/handlers.ts",
+      "line": 25,
+      "why_it_matters": "The dispatcher type does not preserve the association between a tool name and its Zod-inferred arguments. A dispatcher entry can therefore be wired to the wrong handler, or a handler can consume fields for a different tool, without TypeScript rejecting it. The runtime parser still validates callers, but the claimed single source of truth stops protecting the dispatch boundary from future schema or mapping changes.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Use a mapped dispatcher type keyed by each literal ToolName and give each handler its matching ToolArguments<'tool_name'> parameter. Preserve the name/args discriminated pair through a typed dispatch helper (or an exhaustive switch) instead of Record<ToolName, (args: ToolArguments<ToolName>) => ...>; coordinate the handler-signature portion with the separate broader-any cleanup bead.",
+      "confidence": 0.96,
+      "evidence": [
+        "src/server/handlers.ts:25-28 declares every dispatcher value as (args: ToolArguments<ToolName>) => ..., so ToolArguments is evaluated with the entire ToolName union rather than the property key being declared.",
+        "src/server/handlers.ts:29-52 forwards those widened arguments to handlers whose argument parameters remain any (for example newBpmn at line 82 and addEvent at line 255), so neither the map nor its targets enforce the inferred schema types.",
+        "src/server/tools.ts:308-310 defines a discriminated name/args union, but parseToolRequest returns it through an assertion at line 348; tests/security/request-validation.test.ts:59-74 checks runtime key parity only and cannot detect a mismatched dispatcher-to-handler pairing."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "Add a compile-time dispatcher fixture (or type-level assertions) that proves each tool name accepts only its corresponding ToolArguments shape; the current parity test verifies key sets and runtime parsing but not the name-to-handler type association."
+  ]
+}

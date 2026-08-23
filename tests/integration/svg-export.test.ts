@@ -43,7 +43,7 @@ describe('SVG export integration', () => {
     expect(await snapshotDefaultDiagramsDirectory()).toBe(defaultDiagramsSnapshot);
   });
 
-  it('should export a deterministic, self-contained SVG using the real renderer', async () => {
+  it('G2 exports a deterministic, self-contained SVG using the real renderer', async () => {
     const fixture = await readFile(
       join(process.cwd(), 'tests/fixtures/import-roundtrip/full-semantics-di.bpmn'),
       'utf8'
@@ -99,8 +99,15 @@ describe('SVG export integration', () => {
     expect(resource.text).toContain('marker-end: url');
     expect(resource.text).not.toMatch(/bpmn-marker-\d+: url/);
     expect(resource.text).toContain('&lt;script&gt;globalThi');
+    expect(resource.text).toContain('id="bpmn-io-attribution"');
+    expect(resource.text).toContain('href="https://bpmn.io"');
+    expect(resource.text).toContain('aria-label="Powered by bpmn.io"');
+    expect(resource.text).toContain(
+      '<rect x="900" y="592" width="65" height="33" fill="#fff"/>'
+    );
     expect(resource.text).not.toMatch(/<!DOCTYPE|<script\b|<image\b|<foreignObject\b/i);
-    expect(resource.text).not.toMatch(/\s(?:href|xlink:href|on[a-z]+)\s*=/i);
+    expect(resource.text.match(/\shref="[^"]+"/gi)).toEqual([' href="https://bpmn.io"']);
+    expect(resource.text).not.toMatch(/\s(?:xlink:href|on[a-z]+)\s*=/i);
     expect(resource.text).not.toMatch(/url\(\s*['"]?(?:https?:|data:|file:|javascript:)/i);
   }, 25_000);
 

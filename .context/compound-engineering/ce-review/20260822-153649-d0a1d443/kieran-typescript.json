@@ -1,0 +1,8 @@
+{
+  "reviewer": "kieran-typescript",
+  "findings": [],
+  "residual_risks": [
+    "A standalone `npm run build` does not clean `dist`, so previously emitted AutoLayoutEnhanced JavaScript and declaration files can linger locally after this source deletion; the repository's CI/package-smoke paths clean before building, so this is only relevant to any separate packaging flow that reuses an uncleared `dist`."
+  ],
+  "testing_gaps": []
+}

@@ -1,0 +1,29 @@
+{
+  "mode": "autofix",
+  "scope": "Tracked working-tree changes for mcp-bpmn-a3j.3; pre-existing .context/ content excluded",
+  "intent": "Prevent restart and concurrency collisions from replacing newly created BPMN files while preserving normal autosave and save_as behavior.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "api-contract",
+    "reliability",
+    "adversarial",
+    "kieran-typescript"
+  ],
+  "findings": [],
+  "applied_fixes": [],
+  "residual_actionable_work": [],
+  "advisory_outputs": [],
+  "coverage": {
+    "suppressed_findings": 0,
+    "residual_risks": [],
+    "testing_gaps": [],
+    "failed_reviewers": [],
+    "untracked_excluded": [".context/"]
+  },
+  "verdict": "Ready to merge"
+}

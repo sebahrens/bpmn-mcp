@@ -1,0 +1,30 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Opaque no-DI BPMN is not exercised through a later targeted mutation",
+      "severity": "P1",
+      "file": "tests/integration/import-roundtrip.test.ts",
+      "line": 119,
+      "why_it_matters": "The new no-DI case proves import-time serialization preserves an unexposed bpmn:Transaction and a flow connected to it, but it never mutates the visible task afterward. The bead's regression is specifically a later edit rebuilding a reduced document, and the retained serializer has different managed-index/DI synchronization work after updateElement than on the import commit. A regression that drops opaque constructs only after a later mutation would therefore leave all six focused tests green.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "After importing the no-DI XML, rename Task_Visible (or add a separate supported task), restore only that expected name in canonical comparison, and assert Transaction_Opaque plus Flow_Opaque still exist with the original sourceRef/targetRef. Keep the no-DI assertion so the case also proves no artificial BPMNDiagram was introduced.",
+      "confidence": 0.99,
+      "evidence": [
+        "tests/integration/import-roundtrip.test.ts:119-135 calls importXml(noDi), inspects the parsed indexes, and directly exports; it makes no createElement, connect, updateElement, deleteElement, save, or loadDiagram call after import.",
+        "The acceptance criterion and bead reproduction both require preserving unrelated semantics after a later mutation, while the fixture's opaque Transaction_Opaque and Flow_Opaque are exactly the constructs excluded from the typed mutation index.",
+        "The normal rich-fixture rename test does mutate after import, but it contains no unexposed bpmn:Transaction/no-DI flow pair, so it cannot cover this branch of retained content."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The add/connect/reopen test verifies selected extension, condition, and label values but does not canonicalize the complete rich fixture after subtracting the expected added node/flow; the required rename mutation already supplies a full canonical preservation check.",
+    "Malformed-import rollback is verified at the engine API boundary; handler/context rollback is covered elsewhere rather than in this focused fixture suite."
+  ],
+  "testing_gaps": [
+    "Apply a targeted mutation in the no-DI/opaque fixture before asserting canonical preservation of the unexposed transaction and its flow."
+  ]
+}

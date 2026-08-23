@@ -1,0 +1,51 @@
+{
+  "reviewer": "learnings-researcher",
+  "search_context": {
+    "feature_task": "mcp-bpmn-99x BPMN sequence-flow condition/default-flow serialization, schema-aware moddle import round-trip, and persistent-state invariants",
+    "keywords": [
+      "condition",
+      "conditionExpression",
+      "default flow",
+      "serialization",
+      "round-trip",
+      "import",
+      "moddle",
+      "schema-aware",
+      "persistent state",
+      "atomic",
+      "rollback"
+    ],
+    "workflow": "grep-first",
+    "searched_paths": [
+      "docs/solutions/",
+      "docs/solutions/patterns/critical-patterns.md"
+    ],
+    "files_scanned": 0,
+    "relevant_matches": 0,
+    "status": "knowledge-base-absent"
+  },
+  "critical_patterns": {
+    "status": "not-found",
+    "path": "docs/solutions/patterns/critical-patterns.md",
+    "summary": "docs/solutions/ is absent in this checkout, so there is no critical-patterns file to apply."
+  },
+  "learnings": [],
+  "current_repository_evidence": [
+    {
+      "path": "tests/unit/core/SimpleBpmnEngine.test.ts",
+      "summary": "The current executable specification separates labels from conditions, parses expressions through bpmn-moddle, preserves metacharacters/language/type across reopen and save, resolves source.default to the sequence-flow object, and rejects invalid conditional/default combinations without state mutation."
+    },
+    {
+      "path": "tests/integration/import-roundtrip.test.ts",
+      "summary": "The retained-moddle round-trip tests require unrelated conditions, extension content, semantic references, labels, bounds, and waypoints to survive targeted mutations and reopen."
+    },
+    {
+      "path": "tests/integration/persistence.test.ts",
+      "summary": "Persistence tests define the state invariant: serialize and atomically save a cloned working document before publishing it in memory; serialization or write failure must leave the model, XML, and prior file unchanged, and concurrent mutations must not diverge from disk."
+    }
+  ],
+  "recommendations": [
+    "No repository-documented institutional learnings are available; treat the focused condition/default-flow, import-roundtrip, and persistence tests as the present executable contract for this review.",
+    "If this behavior is accepted, record the key invariants in docs/solutions/: conditions are semantic sequence-flow expressions rather than labels; defaults are source-node references and cannot be conditional; retained moddle content must survive typed mutations; and state becomes visible only after successful schema serialization and atomic persistence."
+  ]
+}

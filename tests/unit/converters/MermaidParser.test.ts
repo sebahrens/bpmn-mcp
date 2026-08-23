@@ -143,6 +143,196 @@ describe('MermaidParser parallel edge IDs', () => {
   });
 });
 
+describe('MermaidParser implicit node upgrades', () => {
+  const parser = new MermaidParser();
+
+  it.each([
+    ['process', 'A[Review order]', 'process', 'Review order'],
+    ['decision', 'A{Approved?}', 'decision', 'Approved?'],
+    ['subprocess', 'A[/Manual review/]', 'subprocess', 'Manual review'],
+    ['terminator', 'A((Wait for signal))', 'terminator', 'Wait for signal']
+  ] as Array<[string, string, NodeType, string]>) (
+    'upgrades an implicit endpoint with a later explicit %s declaration',
+    (_shape, definition, expectedType, expectedLabel) => {
+      const result = parser.parse([
+        'flowchart TD',
+        '  S((Start)) --> A',
+        '  A --> E((End))',
+        `  ${definition}`
+      ].join('\n'));
+
+      expect(result.errors).toEqual([]);
+      expect(result.ast?.nodes).toHaveLength(3);
+      expect(result.ast?.nodes.find(node => node.id === 'A')).toMatchObject({
+        id: 'A',
+        type: expectedType,
+        label: expectedLabel
+      });
+      expect(result.warnings.map(warning => warning.code)).not.toContain('DUPLICATE_NODE');
+    }
+  );
+
+  it('uses the upgraded declaration location for later node diagnostics', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      '  A --> E((End))',
+      '    A[Review order]'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings.filter(warning => warning.code === 'DISCONNECTED_NODE')).toEqual([
+      expect.objectContaining({
+        code: 'DISCONNECTED_NODE',
+        line: 3,
+        column: 5,
+        source: '    A[Review order]',
+        message: 'Node "A" has no incoming connections'
+      })
+    ]);
+  });
+
+  it('keeps a later explicit class annotation with the upgraded declaration semantics', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      '  A --> E((End))',
+      '  A[Review order]:::highlighted'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.nodes.find(node => node.id === 'A')).toMatchObject({
+      type: 'process',
+      label: 'Review order'
+    });
+    expect(result.warnings.filter(warning => [
+      'DISCONNECTED_NODE',
+      'UNSUPPORTED_DIRECTIVE'
+    ].includes(warning.code))).toEqual([
+      expect.objectContaining({
+        code: 'DISCONNECTED_NODE',
+        line: 3,
+        column: 3
+      }),
+      expect.objectContaining({
+        code: 'UNSUPPORTED_DIRECTIVE',
+        line: 3,
+        column: 18,
+        message: 'Unsupported Mermaid CSS class "highlighted"; ignored'
+      })
+    ]);
+  });
+
+  it('treats a class-only edge endpoint as the first explicit definition before rejecting a later shape', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      '  S((Start)) --> A:::highlighted',
+      '  A[Later label]'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.nodes.filter(node => node.id === 'A')).toEqual([
+      expect.objectContaining({ id: 'A', type: 'process', label: 'A' })
+    ]);
+    expect(result.warnings.filter(warning => warning.code === 'UNSUPPORTED_DIRECTIVE')).toEqual([
+      expect.objectContaining({
+        line: 2,
+        column: 19,
+        source: '  S((Start)) --> A:::highlighted',
+        message: 'Unsupported Mermaid CSS class "highlighted"; ignored'
+      })
+    ]);
+    expect(result.warnings.filter(warning => warning.code === 'DUPLICATE_NODE')).toEqual([
+      expect.objectContaining({
+        line: 3,
+        column: 3,
+        source: '  A[Later label]',
+        message: 'Duplicate node definition: A'
+      })
+    ]);
+  });
+
+  it('preserves edge and subgraph references while upgrading in place', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      '  subgraph team[Team]',
+      '    S((Start)) --> A',
+      '    A[Review order]',
+      '    A --> E((End))',
+      '  end'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.nodes.filter(node => node.id === 'A')).toEqual([
+      expect.objectContaining({ type: 'process', label: 'Review order' })
+    ]);
+    expect(result.ast?.edges).toEqual([
+      expect.objectContaining({ source: 'S', target: 'A' }),
+      expect.objectContaining({ source: 'A', target: 'E' })
+    ]);
+    expect(result.ast?.subgraphs[0].nodes).toEqual(['S', 'A', 'E']);
+  });
+
+  it('treats shaped edge endpoints as explicit and keeps the first explicit definition', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      '  S((Start)) --> A[First label]',
+      '  A{Second label} --> E((End))'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.nodes).toHaveLength(3);
+    expect(result.ast?.nodes.find(node => node.id === 'A')).toMatchObject({
+      type: 'process',
+      label: 'First label'
+    });
+    expect(result.warnings.filter(warning => warning.code === 'DUPLICATE_NODE')).toEqual([
+      expect.objectContaining({
+        line: 3,
+        column: 3,
+        source: '  A{Second label} --> E((End))',
+        message: 'Duplicate node definition: A'
+      })
+    ]);
+  });
+
+  it('emits one deterministic warning for a genuine repeated explicit declaration', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      '  A --> E((End))',
+      '  A[First label]',
+      '    A{Second label}'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.nodes).toHaveLength(2);
+    expect(result.ast?.nodes.find(node => node.id === 'A')).toMatchObject({
+      type: 'process',
+      label: 'First label'
+    });
+    expect(result.warnings.filter(warning => warning.code === 'DUPLICATE_NODE')).toEqual([
+      expect.objectContaining({ line: 4, column: 5, message: 'Duplicate node definition: A' })
+    ]);
+  });
+
+  it('upgrades an implicit endpoint to data semantics before endpoint validation', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      '  S((Start)) --> A',
+      '  A[[Customer record]]'
+    ].join('\n'));
+
+    expect(result.ast).toBeUndefined();
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        code: 'UNSUPPORTED_EDGE_ENDPOINT',
+        line: 2,
+        column: 14,
+        message: 'Edge S_to_A cannot connect a BPMN flow to a data object'
+      })
+    ]);
+    expect(result.warnings.map(warning => warning.code)).not.toContain('DUPLICATE_NODE');
+  });
+});
+
 describe('MermaidParser diagnostics', () => {
   const parser = new MermaidParser();
 

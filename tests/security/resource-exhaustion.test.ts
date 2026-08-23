@@ -335,6 +335,89 @@ describe('resource exhaustion guards', () => {
       .toThrow(`Number must be less than or equal to ${MAX_PAGE_LIMIT}`);
   });
 
+  it('reads metadata only for the requested stable diagram page', async () => {
+    const filenames = Array.from(
+      { length: 7 },
+      (_, index) => `${String(index).padStart(2, '0')}-custom.bpmn`
+    );
+    for (const [index, filename] of filenames.entries()) {
+      await fs.writeFile(
+        join(directory, filename),
+        `<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="resource-test"><bpmn:process id="Process_${index}" name="Diagram ${index}" /></bpmn:definitions>`,
+        'utf8'
+      );
+    }
+
+    const engine = new SimpleBpmnEngine(directory, undefined, passthroughLayout);
+    const fileManager = (engine as unknown as { fileManager: FileManager }).fileManager;
+    const readSpy = jest.spyOn(fileManager, 'readBpmnFile');
+    const handler = new BpmnRequestHandler(engine);
+
+    const fourth = JSON.parse(textOf(await handler.handleRequest('list_diagrams', {
+      limit: 1,
+      offset: 3
+    })));
+    expect(fourth).toMatchObject({
+      count: 7,
+      returnedCount: 1,
+      hasMore: true,
+      diagrams: [{ filename: filenames[3], processId: 'Process_3', name: 'Diagram 3' }]
+    });
+    expect(readSpy).toHaveBeenCalledTimes(1);
+    expect(readSpy).toHaveBeenLastCalledWith(filenames[3], expect.any(Number));
+
+    readSpy.mockClear();
+    const fifth = JSON.parse(textOf(await handler.handleRequest('list_diagrams', {
+      limit: 1,
+      offset: 4
+    })));
+    expect(fifth.diagrams).toEqual([
+      expect.objectContaining({ filename: filenames[4], processId: 'Process_4' })
+    ]);
+    expect(readSpy).toHaveBeenCalledTimes(1);
+    expect(readSpy).toHaveBeenLastCalledWith(filenames[4], expect.any(Number));
+  });
+
+  it('accepts the exact diagram metadata byte budget and rejects one byte over', async () => {
+    const metadataBudget = 512;
+    const prefix = '<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="resource-test"><bpmn:process id="Process_1" name="Budget" /><!--';
+    const suffix = '--></bpmn:definitions>';
+    const exactXml = `${prefix}${'x'.repeat(metadataBudget - Buffer.byteLength(prefix + suffix))}${suffix}`;
+    expect(Buffer.byteLength(exactXml)).toBe(metadataBudget);
+
+    const exactDirectory = join(directory, 'exact-metadata-budget');
+    await fs.mkdir(exactDirectory);
+    await fs.writeFile(join(exactDirectory, 'custom.bpmn'), exactXml, 'utf8');
+    const exactHandler = new BpmnRequestHandler(
+      new SimpleBpmnEngine(
+        exactDirectory,
+        undefined,
+        passthroughLayout,
+        limits({ maxListingMetadataBytes: metadataBudget })
+      )
+    );
+    const exact = await exactHandler.handleRequest('list_diagrams', { limit: 1, offset: 0 });
+    expect(exact.isError).toBeUndefined();
+    expect(JSON.parse(textOf(exact)).diagrams).toEqual([
+      expect.objectContaining({ filename: 'custom.bpmn', processId: 'Process_1', name: 'Budget' })
+    ]);
+
+    const overDirectory = join(directory, 'over-metadata-budget');
+    await fs.mkdir(overDirectory);
+    await fs.writeFile(join(overDirectory, 'custom.bpmn'), `${exactXml}x`, 'utf8');
+    const overHandler = new BpmnRequestHandler(
+      new SimpleBpmnEngine(
+        overDirectory,
+        undefined,
+        passthroughLayout,
+        limits({ maxListingMetadataBytes: metadataBudget })
+      )
+    );
+    const over = await overHandler.handleRequest('list_diagrams', { limit: 1, offset: 0 });
+    expect(over.isError).toBe(true);
+    expect(textOf(over)).toContain(`metadata byte limit ${metadataBudget} exceeded`);
+  });
+
   it('accepts exact listing candidate caps and rejects one over', async () => {
     const resourceLimits = limits({ maxListingItems: 2 });
     const handler = new BpmnRequestHandler(

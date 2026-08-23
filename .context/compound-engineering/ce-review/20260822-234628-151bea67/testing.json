@@ -1,0 +1,27 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Test bare class annotation upgrade",
+      "severity": "P2",
+      "file": "tests/unit/converters/MermaidParser.test.ts",
+      "line": 194,
+      "why_it_matters": "The added explicit-state transition for a bare endpoint followed only by :::class is an acceptance path, but the current class test also supplies a shape. That shape was already explicit, so the test would still pass if class annotations did not mark a bare placeholder explicit; a later shaped definition could then incorrectly replace it instead of producing the required duplicate warning.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add a parser case with `A --> E((End))`, then `A:::highlighted`, then a shaped `A[...]`; assert the first class-annotated declaration remains the process node, the later definition yields exactly one DUPLICATE_NODE warning at its location, and the class warning remains deterministic.",
+      "confidence": 0.98,
+      "evidence": [
+        "MermaidParser.withClassAnnotation now sets explicit: true, which is the only mechanism that upgrades a bare `A:::highlighted` endpoint.",
+        "The test at line 198 uses `A[Review order]:::highlighted`; parseEndpoint has already marked that shaped endpoint explicit before withClassAnnotation runs, so it cannot prove the new class-only state transition.",
+        "No added case puts a later explicit definition after a bare class-annotated declaration to verify first-explicit-wins behavior for that acceptance path."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "No test covers a bare edge-created placeholder upgraded solely by `:::class` and then followed by another explicit definition; this leaves the class-only first-explicit-wins branch unproven."
+  ]
+}

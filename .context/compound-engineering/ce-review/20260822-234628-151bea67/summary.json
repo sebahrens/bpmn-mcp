@@ -1,0 +1,38 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "src/converters/MermaidParser.ts",
+    "tests/unit/converters/MermaidParser.test.ts",
+    "tests/integration/mermaid-conversion-edge-cases.test.ts"
+  ],
+  "intent": "Upgrade implicit Mermaid edge endpoints with their first explicit definition while keeping later explicit definitions deterministic duplicates.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings-researcher",
+    "kieran-typescript"
+  ],
+  "findings": [
+    {
+      "title": "Test bare class annotation upgrade",
+      "severity": "P2",
+      "file": "tests/unit/converters/MermaidParser.test.ts",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "resolution": "Added and corrected an edge-endpoint class-only regression; focused parser and handler tests pass and the final focused re-review is clean."
+    }
+  ],
+  "applied_fixes": [
+    "Added direct coverage that an inline class-only edge endpoint becomes the first explicit definition and makes a later shaped declaration a duplicate."
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "Agent-native review passed with both Mermaid MCP entry points covered.",
+    "No docs/solutions directory or relevant institutional learning exists in this repository."
+  ],
+  "verdict": "Ready to merge"
+}

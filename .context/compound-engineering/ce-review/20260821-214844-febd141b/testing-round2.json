@@ -1,0 +1,48 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Ownership tests skip when participant processRef is missing",
+      "severity": "P2",
+      "file": "tests/unit/core/SimpleBpmnEngine.test.ts",
+      "line": 325,
+      "why_it_matters": "The sole-owner inference, cross-process flow, nested-scope, and sole-participant cleanup tests use early returns when processRef is absent. A regression that creates participants without processRef would therefore bypass the core assertions and still pass these tests, leaving ownership and cleanup behavior unproven.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "confidence": 0.96,
+      "evidence": [
+        "At tests/unit/core/SimpleBpmnEngine.test.ts:324-325, the sole-owner test asserts only kind, then returns when participant.processRef is missing.",
+        "The distinct-process test repeats the skip at lines 380-383, and sole-participant cleanup repeats it at lines 627-629.",
+        "Those processRef values are the inputs that make the subsequent owner, scope, sequence-flow, and cleanup assertions meaningful."
+      ],
+      "pre_existing": false,
+      "suggested_fix": "Assert participant.processRef (and both buyer/seller processRefs) is defined before narrowing, or throw on an unexpected participant shape instead of returning; apply the same change to each affected test."
+    },
+    {
+      "title": "Lifecycle test omits internal flow persistence after reopen",
+      "severity": "P2",
+      "file": "tests/unit/core/SimpleBpmnEngine.test.ts",
+      "line": 496,
+      "why_it_matters": "The fixture test verifies internal sequence flows before import and only the collaboration message flow after loadDiagram/updateElement. A save/reopen regression could drop Buyer_Flow or Seller_Flow while preserving the message flow, participant ref, and updated task, so the stated flow-survival contract would still appear green.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "confidence": 0.88,
+      "evidence": [
+        "The pre-import fixture checks one SequenceFlow per process at tests/unit/core/SimpleBpmnEngine.test.ts:458-461.",
+        "After reopen and mutation, assertions at lines 496-501 cover only Message_Order, Process_Seller/participantRef, Seller_Receive name, participant bounds, and plane target.",
+        "No post-reopen assertion checks Buyer_Flow/Seller_Flow membership or node ownership."
+      ],
+      "pre_existing": false,
+      "suggested_fix": "After reopen/update, assert both process roots still contain their expected sequence-flow IDs and representative flow nodes retain their ownerId/scopeId in the imported context."
+    }
+  ],
+  "residual_risks": [
+    "The full Jest suite passes (133 tests), but Jest reports that it did not exit one second after completion because an asynchronous handle remains open."
+  ],
+  "testing_gaps": [
+    "Add non-skipping processRef assertions to the ownership-focused tests.",
+    "Assert internal sequence-flow and node ownership survival after save/reopen/mutate."
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "reviewer": "api-contract",
+  "findings": [
+    {
+      "title": "Collaboration root is mislabeled as processId",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "line": 303,
+      "why_it_matters": "The new structured contract is intended to make generated IDs directly composable across tools, but `processId` does not have one meaning. For a process diagram it is a BPMN process ID; for a collaboration it is the collaboration root ID, while `add_pool.processId` is a participant's actual process reference. A schema-driven caller can therefore take `new_bpmn(type: collaboration).processId`, pass it as `ownerId`/`scopeId`, and receive a runtime scope error even though the field name advertises it as a process ID.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Give the diagram root a semantically neutral `rootId`/`diagramId`, or use a discriminated result with `processId` for process roots and `collaborationId` for collaboration roots. Apply the same naming to current, export, and diagram-listing results; retain an alias or version the change if this structured contract has already shipped.",
+      "confidence": 0.94,
+      "evidence": [
+        "src/server/tools.ts:302-308 requires `processId` for both `type: process` and `type: collaboration` in `outputDiagram`.",
+        "src/server/handlers.ts:243-254 returns `context.id` as `processId` from `new_bpmn` regardless of the requested root type.",
+        "src/core/BpmnDocument.ts:397-416 stores that root ID in `document.collaborations`, not `document.processes`, when the type is collaboration; src/server/handlers.ts:601-605 separately uses `processId` for a participant's `processRef`.",
+        "tests/e2e/server.test.ts:1061-1080 demonstrates the semantic distinction by creating a collaboration but using `add_pool`'s processId, rather than `new_bpmn`'s processId, as the activity owner/scope."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Output IDs are weaker than accepted input IDs",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "line": 300,
+      "why_it_matters": "Every generated identifier is advertised and runtime-validated as merely a non-empty string, while the consuming tool inputs require a bounded BPMN XML NCName. The shared result boundary would therefore certify malformed or overlong IDs that cannot be fed back into `get_element`, `connect`, `ownerId`, or similar inputs, defeating the promised schema-driven composition and allowing an engine regression to escape server-side validation.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Define `outputBpmnId` from the same max-length and `BPMN_ID_PATTERN` constraints as `bpmnId()` (without input-only transformations), regenerate the advertised output schemas/fingerprints, and assert that representative returned IDs validate as subsequent tool inputs.",
+      "confidence": 0.91,
+      "evidence": [
+        "src/server/tools.ts:300 defines `outputBpmnId` as `z.string().min(1)` and reuses it for process, element, connection, lane, association, and reference IDs.",
+        "src/server/tools.ts:252-255 defines input BPMN IDs with the configured maximum length and `BPMN_ID_PATTERN`; the generated JSON Schema for `add_activity.ownerId` includes `maxLength: 255` and an NCName pattern, while `add_activity.elementId` includes only `minLength: 1`.",
+        "tests/e2e/server.test.ts:823-825 and 894-898 assert generated IDs with `expect.any(String)`, so the exhaustive success-path test does not verify the output-to-input constraint."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The export output schema models `format`, `mimeType`, and optional arbitrary `uri` independently, so it cannot reject mismatched format/MIME pairs or a non-`bpmn:` SVG URI. Current handler construction and e2e assertions keep these values correlated, but the advertised/runtime schema would not catch a future metadata regression.",
+    "Active filename outputs are constrained only to a non-empty string. Current engine paths produce validated basenames and the e2e exercises generated and save-as filenames, but output validation itself does not guarantee the basename/`.bpmn` safety implied by the field description.",
+    "The installed SDK 1.26.0 permits error tool results to omit `structuredContent` when `isError` is true, and its client validates non-error structured content against cached output schemas after `tools/list`; the implementation's error shape is compatible with that behavior."
+  ],
+  "testing_gaps": [
+    "Exercise the successful black-box `add_pool` branch and assert that the optional participant `processId` is absent while the result still validates.",
+    "Assert generated IDs against the same BPMN ID schema accepted by follow-up tool inputs, not only `expect.any(String)`.",
+    "The e2e checks that legacy `content` remains non-empty and has the expected block kind, but it does not pin the prior text/resource payload semantics for each tool; exact or targeted compatibility assertions would detect accidental prose/resource regressions.",
+    "The focused e2e suite was inspected but not executed in this reviewer because it rebuilds `dist`; `npm run type-check` passed."
+  ]
+}

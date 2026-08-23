@@ -157,20 +157,122 @@ describe('transactional diagram persistence', () => {
     await expect(fs.readFile(join(directory, context.filename!), 'utf8')).resolves.toBe(beforeXml);
   });
 
-  it('keeps the destination unchanged and cleans up the temporary file when rename fails', async () => {
+  it('rolls back connection deletion and default ownership when writing fails', async () => {
+    await handler.handleRequest('new_bpmn', { name: 'Connection delete rollback' });
+    await handler.handleRequest('add_activity', { activityType: 'task', name: 'Source' });
+    await handler.handleRequest('add_activity', { activityType: 'task', name: 'Target' });
+    await handler.handleRequest('connect', {
+      sourceId: 'Task_1',
+      targetId: 'Task_2',
+      isDefault: true
+    });
+    const context = diagramContext.getCurrent();
+    const beforeXml = context.xml;
+    const beforeConnections = structuredClone(Array.from(context.connections.entries()));
+    const beforeDisk = await fs.readFile(join(directory, context.filename!), 'utf8');
+    const fileManager = (engine as unknown as { fileManager: FileManager }).fileManager;
+    jest.spyOn(fileManager, 'saveBpmnFile').mockResolvedValueOnce({
+      success: false,
+      error: 'injected connection delete failure'
+    });
+
+    const result = await handler.handleRequest('delete_element', { elementId: 'Flow_1' });
+
+    expect(result).toEqual({
+      content: [{ type: 'text', text: 'Error: injected connection delete failure' }],
+      isError: true
+    });
+    expect(Array.from(context.connections.entries())).toEqual(beforeConnections);
+    expect(context.elements.get('Task_1')?.defaultFlow).toBe('Flow_1');
+    expect(context.elements.has('Task_1')).toBe(true);
+    expect(context.elements.has('Task_2')).toBe(true);
+    expect(context.xml).toBe(beforeXml);
+    await expect(fs.readFile(join(directory, context.filename!), 'utf8')).resolves.toBe(beforeDisk);
+  });
+
+  it('commits an associated text annotation and its association in one write', async () => {
+    const context = await engine.createProcess('Atomic annotation');
+    const task = await engine.createElement(context.id, {
+      type: 'bpmn:Task',
+      name: 'Annotated task'
+    });
+    const fileManager = (engine as unknown as { fileManager: FileManager }).fileManager;
+    const save = fileManager.saveBpmnFile.bind(fileManager);
+    const saveSpy = jest.spyOn(fileManager, 'saveBpmnFile').mockImplementation(save);
+
+    const { annotation, association } = await engine.addTextAnnotation(context.id, 'Review this', {
+      associatedElementId: task.id
+    });
+
+    expect(saveSpy).toHaveBeenCalledTimes(1);
+    expect(context.elements.get(annotation.id)).toBe(annotation);
+    expect(context.connections.get(association!.id)).toBe(association);
+    await expect(fs.readFile(join(directory, context.filename!), 'utf8')).resolves.toBe(context.xml);
+
+    const reopened = await new SimpleBpmnEngine(directory).loadDiagram(context.filename!);
+    expect(reopened.elements.has(annotation.id)).toBe(true);
+    expect(reopened.connections.has(association!.id)).toBe(true);
+  });
+
+  it.each(['serialization', 'write'] as const)(
+    'rolls back an associated text annotation when %s fails',
+    async failurePoint => {
+      const context = await engine.createProcess(`Atomic annotation ${failurePoint}`);
+      const task = await engine.createElement(context.id, {
+        type: 'bpmn:Task',
+        name: 'Unchanged task'
+      });
+      const beforeXml = context.xml;
+
+      if (failurePoint === 'serialization') {
+        const serializer = (engine as unknown as {
+          serializer: { serialize: (...args: unknown[]) => Promise<string> };
+        }).serializer;
+        jest.spyOn(serializer, 'serialize').mockRejectedValueOnce(
+          new Error('injected annotation serialization failure')
+        );
+      } else {
+        const fileManager = (engine as unknown as { fileManager: FileManager }).fileManager;
+        jest.spyOn(fileManager, 'saveBpmnFile').mockResolvedValueOnce({
+          success: false,
+          error: 'injected annotation write failure'
+        });
+      }
+
+      await expect(engine.addTextAnnotation(context.id, 'Must roll back', {
+        associatedElementId: task.id
+      })).rejects.toThrow(`injected annotation ${failurePoint} failure`);
+
+      expect(Array.from(context.elements.values()).filter(
+        element => element.type === 'bpmn:TextAnnotation'
+      )).toHaveLength(0);
+      expect(Array.from(context.connections.values()).filter(
+        connection => connection.type === 'bpmn:Association'
+      )).toHaveLength(0);
+      expect(context.xml).toBe(beforeXml);
+      await expect(fs.readFile(join(directory, context.filename!), 'utf8')).resolves.toBe(beforeXml);
+
+      const reopened = await new SimpleBpmnEngine(directory).loadDiagram(context.filename!);
+      expect(Array.from(reopened.elements.values()).filter(
+        element => element.type === 'bpmn:TextAnnotation'
+      )).toHaveLength(0);
+      expect(Array.from(reopened.connections.values()).filter(
+        connection => connection.type === 'bpmn:Association'
+      )).toHaveLength(0);
+    }
+  );
+
+  it('keeps the destination unchanged and cleans up temporary output when staging fails', async () => {
     const fileManager = new FileManager(directory);
-    await expect(fileManager.saveBpmnFile('old XML', {
-      filename: 'atomic.bpmn',
-      overwrite: true
-    })).resolves.toMatchObject({ success: true });
-    jest.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('injected rename failure'));
+    const filename = `${'a'.repeat(245)}.bpmn`;
+    await fs.writeFile(join(directory, filename), 'old XML', 'utf8');
 
     await expect(fileManager.saveBpmnFile('new XML', {
-      filename: 'atomic.bpmn',
+      filename,
       overwrite: true
     })).resolves.toMatchObject({ success: false });
-    await expect(fs.readFile(join(directory, 'atomic.bpmn'), 'utf8')).resolves.toBe('old XML');
-    expect(await fs.readdir(directory)).toEqual(['atomic.bpmn']);
+    await expect(fs.readFile(join(directory, filename), 'utf8')).resolves.toBe('old XML');
+    expect(await fs.readdir(directory)).toEqual([filename]);
   });
 
   it('serializes concurrent mutations without losing state or diverging from disk', async () => {
@@ -208,19 +310,124 @@ describe('transactional diagram persistence', () => {
     await expect(fs.readFile(join(directory, context.filename!), 'utf8')).resolves.toBe(context.xml);
   });
 
-  it('does not clobber a save_as destination created after the existence check', async () => {
-    const fileManager = new FileManager(directory);
-    jest.spyOn(fs, 'link').mockImplementationOnce(async (_temporaryPath, destinationPath) => {
-      await fs.writeFile(destinationPath, 'concurrent writer', 'utf8');
-      throw Object.assign(new Error('destination exists'), { code: 'EEXIST' });
-    });
+  it('atomically selects one winner for concurrent no-clobber saves', async () => {
+    const firstManager = new FileManager(directory);
+    const secondManager = new FileManager(directory);
+    const [first, second] = await Promise.all([
+      firstManager.saveBpmnFile('first writer', {
+        filename: 'contended.bpmn',
+        overwrite: false
+      }),
+      secondManager.saveBpmnFile('second writer', {
+        filename: 'contended.bpmn',
+        overwrite: false
+      })
+    ]);
+    const winner = first.success ? first : second;
+    const loser = first.success ? second : first;
 
-    await expect(fileManager.saveBpmnFile('our XML', {
-      filename: 'contended.bpmn',
-      overwrite: false
-    })).resolves.toMatchObject({ success: false });
+    expect(winner).toMatchObject({ success: true, filename: 'contended.bpmn' });
+    expect(loser).toEqual({
+      success: false,
+      error: 'File already exists: contended.bpmn. Use overwrite option to replace.'
+    });
     await expect(fs.readFile(join(directory, 'contended.bpmn'), 'utf8'))
-      .resolves.toBe('concurrent writer');
+      .resolves.toBe(first.success ? 'first writer' : 'second writer');
     expect(await fs.readdir(directory)).toEqual(['contended.bpmn']);
+  });
+
+  it('keeps a populated new_bpmn file unchanged across a full engine restart', async () => {
+    await handler.handleRequest('new_bpmn', { name: 'Restart-safe process' });
+    await handler.handleRequest('add_activity', {
+      activityType: 'task',
+      name: 'Must survive restart'
+    });
+    const first = diagramContext.getCurrent();
+    const firstFilename = first.filename!;
+    const firstBytes = await fs.readFile(join(directory, firstFilename));
+
+    diagramContext.clear();
+    IdGenerator.reset();
+    const restartedEngine = new SimpleBpmnEngine(directory);
+    const restartedHandler = new BpmnRequestHandler(restartedEngine);
+    const created = await restartedHandler.handleRequest('new_bpmn', {
+      name: 'Restart-safe process'
+    });
+    const second = diagramContext.getCurrent();
+
+    expect(created.isError).toBeUndefined();
+    expect(second.id).toBe(first.id);
+    expect(second.filename).not.toBe(firstFilename);
+    await expect(fs.readFile(join(directory, firstFilename))).resolves.toEqual(firstBytes);
+
+    const reopened = await restartedEngine.loadDiagram(firstFilename);
+    expect(Array.from(reopened.elements.values()).map(element => element.name))
+      .toContain('Must survive restart');
+    await expect(restartedEngine.listDiagrams()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ filename: firstFilename, processId: first.id }),
+      expect.objectContaining({ filename: second.filename, processId: second.id })
+    ]));
+  });
+
+  it('keeps the first Mermaid-created file unchanged across a full engine restart', async () => {
+    const args = {
+      name: 'Restart-safe Mermaid',
+      mermaidCode: 'flowchart TD\n  A[Start] --> B[Finish]'
+    };
+    await handler.handleRequest('new_from_mermaid', args);
+    const first = diagramContext.getCurrent();
+    const firstFilename = first.filename!;
+    const firstBytes = await fs.readFile(join(directory, firstFilename));
+
+    diagramContext.clear();
+    IdGenerator.reset();
+    const restartedEngine = new SimpleBpmnEngine(directory);
+    const restartedHandler = new BpmnRequestHandler(restartedEngine);
+    const created = await restartedHandler.handleRequest('new_from_mermaid', args);
+    const second = diagramContext.getCurrent();
+
+    expect(created.isError).toBeUndefined();
+    expect(second.id).toBe(first.id);
+    expect(second.filename).not.toBe(firstFilename);
+    await expect(fs.readFile(join(directory, firstFilename))).resolves.toEqual(firstBytes);
+
+    const reopened = await restartedEngine.loadDiagram(firstFilename);
+    expect(reopened.elements.size).toBe(2);
+    expect(reopened.connections.size).toBe(1);
+    await expect(restartedEngine.listDiagrams()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ filename: firstFilename, processId: first.id }),
+      expect.objectContaining({ filename: second.filename, processId: second.id })
+    ]));
+  });
+
+  it('persists concurrent same-name creations from independent engines as distinct files', async () => {
+    const firstEngine = new SimpleBpmnEngine(directory);
+    const secondEngine = new SimpleBpmnEngine(directory);
+
+    const [first, second] = await Promise.all([
+      firstEngine.createProcess('Concurrent same name'),
+      secondEngine.createProcess('Concurrent same name')
+    ]);
+
+    expect(second.id).not.toBe(first.id);
+    expect(second.filename).not.toBe(first.filename);
+    await expect(fs.readdir(directory)).resolves.toEqual(expect.arrayContaining([
+      first.filename,
+      second.filename
+    ]));
+  });
+
+  it('rejects an initial filename collision without adopting or replacing state', async () => {
+    jest.spyOn(IdGenerator, 'generateUuid').mockReturnValue('fixed-storage-id');
+    const first = await engine.createProcess('Reserved import');
+    const firstBytes = await fs.readFile(join(directory, first.filename!));
+    IdGenerator.reset();
+    const competingEngine = new SimpleBpmnEngine(directory);
+
+    await expect(competingEngine.createProcess('Reserved import')).rejects.toThrow(
+      `File already exists: ${first.filename}. Use overwrite option to replace.`
+    );
+    await expect(fs.readFile(join(directory, first.filename!))).resolves.toEqual(firstBytes);
+    expect(() => competingEngine.getProcess(first.id)).toThrow(`Process ${first.id} not found`);
   });
 });

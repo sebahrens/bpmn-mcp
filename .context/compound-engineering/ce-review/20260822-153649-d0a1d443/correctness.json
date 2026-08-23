@@ -1,0 +1,8 @@
+{
+  "reviewer": "correctness",
+  "findings": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "The bead's npm test acceptance check was not run during this read-only review; npx tsc --noEmit --incremental false and the scoped git diff --check both passed."
+  ]
+}

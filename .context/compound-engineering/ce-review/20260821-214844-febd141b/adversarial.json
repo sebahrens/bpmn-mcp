@@ -1,0 +1,68 @@
+{
+  "reviewer": "adversarial",
+  "findings": [
+    {
+      "title": "Imported cross-process sequence flows survive round-trip",
+      "severity": "P1",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 675,
+      "why_it_matters": "An imported collaboration can contain a sequence flow whose endpoints belong to different process roots, yet the document accepts it as a valid connection and writes it back. A subsequent unrelated mutation preserves the invalid cross-scope edge, so a file that should have been rejected or represented as a message flow is presented to renderers and callers as valid BPMN.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "During parse/import validation, resolve both endpoint elements and reject a SequenceFlow unless both are flow nodes with the same ownerId and scopeId; reject before registering the context or writing the normalized file.",
+      "confidence": 0.96,
+      "evidence": [
+        "src/core/BpmnDocument.ts:663-687 readConnection records the XML container's ownerId/scopeId and endpoint IDs, but never compares endpoint ownership or scope for imported SequenceFlows.",
+        "A two-process XML with P1 containing task A and sequenceFlow bad(sourceRef=A,targetRef=B), and P2 containing task B, imports successfully; the resulting connection is {ownerId:'P1', scopeId:'P1', source:'A', target:'B'}.",
+        "SimpleBpmnEngine.importXml immediately serializes and saveProcess-es this parsed context (src/core/SimpleBpmnEngine.ts:324-329), and later updateElement/exportXml emits bad under P1 again instead of rejecting or converting it to a collaboration MessageFlow."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Rejected participant leaves an orphan process root",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 104,
+      "why_it_matters": "A participant request can fail validation after its auto-created process has already been inserted. The caller sees a rejected add, but the live collaboration now contains an unreferenced process; a later successful participant or export serializes that orphan, diverging in-memory ownership from the persisted pre-error file.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Validate participant properties before inserting the generated process root, or stage the process root and roll it back whenever assertElementProperties or refreshAndSave rejects the mutation.",
+      "confidence": 0.88,
+      "evidence": [
+        "src/core/SimpleBpmnEngine.ts:103-109 inserts `${elementId}_Process` before src/core/SimpleBpmnEngine.ts:160 calls assertElementProperties.",
+        "Reproduction: create a collaboration, call createElement({type:'bpmn:Participant', properties:{eventDefinition:'bad'}}), and observe the expected 'Unsupported event definition type' rejection while context.document.processes contains Participant_1_Process and context.elements is empty.",
+        "The failed request leaves the original BPMN file unchanged, but a later export or valid participant serializes Participant_1_Process as an orphan root because BpmnDocumentSerializer serializes every process in document.processes."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Mermaid subgraphs collapse into one shared process",
+      "severity": "P1",
+      "file": "src/core/SimpleBpmnGenerator.ts",
+      "line": 29,
+      "why_it_matters": "A Mermaid conversion with two subgraphs creates two participant shapes but gives both the same processRef and puts every node and edge in that one process. The visual pools therefore do not own their nodes, and an edge between subgraphs remains a SequenceFlow instead of the required collaboration MessageFlow.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Create one process root per subgraph, assign each node to its subgraph's owner, emit same-owner edges as SequenceFlows in that process, and emit cross-owner edges as MessageFlows under the collaboration.",
+      "confidence": 0.98,
+      "evidence": [
+        "src/core/SimpleBpmnGenerator.ts:29 creates one process document; lines 54-70 assign every generated node ownerId/scopeId to processId.",
+        "src/core/SimpleBpmnGenerator.ts:92-103 assigns every edge bpmn:SequenceFlow with ownerId/scopeId processId before participants are built.",
+        "src/core/SimpleBpmnGenerator.ts:107-123 creates each participant with processRef: processId. A two-subgraph AST produces Process_1 containing both tasks and Flow_2, while both participants reference Process_1 and no collaboration message flow exists."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Participant processRef and blackBox fields are structural state separate from properties; updateElement can change properties.processRef/blackBox without changing the serialized participant field or process-root lifecycle.",
+    "The engine has no per-process mutation queue, so overlapping collaboration mutations can race and persist an older snapshot after both calls report success."
+  ],
+  "testing_gaps": [
+    "No import test supplies a cross-process SequenceFlow and asserts import fails before context registration and file creation.",
+    "No mutation-safety test supplies an invalid participant property after process creation and asserts both document.processes and persisted XML remain unchanged.",
+    "No Mermaid conversion test asserts distinct process roots, node ownership, internal SequenceFlows, and cross-subgraph MessageFlows for two subgraphs."
+  ]
+}

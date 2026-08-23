@@ -1,0 +1,10 @@
+{
+  "reviewer": "project-standards",
+  "findings": [],
+  "residual_risks": [
+    "AGENTS.md and CLAUDE.md define no TypeScript implementation conventions applicable to output schemas, structuredContent construction, or e2e assertion style, so semantic contract correctness remains outside this persona's standards-only review scope."
+  ],
+  "testing_gaps": [
+    "This read-only persona did not run the contributor/CI clean-build gate required by AGENTS.md:130-135 and described by CLAUDE.md:61-70 (`npm run test:all`, which removes dist, rebuilds, and runs every suite including e2e)."
+  ]
+}

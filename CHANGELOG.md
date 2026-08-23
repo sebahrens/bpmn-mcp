@@ -7,7 +7,75 @@ pre-1.0 policy described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning-changel
 
 ## Unreleased
 
-No changes have been assigned to a release yet.
+No version has been assigned to these changes. The package-facing entries in
+this section are traceable to
+[`eab3fb6`](https://github.com/oisee/mcp-bpmn/commit/eab3fb68735b998c3e358c0636a3fdf7d709675a).
+
+### Added
+
+- Replaced the legacy string-template engine with a typed, moddle-backed BPMN
+  document model that preserves imported semantics and diagram interchange
+  data through later edits and XML export.
+- Added modeled support for collaborations, participants, lanes, nested
+  subprocesses, boundary and typed events, conditional/default flows, data
+  objects, text annotations, associations, multi-instance activities, and
+  portable or Camunda 7 extension profiles.
+- Added deterministic automatic layout for authored and Mermaid-derived
+  diagrams, plus browser-backed `bpmn-js` SVG export.
+- Added syntax, semantic, and full BPMN validation levels and expanded contract,
+  security, unit, integration, renderer, and end-to-end coverage.
+
+### Changed
+
+- MCP tool arguments are now validated against strict, bounded schemas before
+  dispatch. Invalid, unknown, oversized, non-finite, or out-of-range values
+  that were previously passed to handlers are rejected without mutating the
+  active diagram.
+- The public tool surface now includes `add_data_object`,
+  `add_text_annotation`, and `add_association`. Existing lane,
+  event-definition, flow-condition, and collaboration parameters now affect
+  serialized BPMN instead of being ignored or reported as unimplemented.
+- `new_bpmn`, `new_from_mermaid`, and `open_mermaid_file` now accept an
+  `extensionProfile` of `portable` (the default) or `camunda7`.
+- **Compatibility:** `list_elements` now returns a pagination envelope with an
+  `elements` field instead of a bare array. `list_diagrams` retains its existing
+  `count`, `diagrams`, and `path` fields while adding pagination metadata and
+  returning only the requested page. Clients must follow `hasMore`, `offset`,
+  and `limit` when reading either listing.
+- **Compatibility:** `add_lane` now requires a non-empty, unique `flowNodeIds`
+  array naming the pool-process nodes assigned to the new lane.
+- Diagram mutations use transactional persistence with rollback, and query
+  results use deterministic bounded pagination where listings can grow large.
+- Mermaid conversion now uses documented flowchart semantics, preserves labels
+  and scoped ownership, and reports structured conversion diagnostics.
+- The supported runtime baseline is Node.js 22.12.0. Contributor and CI checks
+  now cover type-checking, linting, a clean build, all test suites, packed
+  package entry points, and production dependency auditing.
+- The published server executable now resolves to `dist/server/index.js`, the
+  packed-file allowlist excludes development-only files, startup no longer
+  depends on Node's experimental specifier-resolution flag, and the MCP server
+  reports the version from `package.json` instead of a separate hard-coded
+  value.
+
+### Fixed
+
+- Corrected XML serialization, process ownership and flow scope, BPMN type
+  fallbacks, imported extension round-tripping, layout state synchronization,
+  and autosave consistency across mutation paths.
+
+### Security
+
+- Added strict request and property-payload validation, bounded BPMN/Mermaid
+  imports and renderer/layout work, XML injection protection, safe diagram-file
+  containment, no-clobber writes, and production dependency audit gates.
+
+### Developer tooling
+
+- Added Beads-backed project task tracking and agent workflow instructions
+  ([`b65d269`](https://github.com/oisee/mcp-bpmn/commit/b65d269ce23dedb419420d023c45696f2d473f32)).
+- Added an opt-in Ralph implementation loop with filtered agent output,
+  timeouts, and reliable process-tree interruption
+  ([`c41e537`](https://github.com/oisee/mcp-bpmn/commit/c41e537154e54d1b0e4704d85f062df63580c78d)).
 
 ## Untagged repository history
 

@@ -1,0 +1,154 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Gateway edge order changes normalized geometry",
+      "severity": "P1",
+      "file": "tests/unit/core/LayoutModel.test.ts",
+      "line": 68,
+      "why_it_matters": "The determinism test claims reordered Mermaid input is stable, but its fixture is a linear chain and never executes gateway branch ordering. A semantically identical gateway graph produces different node coordinates when only the edge array is reversed, violating the bead's deterministic-normalization acceptance criterion while this test remains green.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add a gateway fixture with at least two outgoing edges, assert equality after reversing nodes and edges, and make LayoutEngine sort outgoing gateway targets before assigning branchIndex.",
+      "confidence": 1.0,
+      "evidence": [
+        "The test reverses edges at lines 70-74, but mermaidAst() contains only start -> task -> end, so LayoutEngine.identifyGatewayBranches() never records a multi-target gateway.",
+        "A direct probe with decision g -> a and g -> b produced y(a)=120/y(b)=200 in original edge order and y(a)=200/y(b)=120 after reversing the edge array; LayoutEngine.ts lines 237-243 retain input order and lines 261-267 use that order as branchIndex."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Cycle fallback remains order-dependent",
+      "severity": "P1",
+      "file": "tests/unit/core/LayoutModel.test.ts",
+      "line": 68,
+      "why_it_matters": "Pure cycles have no start node, so LayoutEngine selects ast.nodes[0] as the traversal root. The current determinism fixture always has an explicit start event and never exercises that fallback; reordered but semantically identical cycles therefore normalize differently.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add a cycle permutation case to the determinism test and select the fallback start node from an ID-sorted node list before level assignment.",
+      "confidence": 1.0,
+      "evidence": [
+        "LayoutEngine.ts lines 128-130 push ast.nodes[0] when no start node exists, while the test fixture at lines 21-24 always includes a node typed start.",
+        "A direct three-node cycle probe assigned vertical levels a/b/c = 60/160/260, but reversing nodes and edges assigned a/b/c = 160/260/60."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Virtual-segment test accepts disconnected routing",
+      "severity": "P1",
+      "file": "tests/unit/core/LayoutModel.test.ts",
+      "line": 211,
+      "why_it_matters": "The test presents validateLayoutModel(layout).valid as proof that ordered virtual segments preserve connectivity, but it only checks semanticEdgeId and order. A segment chain can start from the wrong endpoint, end at a missing node, or have gaps between adjacent segments and still be accepted as valid, so routers can emit disconnected geometry behind a green connectivity test.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Define the segment-chain invariants, extend validation to check first/last edge endpoints plus adjacency between consecutive segments (and any required virtual endpoint references), then add table-driven negative cases for each broken link.",
+      "confidence": 0.98,
+      "evidence": [
+        "The virtual-segment test at lines 186-214 asserts only a valid result and the two semanticEdgeId values; it never mutates a segment endpoint or waypoint junction to prove rejection.",
+        "LayoutModel.ts lines 314-329 validate segment ID uniqueness, semanticEdgeId, and numeric order only. A probe replacing the sole segment with source node b and target node missing still returned {\"valid\":true,\"errors\":[]}."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Round-trip test bypasses serialized edge geometry",
+      "severity": "P1",
+      "file": "tests/unit/core/LayoutModel.test.ts",
+      "line": 125,
+      "why_it_matters": "The adapter round trip reads the same in-memory semantic maps that applyToContext just mutated, so it would pass even if BPMN DI synchronization omitted or corrupted shapes and edge waypoints. The mutable-engine test reads the persisted XML but asserts only one shape's bounds, leaving routed edge geometry unverified in the file users actually open.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Assert document.diagram.shapes and document.diagram.edges after apply, then serialize or read the persisted BPMN with bpmn-moddle and compare every expected BPMNEdge waypoint and changed BPMNShape bound.",
+      "confidence": 0.99,
+      "evidence": [
+        "Lines 125-152 re-adapt context.document and inspect context.elements/context.connections, which are the direct mutation targets at BpmnDocumentLayoutAdapter.ts lines 216-225 rather than an independently parsed serialized representation.",
+        "Lines 179-180 inspect the persisted file but only search for x/y/width/height on the moved task; none of the three custom edge waypoints from lines 166-170 is asserted in BPMN DI."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Explicit-layout generator path is never exercised",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnGenerator.ts",
+      "line": 43,
+      "why_it_matters": "The live Mermaid converter passes LayoutEngine output through the optional layout argument, but the tests call generateBpmn without that argument. They therefore cannot detect the generator ignoring routed bounds, pool bounds, edge waypoints, or layout warnings even though that is the integration boundary this bead adds.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Pass a deliberately non-default LayoutModel to generateBpmn, include distinctive node/container bounds, a three-point edge, and a warning, then assert result.layout/result.warnings and parse the serialized BPMN DI to verify those exact values.",
+      "confidence": 0.99,
+      "evidence": [
+        "SimpleBpmnGenerator.ts lines 43, 68, 99-107, 161, and 184-185 add behavior conditional on effectiveLayout.",
+        "All direct generateBpmn calls in tests/unit/core/LayoutModel.test.ts and tests/unit/core/SimpleBpmnGenerator.test.ts omit the third argument; MermaidConverter.test.ts exercises analyze(), not convert()."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Document adapter skips hierarchical ownership coverage",
+      "severity": "P2",
+      "file": "tests/unit/core/LayoutModel.test.ts",
+      "line": 83,
+      "why_it_matters": "The only BpmnDocument adapter round trip is a flat process with two flow nodes. Participant-to-process ownership, collaboration roots, black-box participants, subprocess scopes, artifacts, container parent/child membership, and message-flow ownership all take distinct adapter branches and can regress without failing this suite, despite ownership and containers being core acceptance requirements.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add table-driven ProcessContext fixtures for a collaboration with referenced and black-box participants, a nested subprocess child, an artifact, and sequence/message connections; assert the normalized container graph, ownerId/scopeId/containerId, labels, and semantic connectivity before and after apply.",
+      "confidence": 0.97,
+      "evidence": [
+        "Lines 84-116 construct only Process_1, Start_1, Task_1, and one SequenceFlow, so BpmnDocumentLayoutAdapter.ts participant/process/container branches at lines 43-83 and 108-153 are not reached.",
+        "The assertions at lines 128-151 cover one task's owner/scope and one edge's endpoints, with no participant, subprocess, artifact, collaboration root, or message flow in the fixture."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Port assertions ignore sides and coordinates",
+      "severity": "P2",
+      "file": "tests/unit/core/LayoutModel.test.ts",
+      "line": 44,
+      "why_it_matters": "Checking only that every node has two ports does not prove the ports have the right role, side, ID, node ownership, or position after bounds change. Any of the four direction mappings can be reversed or ports can retain stale pre-layout coordinates while this assertion stays green, producing incorrect edge endpoints.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Use a table over TD/TB/BT/LR/RL and assert exact incoming/outgoing roles, sides, IDs, nodeIds, and coordinates relative to final node bounds, including after LayoutEngine repositions nodes.",
+      "confidence": 0.99,
+      "evidence": [
+        "Line 44 asserts only node.ports.length === 2, and the shared fixture uses LR exclusively.",
+        "LayoutModel.ts lines 141-163 contain separate horizontal/reverse/top/bottom branches, while LayoutEngine changes bounds before refreshLayoutGeometry recreates the ports."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "XML absence assertion checks payload text",
+      "severity": "P3",
+      "file": "tests/unit/core/LayoutModel.test.ts",
+      "line": 65,
+      "why_it_matters": "Searching serialized payload text for the substring xml is not an API-contract assertion: ordinary label or warning text containing those letters makes it fail, while omitted undefined or non-enumerable XML-bearing fields can evade it. The test can therefore be both brittle and falsely reassuring about the public layout type boundary.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": false,
+      "suggested_fix": "Assert forbidden property keys recursively and add a compile-time contract fixture showing LayoutModel/LayoutResult cannot expose or accept an xml field; use behavior tests separately to prove routers return geometry rather than XML.",
+      "confidence": 0.96,
+      "evidence": [
+        "Line 65 uses JSON.stringify(normalized).not.toContain('xml'), which inspects all string values instead of object keys or TypeScript members.",
+        "The stated contract is about public layout/router APIs, but this assertion examines one runtime instance produced by normalizeLayoutModel and does not compile against the exported LayoutModel/LayoutResult signatures."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "normalizeLayoutModel warning ordering and non-mutation are not exercised with non-empty warnings.",
+    "No permutation/property-based corpus covers disconnected components, duplicate IDs, nested containers, self-loops, or equal-order virtual segments.",
+    "No tests reject non-finite or negative bounds/waypoints, stale port IDs, missing container members, or label owners that do not exist."
+  ],
+  "testing_gaps": [
+    "Add deterministic permutation tests for gateway branches and pure cycles; both currently fail under array reversal.",
+    "Add negative validator cases for every emitted error code plus segment-chain, port, container, label, and finite-geometry invariants.",
+    "Parse persisted BPMN DI and compare shape bounds and complete edge waypoint arrays instead of re-reading the directly mutated semantic maps.",
+    "Exercise SimpleBpmnGenerator with an explicit LayoutModel carrying distinctive bounds, routed waypoints, container geometry, and non-empty warnings.",
+    "Cover all Mermaid directions with exact port-side and port-coordinate assertions.",
+    "Round-trip collaboration, participant, subprocess, artifact, and cross-process connection ownership through BpmnDocumentLayoutAdapter."
+  ]
+}

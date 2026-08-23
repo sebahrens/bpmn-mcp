@@ -1,0 +1,34 @@
+{
+  "reviewer": "adversarial",
+  "findings": [
+    {
+      "title": "Deleting a data object leaves its retained data association semantically orphaned",
+      "severity": "P1",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 559,
+      "why_it_matters": "The delete cascade only recognizes SequenceFlow, MessageFlow, and Association as connection objects that must be removed when an endpoint is deleted. A valid retained BPMN DataOutputAssociation/DataInputAssociation is outside the typed API, so deleting a supported DataObjectReference only clears its required endpoint reference and keeps the association. bpmn-moddle accepts the resulting XML without a parser warning, so the post-serialization atomicity check also accepts and autosaves a semantically broken process; repeated export/save cannot repair it.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Classify all retained relationship objects whose required source/target reference points to a deleted semantic (including bpmn:DataInputAssociation and bpmn:DataOutputAssociation) as dependents to detach, rather than clearing the endpoint. Complement the unresolved-reference parser check with required-reference/semantic validation for the retained moddle graph, and add deletion cases for data associations and other non-API moddle relationships.",
+      "confidence": 0.99,
+      "evidence": [
+        "Constructed warning-free BPMN: add `bpmn:dataObjectReference id=\"DataObjectRef_Delete\"` to the fixture and add `<bpmn:dataOutputAssociation id=\"OutputAssoc_Delete\"><bpmn:targetRef>DataObjectRef_Delete</bpmn:targetRef></bpmn:dataOutputAssociation>` inside Task_Unrelated. bpmn-moddle parses it with no warnings and resolves targetRef to DataObjectRef_Delete.",
+        "After import, `DataObjectRef_Delete` is a managed typed element. Calling deleteElement on it succeeds; export then reports `data false association true target undefined warnings []`. A subsequent save also succeeds, proving the malformed relationship is persisted and not just an in-memory intermediate.",
+        "detachSemantic handles a scalar retained reference by recursively detaching only BPMNShape/BPMNEdge or the three types recognized by isBpmnConnectionType; every other owner, including bpmn:DataOutputAssociation, falls through to `owner[property.name] = undefined` (src/core/BpmnDocument.ts:550-564).",
+        "serializeRetained validates only parser warnings and unresolved IDs after writing XML (src/core/BpmnDocument.ts:529-539). The targetRef omission creates neither condition, so commitMutation writes the invalid semantic state and publishes it atomically to memory and disk."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Verified resolved: a valid Association with an unindexed Lane imports and survives an unrelated update; deleting Task_Unrelated removes its Lane reference and all shapes in a secondary BPMNDiagram; the resulting document can be saved again.",
+    "Verified resolved: repeated create/connect/export/save/delete/export of a newly added task leaves no warnings or orphaned typed flow, and a failed unsafe saveAs leaves the active filename unchanged.",
+    "Arbitrary extension-namespace attributes may encode opaque ID strings that bpmn-moddle cannot describe as references. A safe deletion policy must define whether to preserve such opaque values or reject a deletion that could affect them."
+  ],
+  "testing_gaps": [
+    "Add focused import-roundtrip fixtures for DataInputAssociation and DataOutputAssociation whose referenced DataObjectReference is deleted; assert the association is removed rather than serialized without a required endpoint, then reopen and mutate/save again.",
+    "Inventory valid BPMN relationship types outside BPMN_CONNECTION_TYPES and test deletion through their scalar and collection reference properties (for example data associations and event/data references).",
+    "Add an atomicity regression that makes post-serialization semantic validation fail, then asserts both the autosaved file and active context remain byte/canonically unchanged."
+  ]
+}

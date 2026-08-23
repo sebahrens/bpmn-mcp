@@ -2,15 +2,12 @@
   "name": "mcp-bpmn-server",
   "version": "0.2.0",
   "description": "MCP server for AI-powered BPMN diagram creation with Mermaid-to-BPMN conversion",
-  "main": "./dist/server/index.js",
-  "exports": {
-    ".": "./dist/server/index.js"
-  },
   "bin": {
     "mcp-bpmn-server": "./dist/server/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "type": "module",
   "scripts": {
@@ -20,13 +17,14 @@
     "dev": "NODE_OPTIONS='--experimental-specifier-resolution=node' tsx watch src/server/index.ts",
     "start": "node dist/server/index.js",
     "start:bundle": "node dist/server/bundle.cjs",
-    "check": "npm run clean && npm run type-check && npm run lint && npm run test:all",
+    "check": "npm run clean && npm run type-check && npm run lint && npm run test:all && npm run test:package && npm run audit:prod",
     "test": "jest --testPathIgnorePatterns='(/tests/e2e/|/tests/integration/svg-export\\.test\\.ts$)' && npm run test:renderer",
     "test:all": "npm run clean && npm run build && jest && npm run test:renderer",
+    "test:contract": "jest --runTestsByPath tests/contracts/engine-contract.test.ts && node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.puppeteer.config.js --runTestsByPath tests/integration/svg-export.test.ts",
     "test:unit": "jest tests/unit",
     "test:integration": "jest tests/integration && npm run test:renderer",
     "test:e2e": "npm run clean && npm run build && jest tests/e2e",
-    "test:package": "npm run clean && npm run build && node scripts/package-smoke.mjs",
+    "test:package": "node scripts/package-smoke.mjs",
     "test:renderer": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.puppeteer.config.js",
     "test:watch": "jest --testPathIgnorePatterns='(/tests/e2e/|/tests/integration/svg-export\\.test\\.ts$)' --watch",
     "test:coverage": "jest --testPathIgnorePatterns='(/tests/e2e/|/tests/integration/svg-export\\.test\\.ts$)' --coverage && npm run test:renderer",
@@ -34,7 +32,8 @@
     "audit:prod": "npm audit --omit=dev --audit-level=high",
     "lint": "eslint --max-warnings 0 --ext .ts,.js,.cjs,.mjs .",
     "type-check": "tsc --noEmit",
-    "clean": "rimraf dist"
+    "clean": "rimraf dist",
+    "prepack": "npm run clean && npm run build"
   },
   "keywords": [
     "mcp",
@@ -43,7 +42,26 @@
     "ai",
     "model-context-protocol"
   ],
-  "author": "",
+  "author": {
+    "name": "Alice V.",
+    "email": "ooisee@gmail.com",
+    "url": "https://github.com/oisee"
+  },
+  "maintainers": [
+    {
+      "name": "Alice V.",
+      "email": "ooisee@gmail.com",
+      "url": "https://github.com/oisee"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oisee/mcp-bpmn.git"
+  },
+  "homepage": "https://github.com/oisee/mcp-bpmn#readme",
+  "bugs": {
+    "url": "https://github.com/oisee/mcp-bpmn/issues"
+  },
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "~1.26.0",

@@ -1,0 +1,28 @@
+{
+  "reviewer": "maintainability",
+  "findings": [
+    {
+      "title": "Mermaid file import is not idempotent",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "line": 593,
+      "why_it_matters": "A trusted MCP client may retry a tool advertised as idempotent without another approval. Repeating open_mermaid_file with the same arguments creates another uniquely named persisted BPMN file, so the shared IDEMPOTENT_UPDATE preset hides a tool-specific additive effect and can silently accumulate duplicate diagrams.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Advertise open_mermaid_file with the ADDITIVE tuple (including idempotentHint: false), update EXPECTED_ANNOTATIONS, and add a repeated-call probe that demonstrates the second call creates an additional stored diagram.",
+      "confidence": 0.99,
+      "evidence": [
+        "src/server/tools.ts:593 assigns IDEMPOTENT_UPDATE, whose idempotentHint is true at lines 33-38.",
+        "src/server/handlers.ts:312-313 routes every call through importXml and replaces the current context; src/core/SimpleBpmnEngine.ts:931-933 assigns defaultFilename and persists the import.",
+        "src/core/SimpleBpmnEngine.ts:1430-1441 includes a newly generated UUID in every default filename, so identical repeated calls write distinct .bpmn files.",
+        "tests/contracts/tool-annotations.test.ts:52 repeats the same incorrect tuple, while the repeated-call test at lines 152-171 exercises only update_element and save, allowing this semantic mismatch to pass."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "The idempotency behavior test covers only update_element and save; it does not exercise open_mermaid_file, whose persistence behavior differs from the shared IDEMPOTENT_UPDATE category."
+  ]
+}

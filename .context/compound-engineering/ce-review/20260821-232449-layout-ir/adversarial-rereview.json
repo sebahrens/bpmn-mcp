@@ -1,0 +1,92 @@
+{
+  "reviewer": "adversarial",
+  "findings": [
+    {
+      "title": "Pool stacking reverses bottom-to-top flow direction",
+      "severity": "P1",
+      "file": "src/core/LayoutEngine.ts",
+      "line": 97,
+      "why_it_matters": "The direction-aware base layout is undone when subgraphs are present. layoutWithPools always sorts pools by ID and stacks them toward increasing Y, so a BT edge crossing two pools can end with its source above its target and both ports pointing away from the actual route. MermaidConverter uses layoutWithPools for every AST with subgraphs, making this the live collaboration path rather than a dormant helper.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Separate pools on the cross-axis for vertical flow directions, or order and place pools according to graph ranks and LayoutDirection instead of lexical pool IDs. Recompute container geometry and routes after the direction-preserving placement.",
+      "confidence": 1.0,
+      "evidence": [
+        "LayoutEngine.ts:24-57 now makes layout() direction-aware, but layoutWithPools at lines 72-109 always sorts subgraphs lexically, starts currentY at 100, and shifts every pool only along increasing Y.",
+        "src/converters/MermaidConverter.ts:68-70 selects layoutWithPools whenever ast.subgraphs is non-empty.",
+        "Reproduction: a BT graph with start s in pool a and end e in pool z produced s.y=140 and e.y=286 after layoutWithPools, even though bottom-to-top requires the source below the target.",
+        "The reproduced route ran from the source top at y=140 to the target bottom at y=322, docking both ends away from one another."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Persistence failure still commits layout in memory",
+      "severity": "P1",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 429,
+      "why_it_matters": "The adapter now rejects invalid models before mutation, but the engine still applies a valid layout to its stored ProcessContext before asynchronous serialization and file persistence. If serialization or saving fails, the operation reports an error while later reads observe the new geometry and XML even though the persisted diagram remains old or missing.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Apply the layout to a cloned document/context, serialize and persist that candidate successfully, then replace the stored ProcessContext atomically. Preserve the original context and XML on every failure path.",
+      "confidence": 1.0,
+      "evidence": [
+        "SimpleBpmnEngine.ts:429-432 calls BpmnDocumentLayoutAdapter.applyToContext on the map-owned context before refreshAndSave.",
+        "refreshAndSave at lines 440-442 assigns context.xml before awaiting saveProcess, so a write failure leaves both document geometry and XML changed in memory.",
+        "Reproduction: after creating a valid process, replace its diagrams directory with a regular file, apply a valid layout moving task T to x=777, and let saveProcess fail with EEXIST. getProcess still returned T.x=777 and context.xml contained x=\"777\".",
+        "A forced serializer rejection likewise left the element at x=777, confirming that both asynchronous failure boundaries occur after mutation."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Nonreciprocal container membership still validates",
+      "severity": "P2",
+      "file": "src/core/layout/LayoutModel.ts",
+      "line": 389,
+      "why_it_matters": "Validation now rejects missing member IDs, but it does not require node.containerId and container.nodeIds or parentId and childContainerIds to agree. A supplied layout can therefore pass validation and generation while carrying contradictory ownership, leaving container-aware routing and normalization consumers with two different answers about where a node or nested container belongs.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Validate membership bidirectionally: every nonvirtual node with containerId must appear exactly once in that container's nodeIds, every listed node must point back to the container, and every parent/child container reference must be reciprocal and acyclic.",
+      "confidence": 0.99,
+      "evidence": [
+        "LayoutModel.ts:315-321 checks that node.containerId resolves, and lines 389-405 check that listed node/child IDs resolve, but neither section checks reciprocal membership or uniqueness.",
+        "SimpleBpmnGenerator.assertLayoutMatchesAst compares node ownerId and scopeId but does not compare container.nodeIds or the container tree.",
+        "Reproduction: adapt one node a owned by pool, remove a from pool.nodeIds while leaving a.containerId='pool', then validate. The result remained {valid:true, errors:[]}.",
+        "The same inconsistent supplied layout was accepted by generateBpmn, so the canonical model can cross the live output boundary with contradictory ownership."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Adapters still expose redundant unused entry points",
+      "severity": "P3",
+      "file": "src/core/layout/adapters/MermaidAstLayoutAdapter.ts",
+      "line": 119,
+      "why_it_matters": "The new layout API continues to expose both static class methods and free-function aliases for identical behavior, although every repository caller uses the classes. This leaves parallel public names to document and preserve without a distinct implementation or demonstrated consumer.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Keep the class API used by current callers and remove mermaidAstToLayoutModel, bpmnDocumentToLayoutModel, and processContextToLayoutModel plus their barrel exposure unless an external contract explicitly requires function-style adapters.",
+      "confidence": 0.9,
+      "evidence": [
+        "MermaidAstLayoutAdapter.ts:119-121 exports a one-line alias for MermaidAstLayoutAdapter.toLayoutModel.",
+        "BpmnDocumentLayoutAdapter.ts:270-282 exports two one-line aliases for its class methods.",
+        "Repository-wide call-site search still finds no use of the three aliases; production and tests invoke adapter classes directly."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Participant/subprocess bounds and aggregate/segment waypoints remain duplicated mutable representations. Validation now rejects divergence, but callers still need coordinated dual writes; there is no container-bounds synchronizer or segment-authoritative setter equivalent to setLayoutEdgeWaypoints.",
+    "Concurrent applyLayoutModel calls still share one mutable ProcessContext across asynchronous serialization and writes, so successful operations may interleave even after single-operation rollback is added.",
+    "validateLayoutModel does not validate the top-level model.bounds value itself; current adapters recompute it and persistence ignores it, but independent canonical-layout consumers can still receive non-finite or stale diagram bounds."
+  ],
+  "testing_gaps": [
+    "Direction tests exercise LayoutEngine.layout only; layoutWithPools is not tested for TB/BT cross-pool flows or direction-preserving docking.",
+    "No engine-level failure-atomicity test covers serializer rejection or file persistence failure after a valid apply.",
+    "No tests enforce reciprocal node/container membership, reciprocal parent/child membership, unique membership, or acyclic container ancestry.",
+    "The explicit-layout connectivity preflight is implemented but lacks a focused SimpleBpmnGenerator regression test.",
+    "No focused test rejects participant/subprocess node-container bounds divergence or aggregate-waypoint/segment-waypoint divergence; current tests cover segment continuity only."
+  ]
+}

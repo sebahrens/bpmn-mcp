@@ -1,0 +1,26 @@
+{
+  "reviewer": "api-contract",
+  "findings": [
+    {
+      "title": "Lane schema omits uniqueness constraint",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "line": 224,
+      "why_it_matters": "The advertised MCP schema accepts duplicate flowNodeIds, while the runtime validator rejects them. Schema-driven clients can therefore construct a request that passes the advertised contract but receives an Invalid arguments error at execution time.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Ensure the generated add_lane inputSchema includes flowNodeIds.uniqueItems: true (while retaining the Zod runtime refinement), and assert that advertised constraint in the request-validation test.",
+      "confidence": 0.98,
+      "evidence": [
+        "src/server/tools.ts:224-227 enforces uniqueness with a Zod refine over flowNodeIds.",
+        "The generated add_lane inputSchema contains type: array and minItems: 1 but no uniqueItems keyword; parseToolRequest('add_lane', { poolId: 'p', name: 'n', flowNodeIds: ['a', 'a'] }) throws 'Flow node IDs must be unique'."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "The request-validation suite checks runtime rejection of malformed arguments but does not assert that add_lane's advertised flowNodeIds schema declares uniqueness."
+  ]
+}

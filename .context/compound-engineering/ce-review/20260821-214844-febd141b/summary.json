@@ -1,0 +1,33 @@
+{
+  "mode": "autofix",
+  "scope": "mcp-bpmn-9sv.2 collaboration ownership model and focused tests",
+  "verdict": "ready_with_fixes_applied",
+  "applied_fixes": [
+    "assigned Mermaid subgraphs to distinct process roots and classified cross-owner edges as message flows",
+    "inferred an owner only for a sole white-box participant process",
+    "rejected imported cross-process sequence flows before engine registration or file writes",
+    "validated participant properties before process-root insertion",
+    "preserved shared-process flows when deleting one of multiple participants",
+    "rejected duplicate Mermaid subgraph IDs",
+    "rejected unsupported participant processRef/blackBox updates",
+    "removed duplicate DI synchronization and strengthened lifecycle tests"
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "Public MCP connect classification is intentionally deferred to existing bead mcp-bpmn-d6u.",
+    "Concurrent mutation serialization and atomic persistence are outside this bead.",
+    "The bpmn-moddle boundary still uses broad any types and may benefit from a future typed facade."
+  ],
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "api-contract",
+    "reliability",
+    "adversarial",
+    "kieran-typescript"
+  ]
+}

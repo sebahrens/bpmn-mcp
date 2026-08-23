@@ -1,0 +1,109 @@
+{
+  "reviewer": "maintainability",
+  "findings": [
+    {
+      "title": "Container shapes keep two independent bounds",
+      "severity": "P2",
+      "file": "src/core/layout/adapters/BpmnDocumentLayoutAdapter.ts",
+      "line": 108,
+      "why_it_matters": "Participants and subprocesses are represented as both layout nodes and layout containers with copied bounds, but the write adapter only persists the node copy. A container-aware layout pass can therefore move or resize a container successfully in the canonical IR while the BPMN document and DI retain the old geometry, forcing every future layout implementation to know about an undocumented synchronization requirement.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Choose one authoritative geometry representation for BPMN container-backed shapes. Either model participants/subprocesses only as containers, or add an explicit shared/synchronized shape relation and make applyToDocument reject or reconcile divergent node/container bounds before writing DI.",
+      "confidence": 0.96,
+      "evidence": [
+        "BpmnDocumentLayoutAdapter.ts:92-103 creates a LayoutNode for every element, including participants and subprocesses, with its own bounds object.",
+        "BpmnDocumentLayoutAdapter.ts:108-139 creates a second LayoutContainer with the same semantic ID and a copied bounds object for those elements.",
+        "BpmnDocumentLayoutAdapter.ts:216-225 persists only node.bounds and edge.waypoints; container.bounds is never applied back to the BPMN document.",
+        "A direct adapter round trip confirmed that changing only layout.containers.get('Part').bounds leaves the participant element at its original position and size."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Edges keep two independent waypoint representations",
+      "severity": "P2",
+      "file": "src/core/layout/LayoutModel.ts",
+      "line": 64,
+      "why_it_matters": "LayoutEdge exposes both aggregate waypoints and per-segment waypoints as mutable sources of route geometry without an invariant that keeps them equal. A router can update virtual segments while the BPMN adapter serializes stale aggregate waypoints, or update aggregate waypoints while normalization and validation continue to expose stale segments, making the canonical contract ambiguous for every downstream algorithm.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Make one route representation authoritative. Prefer deriving aggregate edge waypoints from ordered segments (or segments from the aggregate route) at a single boundary, then validate continuity and have all adapters serialize the derived route rather than independently mutable copies.",
+      "confidence": 0.95,
+      "evidence": [
+        "LayoutModel.ts:64-65 stores both LayoutEdge.waypoints and LayoutEdge.segments, while each segment also owns a waypoints array at lines 46-54.",
+        "LayoutModel.ts:199-211 only rebuilds segments in selected cases and deliberately preserves multi-segment routes, so later changes to edge.waypoints need not update segment.waypoints.",
+        "BpmnDocumentLayoutAdapter.ts:222-225 serializes only edge.waypoints and ignores edge.segments.",
+        "LayoutModel.test.ts:186-213 replaces edge.segments without updating edge.waypoints and validation still reports the model as valid."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Generator reimplements canonical container ownership",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnGenerator.ts",
+      "line": 52,
+      "why_it_matters": "The generator receives the canonical LayoutModel but recomputes node ownership directly from the Mermaid AST instead of consuming layout ownership. The duplicate implementation has already diverged: the adapter recursively supports nested subgraphs, while the generator only examines top-level subgraphs, so changing ownership semantics requires coordinated edits and currently rejects an AST the canonical adapter accepts.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Make effectiveLayout the ownership source for generation and centralize the Mermaid-subgraph-to-BPMN-container mapping. Define the BPMN meaning of nested subgraphs once, then recursively materialize that mapping instead of maintaining resolveSubgraphOwners beside the adapter's buildContainerOwnership logic.",
+      "confidence": 0.94,
+      "evidence": [
+        "SimpleBpmnGenerator.ts:52-55 computes subgraphOwners independently even though effectiveLayout was established at line 43.",
+        "SimpleBpmnGenerator.ts:205-230 checks only the supplied top-level subgraphs and never visits MermaidSubgraph.subgraphs.",
+        "MermaidAstLayoutAdapter.ts:136-157 recursively visits child subgraphs and assigns their node ownership.",
+        "A direct generator call with one node owned by a nested child subgraph fails with 'Mermaid node a is not owned by a subgraph', while MermaidAstLayoutAdapter accepts the same typed AST."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Mermaid node sizes are defined twice",
+      "severity": "P3",
+      "file": "src/core/LayoutEngine.ts",
+      "line": 17,
+      "why_it_matters": "The adapter and layout engine carry separate exhaustive size tables for the same Mermaid NodeType domain. Every new node type or sizing adjustment now requires two coordinated edits, and a value mismatch would make adapter-only generation and LayoutEngine generation produce different geometry from the same canonical input.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Move the NodeType-to-size mapping to one layout-defaults module (or expose a getMermaidNodeSize helper) and use it from both MermaidAstLayoutAdapter and LayoutEngine.",
+      "confidence": 0.91,
+      "evidence": [
+        "LayoutEngine.ts:17-25 defines ELEMENT_SIZES for all seven Mermaid node types.",
+        "MermaidAstLayoutAdapter.ts:22-30 defines NODE_SIZES with the same seven keys and values.",
+        "Both tables participate in the same path: LayoutEngine first creates a model through the adapter at line 28 and then overwrites bounds using its own table at lines 39 and 53-58."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Adapters export redundant unused entry points",
+      "severity": "P3",
+      "file": "src/core/layout/adapters/MermaidAstLayoutAdapter.ts",
+      "line": 118,
+      "why_it_matters": "The new public layout surface exposes both static class methods and one-line function aliases for the same operations, despite all repository callers using the classes. This doubles the API names developers must discover, document, and preserve without providing a distinct behavior or consumer need.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Keep one adapter API style. Since all current callers use the classes, remove mermaidAstToLayoutModel, bpmnDocumentToLayoutModel, and processContextToLayoutModel plus their barrel exposure, unless a documented external API requirement specifically prefers functions.",
+      "confidence": 0.9,
+      "evidence": [
+        "MermaidAstLayoutAdapter.ts:118-120 exports mermaidAstToLayoutModel as a one-line alias for MermaidAstLayoutAdapter.toLayoutModel.",
+        "BpmnDocumentLayoutAdapter.ts:237-249 exports bpmnDocumentToLayoutModel and processContextToLayoutModel as one-line aliases for class methods.",
+        "Repository-wide call-site search finds no use of any three function aliases; production and tests consistently call the adapter classes directly.",
+        "src/core/layout/adapters/index.ts re-exports both modules, making both parallel naming schemes part of the new barrel API."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "refreshLayoutGeometry sounds comprehensive but deliberately preserves existing routed waypoints; LayoutEngine must first clear edge geometry through a private resetEdgeGeometry protocol. Future callers can easily refresh moved nodes while retaining routes docked to their old positions.",
+    "All adapter-created warnings arrays are currently empty, so the contract carries warnings but there is not yet a demonstrated producer or policy for unsupported/degraded adaptation."
+  ],
+  "testing_gaps": [
+    "No focused test passes nested MermaidSubgraph.subgraphs through both MermaidAstLayoutAdapter and SimpleBpmnGenerator; the current implementations disagree on ownership.",
+    "No round-trip test changes participant or subprocess LayoutContainer.bounds independently of the duplicate LayoutNode.bounds and verifies which geometry is persisted.",
+    "The virtual-segment test checks semantic IDs only; it does not verify waypoint continuity, agreement with LayoutEdge.waypoints, or what BpmnDocumentLayoutAdapter writes.",
+    "Determinism coverage exercises LR input only; reverse and vertical directions are not checked through both the adapter and LayoutEngine."
+  ]
+}

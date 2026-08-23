@@ -1,0 +1,136 @@
+{
+  "reviewer": "testing-api-rereview",
+  "findings": [
+    {
+      "title": "LayoutResult replacement remains an unversioned breaking change",
+      "severity": "P1",
+      "file": "src/core/LayoutEngine.ts",
+      "line": 17,
+      "why_it_matters": "The fixes improve the new contract but do not restore compatibility for existing LayoutEngine consumers. LayoutNode.position/width/height and min/max diagram bounds are still replaced by a materially different top-left LayoutModel shape without a versioned method, compatibility adapter, or migration surface.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Ship the canonical result through a versioned layoutV2 API or preserve a deprecated legacy result adapter until the next breaking release, with an explicit center-to-bounds migration guide.",
+      "confidence": 1.0,
+      "evidence": [
+        "LayoutEngine.ts lines 17-18 still replace the prior exported LayoutResult and LayoutNode interfaces with aliases to LayoutModel and its incompatible node shape.",
+        "The old contract exposed center position plus width/height and minX/minY/maxX/maxY; the new contract exposes top-left bounds and mandatory semantic/ownership/port fields."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Generator still ignores container semantic identifiers",
+      "severity": "P1",
+      "file": "src/core/SimpleBpmnGenerator.ts",
+      "line": 76,
+      "why_it_matters": "The rework correctly indexes nodes and edges by semanticId, but pool geometry is still looked up by the raw Mermaid subgraph ID as a container Map key. A valid canonical model with a distinct layout container ID and stable semanticId silently falls back to default participant bounds, so semantic-ID support remains incomplete and generated BPMN disagrees with supplied container geometry.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Index non-root containers by semanticId, validate one-to-one subgraph/container correspondence, and use the semantic index for participant bounds and ownership mapping.",
+      "confidence": 1.0,
+      "evidence": [
+        "SimpleBpmnGenerator.ts lines 52-54 create semantic indexes only for nodes and edges; line 76 still calls effectiveLayout.containers.get(subgraph.id).",
+        "A validateLayoutModel-valid model with container id layout:pool, semanticId pool, and bounds x=900/y=700/500x300 generated participant bounds x=50/y=50/600x250."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Engine layout direction still does not round-trip",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 422,
+      "why_it_matters": "The new direction tests verify LayoutEngine placement, not the mutable engine's get/apply/get contract. applyLayoutModel still persists only BPMN geometry, and the next getLayoutModel call silently recreates a left-to-right model unless the caller remembers to repeat the prior direction; ports can therefore change orientation after a nominal round trip.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Persist layout direction with ProcessContext, or remove the default and require direction explicitly on every retrieval; add a top-to-bottom get/apply/get regression test.",
+      "confidence": 0.96,
+      "evidence": [
+        "SimpleBpmnEngine.ts lines 422-426 still default every retrieval to left-to-right, while lines 429-432 apply and save without retaining layout.direction.",
+        "LayoutModel.test.ts lines 88-110 cover directional LayoutEngine output only; the mutable engine test at lines 229-262 uses the default direction."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Validator omits top-level diagram bounds",
+      "severity": "P2",
+      "file": "src/core/layout/LayoutModel.ts",
+      "line": 298,
+      "why_it_matters": "Finite-geometry validation now covers nodes, containers, labels, edges, and segments, but never validates LayoutModel.bounds itself. An IR with NaN or negative diagram bounds is reported valid and normalizes with invalid public geometry, despite diagram bounds being a required part of the canonical contract.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Validate model.bounds with finite non-negative dimensions and add table-driven cases for NaN, Infinity, and negative width/height at the diagram level.",
+      "confidence": 1.0,
+      "evidence": [
+        "validateLayoutModel begins at line 298 and validates child geometry from lines 303-425, but contains no check of model.bounds.",
+        "Setting model.bounds.x to Number.NaN on an otherwise adapter-produced layout returned {valid:true, errors:[]}; the new finite test mutates only a node bound at LayoutModel.test.ts line 312."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Validator accepts nodes without required ports",
+      "severity": "P2",
+      "file": "src/core/layout/LayoutModel.ts",
+      "line": 322,
+      "why_it_matters": "Port validation checks each port that happens to exist but never requires an incoming and outgoing port or unique port IDs. A disconnected node with an empty ports array is considered valid, so the canonical model can claim complete ports while providing none and later routing code can fail at requiredPort.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Require exactly one incoming and one outgoing port per non-virtual node, reject duplicate IDs and incompatible roles/sides, and add negative cardinality tests.",
+      "confidence": 1.0,
+      "evidence": [
+        "LayoutModel.ts lines 322-328 validate only entries present in node.ports; an empty array executes no checks.",
+        "Clearing the sole node's ports on an otherwise valid edge-free Mermaid layout still returned {valid:true, errors:[]}; direction tests only assert generated ports and do not exercise missing-cardinality rejection."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Ownership membership can contradict node container",
+      "severity": "P2",
+      "file": "src/core/layout/LayoutModel.ts",
+      "line": 389,
+      "why_it_matters": "The expanded validator checks that referenced nodes and containers exist but not that membership is bidirectionally consistent. A node can declare containerId pool while root.nodeIds contains it and pool.nodeIds omits it; validation succeeds, leaving adapters and routers with conflicting ownership views.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Validate exactly-one container membership for every node and reciprocal parent/child membership for containers, then add negative ownership-drift fixtures.",
+      "confidence": 1.0,
+      "evidence": [
+        "Lines 315-320 check node.containerId existence and lines 389-405 check only that listed members exist; no rule compares the two directions.",
+        "Moving node a from pool.nodeIds to mermaid:root.nodeIds while leaving a.containerId as pool returned {valid:true, errors:[]}."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Document hierarchy round-trip remains uncovered",
+      "severity": "P2",
+      "file": "tests/unit/core/LayoutModel.test.ts",
+      "line": 156,
+      "why_it_matters": "The BpmnDocument adapter test still covers only a flat process with two flow nodes. The new nested-container test exercises MermaidAstLayoutAdapter, not participant/process/subprocess/artifact/message-flow branches in BpmnDocumentLayoutAdapter, so ownership and container graph regressions on the mutable live path remain undetected.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add collaboration and nested-subprocess ProcessContext fixtures and compare normalized ownership, parent/child membership, labels, and sequence/message connectivity before and after apply.",
+      "confidence": 0.96,
+      "evidence": [
+        "LayoutModel.test.ts lines 156-227 still construct only Process_1, Start_1, Task_1, and Flow_1.",
+        "BpmnDocumentLayoutAdapter.ts participant/process/subprocess branches at lines 43-83 and 108-153 remain unexercised by LayoutModel.test.ts."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Layout labelId references are not validated reciprocally against labels and their ownerId/ownerKind.",
+    "The XML-exclusion assertion still searches all serialized payload text for the substring xml instead of checking public keys/types.",
+    "Only one invalid segment junction and one NaN node coordinate are tested; most newly added validator error codes lack direct negative cases."
+  ],
+  "testing_gaps": [
+    "Add semantic-ID regression coverage for containers, not only nodes and edges.",
+    "Add mutable-engine non-default direction get/apply/get coverage.",
+    "Add top-level diagram-bounds and port-cardinality validator tests.",
+    "Add reciprocal node/container and parent/child ownership validation tests.",
+    "Round-trip collaboration participants, nested subprocesses, artifacts, and message flows through BpmnDocumentLayoutAdapter."
+  ]
+}

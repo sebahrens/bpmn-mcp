@@ -1,0 +1,89 @@
+{
+  "reviewer": "kieran-typescript",
+  "findings": [
+    {
+      "title": "The main BpmnEngine facade cannot express the new connect options",
+      "severity": "P2",
+      "file": "src/core/BpmnEngine.ts",
+      "line": 39,
+      "why_it_matters": "SimpleBpmnEngine now accepts condition/default metadata in its fifth and sixth parameters, but the class documented in source as the main BPMN engine still exposes only the old four-argument signature. TypeScript callers using that facade cannot pass the feature at all, even though it delegates to the implementation that supports it; this leaves two nominal engine entry points with different public contracts.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Give BpmnEngine.connect the same typed overload/signature and BpmnDocumentConnection return type as SimpleBpmnEngine.connect, importing BpmnConnectionType, BpmnConnectOptions, and BpmnDocumentConnection. Add a compile-time or direct facade test that creates a conditional and a default flow through BpmnEngine.",
+      "confidence": 0.98,
+      "evidence": [
+        "SimpleBpmnEngine.connect accepts typeOrOptions?: BpmnConnectionType | BpmnConnectOptions plus options at src/core/SimpleBpmnEngine.ts:174-181.",
+        "BpmnEngine.connect remains connect(processId, sourceId, targetId, label?) and forwards only those four arguments at src/core/BpmnEngine.ts:39-40.",
+        "BpmnEngine is an exported class described as the main BPMN Engine, so its narrower declaration is visible to TypeScript consumers even though the focused tests instantiate SimpleBpmnEngine directly."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "BpmnConnectOptions permits condition types that the engine always rejects",
+      "severity": "P2",
+      "file": "src/types/index.ts",
+      "line": 107,
+      "why_it_matters": "conditionType is declared as string, so values such as bpmn:Expression or a typo compile cleanly and fail only at runtime. The implementation supports one normalized result and the MCP schema exposes exactly one canonical value; the exported TypeScript contract is therefore materially wider than both real behavior and the tool contract.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Prefer removing conditionType from creation options and always create bpmn:FormalExpression internally. If spelling compatibility is required, define a narrow ConditionExpressionInputType union for the three accepted spellings and share it with normalization; keep the broader BpmnConditionExpression.type only for imported-document preservation.",
+      "confidence": 0.99,
+      "evidence": [
+        "BpmnConnectOptions.conditionType is unrestricted string at src/types/index.ts:107.",
+        "normalizeCondition accepts only FormalExpression, bpmn:FormalExpression, and bpmn:tFormalExpression and normalizes all three to bpmn:FormalExpression at src/core/SimpleBpmnEngine.ts:981-990.",
+        "The connect tool schema permits only bpmn:FormalExpression at src/server/tools.ts:259-263, demonstrating that no open-ended creation type is actually supported."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "The untyped handler collapses default aliases before conflict validation",
+      "severity": "P2",
+      "file": "src/server/handlers.ts",
+      "line": 375,
+      "why_it_matters": "The engine explicitly rejects disagreeing isDefault/default values, but the handler's any-typed adapter combines isDefault, default, and defaultFlow with ?? and sends only one value. A request such as { isDefault: false, default: true } silently creates a non-default flow instead of reporting contradictory input. This makes behavior depend on whether the same operation enters through the engine or MCP boundary, and the hidden aliases cannot be understood from the advertised schema.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Accept only the schema's canonical isDefault in the MCP adapter, or define a typed ConnectToolArguments normalization function that validates every supported alias and rejects disagreement before producing BpmnConnectOptions. Do not nullish-coalesce aliases in the call expression.",
+      "confidence": 0.99,
+      "evidence": [
+        "BpmnRequestHandler.handleRequest and connect accept args: any, and connect forwards isDefault: isDefault ?? args.default ?? args.defaultFlow at src/server/handlers.ts:359-375.",
+        "SimpleBpmnEngine rejects conflicting isDefault/default aliases only when it receives both at src/core/SimpleBpmnEngine.ts:196-200; the handler prevents that check from seeing both values.",
+        "src/server/tools.ts advertises only isDefault, while default and defaultFlow are undocumented handler-only inputs."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Default-flow reassignment is hidden inside an untyped properties bag",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 390,
+      "why_it_matters": "defaultFlow is first-class semantic state on BpmnFlowNodeElement, but updateElement exposes only Record<string, unknown> properties and secretly intercepts both defaultFlow and default. Callers get no discoverable TypeScript field, the MCP schema describes only an arbitrary object, contradictory aliases are silently resolved by ??, and the implementation needs an as string cast after runtime validation. A five-second read of the public update signature does not reveal that it can reassign or clear a BPMN default.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Define a typed BpmnElementUpdate with an explicit defaultFlowId?: string | null field, or add a dedicated setDefaultFlow method/tool. Normalize any legacy property aliases once at the request boundary and reject conflicts; have the validator return a narrowed string | undefined so the assignment needs no cast. Advertise reassignment/clearing in the update_element schema if it is intended as MCP behavior.",
+      "confidence": 0.98,
+      "evidence": [
+        "updateElement accepts { name?: string; properties?: Record<string, unknown> } but checks properties.defaultFlow/properties.default as special semantic commands at src/core/SimpleBpmnEngine.ts:367-423.",
+        "requestedDefaultFlow uses defaultFlow ?? default, so contradictory values are not rejected, and assignment relies on requestedDefaultFlow as string at src/core/SimpleBpmnEngine.ts:393-423.",
+        "The update_element schema at src/server/tools.ts:369-385 describes properties only as an object and exposes no default-flow field or null-clearing contract."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "BpmnConditionExpression.type remains an unrestricted string passed to moddle.create during serialization. That flexibility helps retain imported expression types, but direct mutation of the public ProcessContext maps can still inject an unknown moddle type and fail late.",
+    "ProcessContext exposes mutable element and connection maps, so TypeScript callers can bypass condition/default invariants and defaultFlowManaged bookkeeping outside engine mutation methods.",
+    "The bpmn-moddle boundary remains extensively any-typed, so expression/ref shape mistakes are primarily guarded by runtime parsing and focused round-trip tests rather than compiler checks."
+  ],
+  "testing_gaps": [
+    "No compile-time API contract test proves that each exported engine facade exposes the same connect options and typed return value.",
+    "No handler test covers conflicting isDefault/default/defaultFlow inputs; the current non-boolean case exercises only canonical isDefault.",
+    "No test covers conflicting defaultFlow/default values through updateElement or documents whether those aliases are intentional compatibility surface.",
+    "The tool schema has no focused assertion for cross-field invalid combinations such as conditionLanguage without condition or condition together with isDefault.",
+    "The focused type-check and 79 condition/default-related Jest tests pass."
+  ]
+}

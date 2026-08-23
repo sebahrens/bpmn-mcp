@@ -1,0 +1,72 @@
+{
+  "reviewer": "maintainability",
+  "findings": [
+    {
+      "title": "Default-flow mutation has three competing names and a hidden side channel",
+      "severity": "P2",
+      "file": "src/types/index.ts",
+      "line": 102,
+      "why_it_matters": "The new public surface calls the same concept isDefault, default, and defaultFlow, and updateElement changes the first-class BpmnFlowNodeElement.defaultFlow field by intercepting keys inside the otherwise arbitrary properties bag. Callers cannot tell which spelling is canonical or whether default-flow ownership is semantic state or an element property, and every future validation or API change must preserve several undocumented entry paths.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Choose one name at each operation boundary and make default-flow reassignment explicit. Keep isDefault for connect creation, add a typed defaultFlowId (or dedicated setDefaultFlow method) for reassignment, and remove the unproven default/defaultFlow compatibility fallbacks; if compatibility is required, normalize aliases once in the request adapter instead of leaking them into the engine and generic properties.",
+      "confidence": 0.97,
+      "evidence": [
+        "BpmnConnectOptions exposes both isDefault and a newly claimed backward-compatible default alias at src/types/index.ts:102-108, although the pre-change API had neither option.",
+        "The MCP schema documents only isDefault at src/server/tools.ts:264-269, while handlers.ts:359-375 additionally accepts the undocumented args.default and args.defaultFlow spellings.",
+        "SimpleBpmnEngine.updateElement detects properties.defaultFlow or properties.default, deletes them from the properties bag, and mutates workingElement.defaultFlow separately at src/core/SimpleBpmnEngine.ts:377-409.",
+        "Repository-wide focused-test search finds no call exercising the default alias, args.defaultFlow fallback, or default-flow reassignment through updateElement properties."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Condition expression type is configurable even though there is no supported choice",
+      "severity": "P3",
+      "file": "src/types/index.ts",
+      "line": 105,
+      "why_it_matters": "conditionType is threaded through the README, tool schema, handler, public engine options, and normalization code, but creation always produces bpmn:FormalExpression. This adds a public knob and multiple maintenance points without representing real behavior, while the separate imported-document model already has the broader string type needed for round-tripping existing expressions.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Remove conditionType from BpmnConnectOptions and the MCP connect input and set bpmn:FormalExpression internally for newly created conditions. Retain BpmnConditionExpression.type on the document model solely for imported expression round trips; if multiple creation types are planned now, define a narrow supported union and one shared mapping instead.",
+      "confidence": 0.95,
+      "evidence": [
+        "The connect tool schema permits exactly one conditionType value, bpmn:FormalExpression, at src/server/tools.ts:259-263, and README.md:195 advertises that redundant optional field.",
+        "BpmnConnectOptions.conditionType is typed as unrestricted string at src/types/index.ts:105.",
+        "normalizeCondition at src/core/SimpleBpmnEngine.ts:951-977 accepts the canonical value plus two aliases, normalizes every accepted value to bpmn:FormalExpression, and rejects everything else.",
+        "Imported conditions use the distinct BpmnConditionExpression.type field populated from expression.$type at src/core/BpmnDocument.ts:1439-1454, so lossless import does not require exposing conditionType during creation."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Conditional/default-flow invariants are reimplemented at every lifecycle boundary",
+      "severity": "P2",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 858,
+      "why_it_matters": "The same relationship rules—sequence-flow-only conditions, supported source types, valid source-owned default references, and mutual exclusion of condition and default—are independently encoded in connect, update, import, and serialization. The supported-source predicate is shared, but the compound invariant is not, so adding a rule or changing semantics requires coordinated edits across two core modules and can leave imported, newly created, updated, and directly serialized documents behaving differently.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Extract a document-level conditional/default-flow invariant checker that validates a connection/source pair and a source/default reference. Invoke it from mutation, import, and serialization boundaries, leaving each boundary responsible only for normalization and its context-specific error wrapping.",
+      "confidence": 0.88,
+      "evidence": [
+        "SimpleBpmnEngine.connect repeats condition/default type, source-support, mutual-exclusion, and existing-default checks at src/core/SimpleBpmnEngine.ts:240-267.",
+        "SimpleBpmnEngine.assertDefaultFlowAssignment separately rechecks source support, sequence-flow ownership, and condition exclusion at src/core/SimpleBpmnEngine.ts:980-998.",
+        "BpmnDocumentSerializer.reconcileConditionalAndDefaultFlows implements the compound invariant again at src/core/BpmnDocument.ts:858-889.",
+        "BpmnDocumentImporter.assertImportedConnections implements another version for imported conditions and defaults at src/core/BpmnDocument.ts:1483-1522."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "BpmnConditionExpression.type remains an unrestricted moddle type name that is passed to moddle.create during serialization; preserving imported expressions needs this flexibility, but malformed direct document mutation is protected only by runtime behavior.",
+    "Default-flow ownership is intentionally source-owned, so callers holding mutable ProcessContext maps can still create inconsistent source/connection state outside engine mutation methods; serializer checks catch this late rather than preventing it."
+  ],
+  "testing_gaps": [
+    "No focused handler/tool test creates a flow with isDefault and verifies both source.defaultFlow XML ownership and get_element's outgoing isDefault response; current default-flow coverage calls SimpleBpmnEngine directly.",
+    "No focused test covers changing or clearing an existing default through updateElement, or establishes whether the default/defaultFlow aliases are required compatibility behavior.",
+    "The engine-contract G5 test for validation behavior around sequence-flow conditions remains tests/contracts/engine-contract.test.ts:345 as test.todo, and BpmnValidator has no focused condition/default assertions.",
+    "The external import fixture exercises a formal condition but no source-owned default attribute; the only default round trip reopens XML produced by this same serializer."
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "Clearing an imported default flow leaves the old default in XML",
+      "severity": "P1",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 875,
+      "confidence": 1.0,
+      "autofix_class": "gated_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "During retained serialization, clear a source semantic's existing default reference when that reference belongs to a managed sequence flow and the typed element no longer names it, then apply the current defaultFlow. Preserve references to opaque/unmanaged imported flows. Add a reopen -> updateElement({properties:{defaultFlow:null}}) -> parse/reopen regression test."
+    },
+    {
+      "title": "Non-boolean isDefault values can silently create default flows",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 188,
+      "confidence": 0.99,
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "Reject isDefault/default unless each supplied value is boolean, and reject conflicting aliases. The MCP server forwards arguments without enforcing each tool's advertised JSON schema, so the engine must not rely on the TypeScript interface at runtime. Add handler and engine cases for strings, numbers, objects, and conflicting aliases."
+    }
+  ],
+  "residual_risks": [
+    "Defaults that reference valid imported constructs outside the typed mutation surface are intentionally retained only in sourceXml and are not visible through the typed element query model.",
+    "ProcessContext exposes mutable element and connection maps, so callers can bypass condition/default invariants unless all consumers restrict writes to engine mutation methods."
+  ],
+  "testing_gaps": [
+    "The focused round-trip test preserves an existing default but never clears or reassigns one after reopening, which misses retained-moddle stale-reference behavior.",
+    "No handler-level test creates, rejects, clears, or reports a default flow; the handler test covers condition metadata only.",
+    "No import test exercises invalid default-plus-condition XML, unsupported conditional sources, or imported expression evaluatesToTypeRef retention.",
+    "The focused Jest suites (69 tests) and npm run type-check pass despite the reproduced default-clear mismatch."
+  ]
+}

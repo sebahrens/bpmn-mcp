@@ -1,0 +1,28 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "src/utils/AutoLayoutEnhanced.ts"
+  ],
+  "intent": "Delete the zero-reference AutoLayoutEnhanced utility without affecting live layout behavior.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "adversarial",
+    "kieran-typescript"
+  ],
+  "findings": [],
+  "applied_fixes": [],
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "A plain TypeScript build does not prune previously emitted files from an already-populated dist directory. The repository's contributor, CI, and package verification paths clean dist before building, and this bead's required verification runs the clean aggregate gate."
+  ],
+  "agent_native": "PASS: the deleted utility had no tool registration or call sites, and the live auto_layout MCP capability remains available through the server and engine pipeline.",
+  "learnings": "No docs/solutions directory or matching institutional learning exists.",
+  "testing_gaps": [],
+  "verdict": "Ready to merge",
+  "operational_validation": "No additional operational monitoring required because the deleted module had no runtime consumers."
+}

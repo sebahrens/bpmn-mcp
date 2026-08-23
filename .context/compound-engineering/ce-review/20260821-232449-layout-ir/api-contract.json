@@ -1,0 +1,137 @@
+{
+  "reviewer": "api-contract",
+  "findings": [
+    {
+      "title": "LayoutResult replacement is an unversioned breaking change",
+      "severity": "P1",
+      "file": "src/core/LayoutEngine.ts",
+      "line": 5,
+      "why_it_matters": "Existing TypeScript consumers of LayoutEngine lose the documented LayoutNode.position/width/height fields and bounds.minX/minY/maxX/maxY shape in one release. The replacement uses top-left bounds instead of center positions, so even loosely typed consumers can calculate incorrect geometry if they adapt by property name alone; no versioned method, compatibility adapter, or deprecation path is provided.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Either release this as a versioned v2 contract with migration documentation, or preserve the old layout()/layoutWithPools() result and add explicit layoutV2 methods or a legacy adapter during a deprecation window.",
+      "confidence": 1.0,
+      "evidence": [
+        "The prior exported LayoutNode had id, center-based position, width, and height, and LayoutResult.bounds had minX/minY/maxX/maxY; lines 5-6 now alias and re-export the incompatible LayoutModel/LayoutNode definitions.",
+        "LayoutModel.ts lines 28-39 require semanticId, semanticType, ownership, bounds, ports, labelId, and virtual, while LayoutModel.bounds at line 111 is x/y/width/height. package.json retains version 0.2.0 and the diff adds no compatibility contract."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "ConversionResult layout loses maps during JSON serialization",
+      "severity": "P1",
+      "file": "src/converters/types.ts",
+      "line": 35,
+      "why_it_matters": "ConversionResult is a public result object that otherwise consists of transport-friendly data, but its new required layout field contains Map collections. JSON serialization silently turns nodes, edges, containers, and labels into empty objects, so API or persistence consumers lose nearly all layout data and cannot reproduce the deterministic normalized output promised by the new contract.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Expose NormalizedLayoutModel in ConversionResult, or add a documented serializedLayout field/toJSON contract while retaining the mutable LayoutModel only as an explicitly internal field.",
+      "confidence": 1.0,
+      "evidence": [
+        "ConversionResult.layout is typed as LayoutModel at line 35, whose nodes, edges, containers, and labels are Maps at LayoutModel.ts lines 107-110.",
+        "Serializing an adapter-produced model yielded direction and bounds but nodes:{}, edges:{}, containers:{}, and labels:{}; normalizeLayoutModel already provides the array-based deterministic representation but is not used by ConversionResult."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Generator ignores LayoutModel semantic identifiers",
+      "severity": "P1",
+      "file": "src/core/SimpleBpmnGenerator.ts",
+      "line": 99,
+      "why_it_matters": "LayoutModel explicitly separates layout IDs from stable semantic IDs, but generateBpmn looks up nodes and edges only by Mermaid IDs as Map keys. A valid routed model whose layout node ID differs from semanticId is silently ignored, after which the returned layout reports one geometry while the generated BPMN contains fallback geometry.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Index non-virtual layout nodes and edges by semanticId, reject duplicate or missing semantic mappings, and use that index consistently for bounds and waypoints before serialization.",
+      "confidence": 1.0,
+      "evidence": [
+        "Lines 99 and 161 call effectiveLayout.nodes.get(node.id) and effectiveLayout.edges.get(edge.id), despite LayoutNode.semanticId and LayoutEdge.semanticId being the cross-adapter identity fields.",
+        "A validateLayoutModel-valid model rekeyed from a to layout:a while retaining semanticId a and bounds x=999/y=777 produced a BPMN element at fallback x=100/y=100, while result.layout still reported x=999/y=777."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Optional layout changes invalid-input behavior",
+      "severity": "P1",
+      "file": "src/core/SimpleBpmnGenerator.ts",
+      "line": 43,
+      "why_it_matters": "The same Mermaid AST has different error semantics depending on whether the optional layout argument is supplied. Without it, the Mermaid adapter rejects dangling edges; with it, adapter validation is bypassed and the generator silently drops the edge while still reporting it in stats, so clients cannot rely on a stable success/error or count contract.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Validate Mermaid nodes, edges, and their correspondence to the supplied LayoutModel before generation regardless of which layout branch is used; reject dangling/missing mappings with the same error contract and derive stats from emitted semantics.",
+      "confidence": 1.0,
+      "evidence": [
+        "Line 43 invokes MermaidAstLayoutAdapter only when layout is absent; lines 140-144 continue silently when an edge endpoint cannot be mapped.",
+        "A dangling a -> missing AST threw 'references a missing source or target' without layout, but succeeded with a valid supplied one-node layout, returned zero flows, and reported stats.edgeCount as 1."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "ConversionResult exposes two disconnected ID domains",
+      "severity": "P1",
+      "file": "src/core/SimpleBpmnGenerator.ts",
+      "line": 185,
+      "why_it_matters": "The returned LayoutModel retains Mermaid semantic IDs, while ConversionResult.elements, flows, and XML use newly generated BPMN IDs. No mapping is exposed, especially for edges whose generated IDs contain only a counter, so consumers cannot reliably associate layout nodes/edges with the BPMN objects in the same result or round-trip the Mermaid layout through the BpmnDocument adapter.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Choose and document one identity contract: either adapt the returned layout to generated BPMN semantic IDs, or expose explicit nodeIdMap and edgeIdMap fields and preserve them through conversion and import round trips.",
+      "confidence": 0.98,
+      "evidence": [
+        "Lines 93 and 152 generate BPMN IDs such as Task_<mermaidId> and Flow_<counter>, while line 185 returns effectiveLayout unchanged with its Mermaid node and edge semantic IDs.",
+        "nodeIdMap is private local state at line 50 and there is no edge mapping in ConversionResult, whose elements/flows and layout therefore cannot be joined by a declared field."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Engine layout direction does not round-trip",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 422,
+      "why_it_matters": "A caller can obtain or apply a top-to-bottom, bottom-to-top, or right-to-left LayoutModel, but applyLayoutModel does not persist direction and the next getLayoutModel call silently defaults to left-to-right. The geometry remains while ports and direction are regenerated under different semantics, breaking the apparent get/apply/get contract.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Persist direction alongside each ProcessContext, or make direction a required getLayoutModel argument and document it as caller-owned transient state; add a non-default direction round-trip contract test.",
+      "confidence": 0.99,
+      "evidence": [
+        "getLayoutModel defaults direction to left-to-right at lines 422-426, while applyLayoutModel at lines 429-432 applies only document geometry and stores no direction.",
+        "Applying an adapter model with direction top-to-bottom and then adapting the same context with the public default produced direction left-to-right and regenerated horizontal ports."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "ConversionResult aliases mutable layout input",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnGenerator.ts",
+      "line": 185,
+      "why_it_matters": "When a caller supplies a LayoutModel, ConversionResult.layout is the exact same mutable object. Mutating the input after generation changes the returned result's geometry without changing its already serialized XML, allowing one result object to describe contradictory outputs and undermining deterministic caching or comparison.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Return an immutable normalized snapshot or a deep-cloned LayoutModel, and document whether ConversionResult represents a point-in-time conversion result or a live mutable layout handle.",
+      "confidence": 0.95,
+      "evidence": [
+        "Line 43 assigns effectiveLayout directly from the caller's layout and line 185 returns that same reference without normalization, cloning, or readonly typing.",
+        "The XML string is created at line 169 before the mutable reference is returned, so later bounds or waypoint mutations affect result.layout only."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "applyToDocument accepts a full LayoutModel but silently ignores label text/bounds, container geometry, direction, ports, segments, and warnings; the public method name does not delimit that geometry-only behavior.",
+    "ConversionResult.warnings flattens LayoutWarning to message strings, discarding stable code and elementId fields even though the returned layout retains structured warnings.",
+    "Public errors remain untyped Error strings, so consumers must match text to distinguish invalid layout, missing semantics, and connectivity failures."
+  ],
+  "testing_gaps": [
+    "No compatibility test or compile fixture covers the prior LayoutResult/LayoutNode shape.",
+    "No JSON round-trip asserts that ConversionResult retains complete deterministic layout data.",
+    "No contract test uses layout IDs distinct from semantic IDs or verifies Mermaid-to-BPMN ID mapping.",
+    "No test compares invalid-AST behavior with and without an explicit layout.",
+    "No non-default direction survives an engine get/apply/get round trip test.",
+    "No mutation-isolation test protects ConversionResult from later changes to its input LayoutModel."
+  ]
+}

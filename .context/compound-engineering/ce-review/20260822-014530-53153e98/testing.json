@@ -1,0 +1,32 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Response timeout loses the cleanup race",
+      "severity": "P2",
+      "file": "tests/e2e/server.test.ts",
+      "line": 11,
+      "why_it_matters": "A non-responsive MCP server can hit Jest's own timeout before sendRequest rejects. Because the end-to-end test has already spent time on startup and earlier requests, its remaining test budget is less than RESPONSE_TIMEOUT_MS; Jest may abort the test before control reaches the finally block that terminates the child, undermining the prompt-failure and no-orphan guarantees this change is intended to add.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Set an explicit per-test timeout comfortably above all helper deadlines and make RESPONSE_TIMEOUT_MS materially shorter than that budget. Add a synthetic server that starts successfully but never responds, then assert the request rejects within the response deadline and the child has exited after finally cleanup.",
+      "confidence": 0.98,
+      "evidence": [
+        "tests/e2e/server.test.ts:11 sets RESPONSE_TIMEOUT_MS to 5000ms.",
+        "tests/e2e/server.test.ts:248-252 only rejects a hung request when that full 5000ms timer fires.",
+        "tests/e2e/server.test.ts:363 defines the end-to-end test without an explicit timeout, while the installed Jest circus state defaults testTimeout to 5000ms; startup and prior requests consume part of that same budget.",
+        "The lifecycle table at tests/e2e/server.test.ts:332-359 covers startup stderr, early exit, and startup timeout, but does not exercise response timeout plus child cleanup."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Failure-path storage isolation relies on MCP_BPMN_DIAGRAMS_PATH while inheriting the real HOME; a future fallback or dual-write regression could touch the user's default diagrams directory before cleanup, and the test does not assert that fallback root remains untouched."
+  ],
+  "testing_gaps": [
+    "No synthetic post-startup response-timeout case proves that sendRequest rejects promptly and the enclosing cleanup terminates the child.",
+    "The prior invalid-tool case was removed, so the expected JSON-RPC success envelope carrying an MCP tool-level isError result is no longer asserted.",
+    "Schema fingerprints intentionally omit every description field, so misleading tool/property description regressions pass as long as descriptions remain non-empty."
+  ]
+}

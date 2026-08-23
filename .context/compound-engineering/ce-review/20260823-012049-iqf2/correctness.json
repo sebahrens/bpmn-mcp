@@ -1,0 +1,29 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "Mermaid file import is falsely advertised idempotent",
+      "severity": "P2",
+      "file": "src/server/tools.ts",
+      "line": 593,
+      "why_it_matters": "Clients may automatically retry open_mermaid_file because the metadata promises that identical calls have no additional environmental effect. In reality, each successful retry creates another persisted BPMN file with a fresh UUID-backed filename, so retries silently accumulate duplicate diagrams and change the current context.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Classify open_mermaid_file as ADDITIVE (idempotentHint: false), update EXPECTED_ANNOTATIONS, and add a repeat-call probe asserting that identical calls currently create two distinct BPMN files.",
+      "confidence": 0.99,
+      "evidence": [
+        "src/server/tools.ts:593 assigns IDEMPOTENT_UPDATE, whose idempotentHint is true at lines 33-38.",
+        "src/server/handlers.ts:298-313 converts the source and calls importXml on every invocation; src/core/SimpleBpmnEngine.ts:931-932 assigns defaultFilename and persists the imported context.",
+        "src/core/SimpleBpmnEngine.ts:1430-1441 embeds a fresh IdGenerator.generateUuid() value in every default filename.",
+        "A focused runtime probe called open_mermaid_file twice with the same filename: both calls succeeded and the saved BPMN count grew from 1 to 2 with distinct filenames.",
+        "tests/contracts/tool-annotations.test.ts:51 repeats the incorrect tuple, while its idempotency probe at lines 152-171 covers only update_element and save."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "The behavioral idempotency test does not repeat open_mermaid_file, so the exhaustive metadata table and packed tools/list parity check can agree on the same incorrect semantic value."
+  ]
+}

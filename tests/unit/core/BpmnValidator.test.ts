@@ -279,6 +279,32 @@ describe('BpmnValidator', () => {
     ]));
   });
 
+  it.each(['source', 'target'] as const)(
+    'rejects a gateway used as a message-flow %s with a stable issue code',
+    async endpoint => {
+      const sourceRef = endpoint === 'source' ? 'Gateway_Invalid' : 'Task_Source';
+      const targetRef = endpoint === 'target' ? 'Gateway_Invalid' : 'Task_Target';
+      const result = await validator.validate(definitions(`
+        <bpmn:process id="Process_Source"><bpmn:task id="Task_Source" /></bpmn:process>
+        <bpmn:process id="Process_Target">
+          <bpmn:task id="Task_Target" />
+          <bpmn:exclusiveGateway id="Gateway_Invalid" />
+        </bpmn:process>
+        <bpmn:collaboration id="Collaboration_InvalidMessage">
+          <bpmn:participant id="Participant_Source" processRef="Process_Source" />
+          <bpmn:participant id="Participant_Target" processRef="Process_Target" />
+          <bpmn:messageFlow id="Message_Invalid" sourceRef="${sourceRef}" targetRef="${targetRef}" />
+        </bpmn:collaboration>`), 'semantic');
+
+      expect(result.errors).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: 'BPMN_INVALID_MESSAGE_FLOW_ENDPOINT',
+          elementId: 'Message_Invalid'
+        })
+      ]));
+    }
+  );
+
   it('uses the requested level through the validate tool handler', async () => {
     const directory = await fs.mkdtemp(join(tmpdir(), 'mcp-bpmn-validator-'));
     const engine = new SimpleBpmnEngine(directory);

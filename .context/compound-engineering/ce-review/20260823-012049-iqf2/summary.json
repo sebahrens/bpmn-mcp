@@ -1,0 +1,37 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "src/server/tools.ts",
+    "tests/contracts/tool-annotations.test.ts",
+    "README.md",
+    "scripts/package-smoke.mjs"
+  ],
+  "intent": "Publish accurate standard MCP behavior annotations for every tool and verify them through source behavior and the packed executable.",
+  "merged_findings": [
+    {
+      "title": "Mermaid file import is falsely advertised idempotent",
+      "severity": "P2",
+      "confidence": 1,
+      "reviewers": ["correctness", "testing", "maintainability", "adversarial"],
+      "resolution": "Resolved: open_mermaid_file uses the additive non-idempotent tuple, with a repeat-call persistence probe."
+    },
+    {
+      "title": "add_lane understates its destructive behavior",
+      "severity": "P2",
+      "confidence": 0.99,
+      "reviewers": ["api-contract"],
+      "resolution": "Resolved: add_lane uses a destructive non-idempotent tuple, with a repeated-assignment probe."
+    }
+  ],
+  "applied_fixes": [
+    "Changed open_mermaid_file idempotentHint from true to false.",
+    "Changed add_lane destructiveHint from false to true while retaining idempotentHint false.",
+    "Added focused repeat-call behavior coverage for both classifications."
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "Agent-native review passed with 27 of 27 advertised tools carrying reviewed hints.",
+    "No docs/solutions institutional-learning corpus exists in this repository."
+  ],
+  "verdict": "Ready to merge after full and packed-package verification"
+}

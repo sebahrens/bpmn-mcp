@@ -1,0 +1,64 @@
+{
+  "reviewer": "maintainability",
+  "findings": [
+    {
+      "title": "Keep one source of truth for document maps",
+      "severity": "P2",
+      "file": "src/types/index.ts",
+      "line": 118,
+      "why_it_matters": "ProcessContext exposes the same mutable collections both as document state and as top-level aliases. Callers can mutate either path without ownership or scope validation, and a future refactor can make the aliases diverge, undermining the document invariants this change introduces.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Make document.elements and document.connections the sole mutable state, expose top-level read-only getters for compatibility, and route all writes through engine methods (with a read-only view for layout/query utilities).",
+      "confidence": 0.78,
+      "evidence": [
+        "ProcessContext defines document, elements, and connections as separate public mutable fields in src/types/index.ts:118-123.",
+        "createProcessContext assigns elements: document.elements and connections: document.connections, while SimpleBpmnEngine and AutoLayout continue mutating the aliases directly."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Consolidate Mermaid node type mappings",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnGenerator.ts",
+      "line": 169,
+      "why_it_matters": "Every supported Mermaid NodeType is represented by two independent switch statements. Adding or changing a node mapping can update the semantic BPMN type but leave the generated ID prefix stale (or vice versa), creating inconsistent output and duplicated maintenance work.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Define one NodeType-to-metadata map containing the BPMN type and ID prefix, then derive both getIdPrefix and mapNodeType (or use the metadata directly) from that map.",
+      "confidence": 0.94,
+      "evidence": [
+        "getIdPrefix has a switch for all seven NodeType values at src/core/SimpleBpmnGenerator.ts:169-186.",
+        "mapNodeType repeats the same seven-case switch with a separate mapping at src/core/SimpleBpmnGenerator.ts:188-205."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Avoid synchronizing DI twice per mutation",
+      "severity": "P3",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 395,
+      "why_it_matters": "Every create, connect, update, delete, and layout operation traverses and rewrites all shapes and edges twice before saving. The duplicated work makes refresh behavior harder to reason about and needlessly increases mutation cost as diagrams grow.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Let BpmnDocumentSerializer.serialize own DI synchronization and remove the explicit synchronizeDiagramInterchange call from refreshAndSave.",
+      "confidence": 0.99,
+      "evidence": [
+        "refreshAndSave calls synchronizeDiagramInterchange at src/core/SimpleBpmnEngine.ts:395 and immediately calls serializer.serialize at line 396.",
+        "BpmnDocumentSerializer.serialize unconditionally calls synchronizeDiagramInterchange at src/core/BpmnDocument.ts:203-205."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The serializer relies on dynamic bpmn-moddle objects typed as any; additions to supported BPMN properties can bypass compile-time checks and require focused round-trip tests."
+  ],
+  "testing_gaps": [
+    "No focused test verifies that direct context/document mutation is rejected or that the compatibility map aliases remain synchronized.",
+    "No generator test asserts that every Mermaid NodeType mapping keeps its ID prefix and serialized BPMN type aligned.",
+    "No performance-oriented test guards DI synchronization work for large diagrams."
+  ]
+}

@@ -9,7 +9,7 @@ import { tools } from '../../src/server/tools.js';
 import { IdGenerator } from '../../src/utils/IdGenerator.js';
 
 type ToolContract = {
-  owner: 'engine' | 'handler' | 'converter-and-engine' | 'known-gap';
+  owner: 'engine' | 'handler' | 'converter-and-engine';
   caseId: string;
 };
 
@@ -32,14 +32,14 @@ const TOOL_CONTRACTS: Record<string, ToolContract> = {
   connect: { owner: 'engine', caseId: 'C2' },
   add_association: { owner: 'engine', caseId: 'C2' },
   add_pool: { owner: 'engine', caseId: 'C8' },
-  add_lane: { owner: 'known-gap', caseId: 'G1' },
+  add_lane: { owner: 'engine', caseId: 'G1' },
   list_elements: { owner: 'handler', caseId: 'C6' },
   get_element: { owner: 'handler', caseId: 'C6' },
   update_element: { owner: 'engine', caseId: 'C4' },
   delete_element: { owner: 'engine', caseId: 'C4' },
   export: { owner: 'engine', caseId: 'C2/G2' },
   validate: { owner: 'handler', caseId: 'C6/G5' },
-  auto_layout: { owner: 'engine', caseId: 'C4/G4' },
+  auto_layout: { owner: 'engine', caseId: 'C4/C6/G4' },
   list_diagrams: { owner: 'engine', caseId: 'C5' },
   delete_diagram_file: { owner: 'engine', caseId: 'C5' },
   get_diagrams_path: { owner: 'engine', caseId: 'C5' }
@@ -277,7 +277,7 @@ describe('live engine contract', () => {
     expect(context.connections.size).toBe(0);
 
     await engine.connect(context.id, start.id, end.id, 'direct');
-    await engine.applyAutoLayout(context.id, 'horizontal');
+    await engine.applyAutoLayout(context.id);
     expect(context.elements.get(start.id)?.position.x).toBeLessThan(
       context.elements.get(end.id)!.position.x
     );
@@ -436,9 +436,132 @@ describe('live engine contract', () => {
     });
   });
 
-  test.todo('G1 add_lane creates BPMN Lane/LaneSet semantics instead of returning an implementation error');
-  test.todo('G2 SVG export returns a rendered diagram instead of returning an implementation error');
-  test.todo('G3 imported extensionElements survive mutation and export round-trip');
-  test.todo('G4 vertical auto-layout implements the advertised algorithm');
-  test.todo('G5 validation levels and sequence-flow conditions affect semantic validation/XML');
+  it('G1 add_lane creates BPMN Lane/LaneSet semantics through the handler', async () => {
+    const handler = new BpmnRequestHandler(engine);
+    await handler.handleRequest('new_bpmn', {
+      name: 'Lane contract',
+      type: 'collaboration'
+    });
+    await handler.handleRequest('add_pool', { name: 'Operations' });
+    await handler.handleRequest('add_activity', {
+      activityType: 'task',
+      name: 'Review',
+      ownerId: 'Participant_1_Process'
+    });
+
+    const result = await handler.handleRequest('add_lane', {
+      poolId: 'Participant_1',
+      name: 'Reviewers',
+      flowNodeIds: ['Task_1']
+    });
+    expect(result.isError).toBeUndefined();
+
+    const definitions = (
+      await moddle.fromXML(textOf(await handler.handleRequest('export', { format: 'xml' })))
+    ).rootElement;
+    const process = elementById(definitions, 'Participant_1_Process');
+    const lane = process.laneSets[0].lanes[0];
+    const laneShape = definitions.diagrams[0].plane.planeElement.find(
+      (item: any) => item.$type === 'bpmndi:BPMNShape' && item.bpmnElement === lane
+    );
+
+    expect(process.laneSets).toHaveLength(1);
+    expect(process.laneSets[0]).toMatchObject({ $type: 'bpmn:LaneSet' });
+    expect(lane).toMatchObject({ $type: 'bpmn:Lane', id: 'Lane_1', name: 'Reviewers' });
+    expect(lane.flowNodeRef.map((node: any) => node.id)).toEqual(['Task_1']);
+    expect(laneShape).toBeDefined();
+  });
+
+  it('G3 preserves imported extensionElements through mutation and export', async () => {
+    const xml = await fs.readFile(
+      join(fixtureDirectory, 'hierarchy-extensions-labels-di.bpmn'),
+      'utf8'
+    );
+    const context = await engine.importXml(xml);
+    await engine.updateElement(context.id, 'Task_Nested', { name: 'Mutated nested task' });
+
+    const parsed = await moddle.fromXML(await engine.exportXml(context.id));
+    expect(parsed.elementsById.Process_ContractFixture.extensionElements.values[0])
+      .toMatchObject({ $type: 'contract:metadata', key: 'must-round-trip' });
+    expect(parsed.elementsById.Task_Nested).toMatchObject({ name: 'Mutated nested task' });
+    expect(parsed.elementsById.Task_Nested.extensionElements.values[0])
+      .toMatchObject({ $type: 'contract:metadata', key: 'nested-extension' });
+  });
+
+  it('G4 advertises only executable auto-layout algorithms', async () => {
+    const autoLayoutTool = tools.find(tool => tool.name === 'auto_layout');
+    const algorithms = (autoLayoutTool?.inputSchema as {
+      properties?: { algorithm?: { enum?: string[] } };
+    }).properties?.algorithm?.enum;
+    expect(algorithms).toEqual(['horizontal']);
+
+    const handler = new BpmnRequestHandler(engine);
+    await handler.handleRequest('new_bpmn', { name: 'Layout contract' });
+    await handler.handleRequest('add_event', { eventType: 'start' });
+    await handler.handleRequest('add_activity', { activityType: 'task', name: 'Work' });
+    await handler.handleRequest('add_event', { eventType: 'end' });
+    await handler.handleRequest('connect', {
+      sourceId: 'StartEvent_1',
+      targetId: 'Task_1'
+    });
+    await handler.handleRequest('connect', {
+      sourceId: 'Task_1',
+      targetId: 'EndEvent_1'
+    });
+
+    for (const algorithm of algorithms ?? []) {
+      const result = await handler.handleRequest('auto_layout', { algorithm });
+      expect(result.isError).toBeUndefined();
+      expect(textOf(result)).toContain(`Applied ${algorithm} auto-layout`);
+    }
+
+    const unsupported = await handler.handleRequest('auto_layout', { algorithm: 'vertical' });
+    expect(unsupported.isError).toBe(true);
+    expect(textOf(unsupported)).toContain('algorithm: Invalid enum value');
+    expect(textOf(unsupported)).not.toContain('Only horizontal layout algorithm');
+  });
+
+  it('G5 applies validation levels and serializes sequence-flow conditions', async () => {
+    const handler = new BpmnRequestHandler(engine);
+    await handler.handleRequest('new_bpmn', { name: 'Validation contract' });
+    await handler.handleRequest('add_activity', { activityType: 'task', name: 'Decision' });
+    await handler.handleRequest('add_activity', { activityType: 'task', name: 'Approved' });
+    const condition = '${approved = true && amount < 100}';
+    await handler.handleRequest('connect', {
+      sourceId: 'Task_1',
+      targetId: 'Task_2',
+      condition,
+      conditionLanguage: 'FEEL'
+    });
+
+    const syntax = JSON.parse(textOf(await handler.handleRequest('validate', {
+      level: 'syntax'
+    })));
+    const semantic = JSON.parse(textOf(await handler.handleRequest('validate', {
+      level: 'semantic'
+    })));
+    const full = JSON.parse(textOf(await handler.handleRequest('validate', { level: 'full' })));
+
+    expect(syntax).toMatchObject({ level: 'syntax', issues: [] });
+    expect(semantic.level).toBe('semantic');
+    expect(semantic.issues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'BPMN_PROFILE_MISSING_START_EVENT' })
+    ]));
+    expect(full.level).toBe('full');
+    expect(full.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'BPMN_PROFILE_MISSING_START_EVENT' }),
+      expect.objectContaining({ code: 'BPMN_PROFILE_MISSING_END_EVENT' })
+    ]));
+
+    const exported = textOf(await handler.handleRequest('export', { format: 'xml' }));
+    const parsed = await moddle.fromXML(exported);
+    const flow = Object.values(parsed.elementsById).find(
+      (element: any) => element.$type === 'bpmn:SequenceFlow'
+    ) as any;
+    expect(flow.conditionExpression).toMatchObject({
+      $type: 'bpmn:FormalExpression',
+      body: condition,
+      language: 'FEEL'
+    });
+  });
 });

@@ -1,0 +1,49 @@
+{
+  "reviewer": "maintainability",
+  "findings": [
+    {
+      "title": "Unicode alias restoration skips retained extension attributes",
+      "severity": "P1",
+      "file": "src/utils/BpmnId.ts",
+      "line": 130,
+      "confidence": 0.99,
+      "autofix_class": "manual",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "Stop applying aliases to every XML attribute/text token, or restore aliases in all moddle-owned storage including $attrs and other $-prefixed opaque fields. Prefer an XML-aware adapter that aliases only actual ID and modeled IDREF/QName values, then add an imported-extension round-trip test proving unknown attributes remain byte-semantically unchanged."
+    },
+    {
+      "title": "The hand-maintained document ID visitor already omits local ID references",
+      "severity": "P2",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 223,
+      "confidence": 0.94,
+      "autofix_class": "manual",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "Replace the generic-properties special case with one typed, exhaustive visitor shared by validation and serialization. At minimum include boundary attachTo, dataObjectRef/itemSubjectRef, and multiInstance.loopDataInputRef/loopDataOutputRef alongside eventDefinitionPayload, and table-test every emitted local ID reference."
+    },
+    {
+      "title": "Invalid-ID discovery depends on moddle's partial elementsById index",
+      "severity": "P2",
+      "file": "src/core/BpmnDocument.ts",
+      "line": 159,
+      "confidence": 0.96,
+      "autofix_class": "manual",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "Collect and validate authored id attributes with an XML-aware scanner before invoking moddle, retaining element paths/locations for diagnostics. Do not use elementsById as the discovery mechanism: moddle omits elements whose IDs fail its own lexical check, so validator behavior changes with moddle internals."
+    }
+  ],
+  "residual_risks": [
+    "The Unicode compatibility layer remains coupled to undocumented bpmn-moddle object-graph details and to moddle-xml's current ASCII ID behavior, so dependency upgrades can silently change which aliases or IDs need adaptation."
+  ],
+  "testing_gaps": [
+    "No test imports and reserializes a valid Unicode ID that is also used in an unknown extension attribute; the current adapter emits the generated ASCII alias from $attrs.",
+    "The document-ID table does not exercise attachTo, dataObjectRef/itemSubjectRef, or multi-instance input/output references through direct serializer ingress.",
+    "Import and validator tests cover colon but not leading digit/dash/dot, whitespace, out-of-range supplementary characters, or malformed surrogates end to end; moddle drops several of these from elementsById and only produces a generic unparsable-content warning."
+  ]
+}

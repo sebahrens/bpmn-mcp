@@ -1,0 +1,70 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Default-flow support is only tested below the public tool boundary",
+      "severity": "P1",
+      "file": "tests/integration/handlers.test.ts",
+      "line": 179,
+      "why_it_matters": "The integration test exercises condition metadata but always expects isDefault:false; the only successful default-flow test calls SimpleBpmnEngine.connect directly. A regression that drops isDefault in BpmnRequestHandler, omits it from the advertised connect schema, or reports the wrong defaultFlow/isDefault fields would leave the acceptance-critical MCP behavior broken while all focused tests remain green.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add an integration case that creates an activity or exclusive gateway with two outgoing flows, calls handleRequest('connect', { isDefault: true }) for one, parses XML to assert source.default resolves to that SequenceFlow, and checks both get_element defaultFlow/outgoing.isDefault and list_elements defaultFlow. Add a focused tools-schema assertion for condition, conditionLanguage, conditionType, and isDefault.",
+      "confidence": 0.99,
+      "evidence": [
+        "tests/integration/handlers.test.ts:179-219 exercises only a conditional non-default flow and explicitly expects isDefault:false.",
+        "tests/unit/core/SimpleBpmnEngine.test.ts:831-862 proves default ownership only through engine.connect(..., { isDefault:true }), bypassing src/server/handlers.ts:359-376 and src/server/tools.ts:248-267.",
+        "src/server/handlers.ts:512 and 520 add public defaultFlow/isDefault response fields, but neither true-valued response is asserted by the focused tests."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "The claimed update coverage never changes default-flow ownership",
+      "severity": "P1",
+      "file": "tests/unit/core/SimpleBpmnEngine.test.ts",
+      "line": 810,
+      "why_it_matters": "The test title says conditional/default flows survive updates, but its update changes only the conditional target's name. The newly added source-owned transition code for assigning, replacing, clearing, validating, and deleting a default reference is unexecuted, so stale or invalid source.default links can be serialized after update_element or delete_element without this suite detecting it.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Create two plain outgoing sequence flows and drive updateElement/update_element through defaultFlow assignment, replacement, and null clearing; after each mutation parse saved XML and assert the source's moddle default. Then delete the active default flow's target and assert the source model, get_element response, persisted XML, and reopened model all clear default ownership. Add negative assignments for another source's flow, a conditional flow, a non-sequence connection, unsupported source, and a non-string ID, asserting memory and disk remain unchanged.",
+      "confidence": 1.0,
+      "evidence": [
+        "tests/unit/core/SimpleBpmnEngine.test.ts:873 updates conditionalTarget.name, so it never reaches the defaultFlow/default property branch at src/core/SimpleBpmnEngine.ts:377-409.",
+        "Focused coverage reports src/core/SimpleBpmnEngine.ts:403-407 and 985-997 uncovered, which are the core source-owned default assignment and validation paths.",
+        "The deletion cleanup at src/core/SimpleBpmnEngine.ts:490-493 is also uncovered; the current test never deletes a default flow or its target."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Invalid imported conditions and defaults have no rejection tests",
+      "severity": "P2",
+      "file": "tests/unit/core/SimpleBpmnEngine.test.ts",
+      "line": 864,
+      "why_it_matters": "The round-trip reopens only XML produced by the same serializer, which cannot cover hostile or independently authored BPMN. Import now has distinct branches rejecting conditions on associations/message flows, unsupported conditional sources, empty expressions, invalid default ownership, and conditional defaults; regressions in those checks would admit an invalid document and only fail later during mutation or export.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add table-driven raw BPMN fixtures for each invalid import rule and assert importXml/loadDiagram rejects with the expected safe error and creates no process/file state. Include valid external fixtures for an activity default, inclusive/complex gateway defaults, a condition with omitted optional metadata, and a FormalExpression carrying language and evaluatesToTypeRef, then mutate and reopen them to prove preservation.",
+      "confidence": 0.98,
+      "evidence": [
+        "tests/unit/core/SimpleBpmnEngine.test.ts:864-878 reopens only context.filename generated by this engine and checks one valid exclusive-gateway condition/default pair.",
+        "The import validation branches at src/core/BpmnDocument.ts:1484-1485, 1498-1502, and 1515-1521 are uncovered by the focused suite.",
+        "No reviewed test supplies raw XML containing a conditionExpression or a source default attribute."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The supported-source matrix is sampled narrowly: happy paths cover a task condition and exclusive-gateway default, while inclusive/complex gateways, subprocess/call activity defaults, and most activity condition/default types are not exercised.",
+    "Failure tests assert only the in-memory connection count after several rejected calls; they do not compare the autosaved file/XML before and after each failure, so rollback-to-disk regressions remain possible.",
+    "Backward-compatible aliases (connect options default, handler args default/defaultFlow, and update properties default) and FormalExpression spelling normalization are untested."
+  ],
+  "testing_gaps": [
+    "Exercise isDefault through the advertised MCP handler/schema and assert source-owned default metadata in XML, list_elements, and get_element.",
+    "Cover default ownership assignment, replacement, clearing, invalid reassignment, and deletion cleanup through update_element/delete_element with persisted and reopened assertions.",
+    "Use independently authored XML to cover every invalid import branch plus optional language/type/evaluatesToTypeRef preservation.",
+    "Add table-driven validation for empty condition, empty language, unsupported condition type, duplicate default creation, and default/condition options on explicit message flows and associations."
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "Layout output still depends on Mermaid array order",
+      "severity": "P1",
+      "file": "src/core/LayoutEngine.ts",
+      "line": 128,
+      "why_it_matters": "The canonical layout is required to have deterministic ID ordering and tie-breaking, and the focused test explicitly treats node/edge-array permutations as equivalent input. Cycles choose ast.nodes[0] as the traversal root, disconnected traversal resumes in raw ast.nodes order, and gateway branch offsets use outgoing targets in raw ast.edges order. Equivalent ASTs therefore normalize to different node coordinates and edge routes, so cache keys, snapshot comparisons, and downstream layout decisions are unstable.",
+      "evidence": [
+        "src/core/LayoutEngine.ts:128-139 chooses ast.nodes[0] when a graph has no source and later traverses unvisited nodes with ast.nodes.forEach, despite sorting only after levels have already been assigned.",
+        "src/core/LayoutEngine.ts:231-243 collects gateway outgoingTargets in ast.edges order, and lines 260-267 turn that order into branchIndex and therefore different y offsets.",
+        "Executable reproduction: a three-node a->b->c->a cycle produces a/b/c y positions 60/160/260, while reversing nodes and edges produces 160/260/60; normalizeLayoutModel reports unequal output.",
+        "Executable reproduction: reversing only the two outgoing edges of a gateway swaps the y coordinates of branch nodes a and b and produces unequal normalized output. tests/unit/core/LayoutModel.test.ts:68-80 covers permutation only for a source-rooted, non-gateway DAG, so both branches escape the test."
+      ],
+      "confidence": 0.99,
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "Sort the cycle fallback and every disconnected traversal seed by compareLayoutIds before assigning levels, and sort/deduplicate gateway outgoing targets by stable edge/target IDs before calculating branch indices. Add cycle, disconnected-cycle, and reversed gateway-edge permutation regressions that compare normalized models."
+    },
+    {
+      "title": "Validation accepts disconnected virtual segment chains",
+      "severity": "P1",
+      "file": "src/core/layout/LayoutModel.ts",
+      "line": 314,
+      "why_it_matters": "Virtual segments are the contract that downstream dummy-node and routing work will use to preserve one semantic BPMN edge. The validator currently proves only unique IDs, a matching semanticEdgeId, and contiguous numeric order; it does not prove that the chain starts at the semantic edge source, joins adjacent segments, ends at the semantic edge target, references valid virtual nodes/ports, or agrees with the edge's emitted waypoints. A disconnected or reversed route is reported valid and can be normalized or handed to an adapter as if it preserved connectivity.",
+      "evidence": [
+        "src/core/layout/LayoutModel.ts:314-329 never compares segment source/target endpoints to edge.source/edge.target or to adjacent segments, and never validates segment endpoint nodes or ports.",
+        "src/core/layout/adapters/BpmnDocumentLayoutAdapter.ts:222-225 serializes only edge.waypoints and ignores segment waypoints, while LayoutModel defines both representations without an invariant relating them.",
+        "Executable reproduction: replacing edge a->c with ordered virtual segments b->a and c->b, both carrying the correct semanticEdgeId, returns {valid:true, errors:[]} from validateLayoutModel.",
+        "tests/unit/core/LayoutModel.test.ts:186-213 asserts only order and semanticEdgeId; its intermediate virtual endpoint is not present in layout.nodes, so the test currently locks in incomplete referential validation rather than a connected chain."
+      ],
+      "confidence": 0.99,
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "Define whether edge.waypoints is the canonical flattened route or is derived from segments, then validate first/last endpoints, adjacent endpoint and waypoint continuity, virtual-node existence/identity, port ownership, and exact agreement with the flattened route. Reject empty/disconnected/reversed chains and add apply-to-document coverage for a valid multi-segment route."
+    },
+    {
+      "title": "Nested Mermaid containers omit child geometry",
+      "severity": "P2",
+      "file": "src/core/layout/adapters/MermaidAstLayoutAdapter.ts",
+      "line": 171,
+      "why_it_matters": "MermaidSubgraph explicitly supports nested subgraphs, and the adapter records parentId and childContainerIds, but a parent container's bounds are calculated only from its direct nodeIds before children are added. A parent with nodes only in a child receives zero bounds at the origin and does not contain that child. The canonical ownership tree is therefore geometrically invalid even though normalization and validation accept it, breaking containment-aware routing and diagram bounds.",
+      "evidence": [
+        "src/core/layout/adapters/MermaidAstLayoutAdapter.ts:168-185 stores childContainerIds but computes paddedBounds solely from subgraph.nodes; child container bounds are neither available nor included in the parent calculation.",
+        "src/core/layout/LayoutModel.ts:225-227 includes every non-root container independently in global bounds, which masks the invalid parent bounds instead of repairing containment.",
+        "Executable reproduction: parent(nodes=[], child=child(nodes=[a])) produces parent bounds {x:0,y:0,width:0,height:0} while child bounds are {x:80,y:60,width:140,height:140}.",
+        "tests/unit/core/LayoutModel.test.ts uses one flat subgraph and has no nested child-only ownership/containment assertion."
+      ],
+      "confidence": 0.99,
+      "autofix_class": "gated_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "Build subgraph containers bottom-up and calculate each parent from both direct node bounds and child container bounds, then position its label and recompute diagram bounds. Add nested, child-only, and mixed direct/child membership tests asserting geometric containment."
+    },
+    {
+      "title": "BPMN apply silently accepts semantic ownership and type drift",
+      "severity": "P2",
+      "file": "src/core/layout/adapters/BpmnDocumentLayoutAdapter.ts",
+      "line": 200,
+      "why_it_matters": "The apply adapter correctly rejects changed source/target connectivity, which establishes that layout application must not change BPMN semantics. It does not perform the corresponding checks for node/edge semantic type, ownerId, scopeId, or visual container ownership. A router or library adapter can corrupt those fields, receive a successful apply, and then observe them revert on the next fromDocument round-trip because only geometry was persisted. That makes ownership round-trips non-faithful and hides adapter bugs at the canonical boundary.",
+      "evidence": [
+        "src/core/layout/adapters/BpmnDocumentLayoutAdapter.ts:200-214 checks existence and source/target connectivity only; it never compares LayoutNode semanticType/ownerId/scopeId or LayoutEdge semanticType/ownerId/scopeId with the referenced BPMN objects.",
+        "src/core/layout/adapters/BpmnDocumentLayoutAdapter.ts:216-225 applies only position, size, and waypoints, so altered semantic metadata is silently ignored rather than rejected.",
+        "Executable reproduction: changing layout node A from bpmn:Task/P/P to bpmn:EndEvent/Other/Other passes applyToContext; the document remains bpmn:Task/P/P and a subsequent adapter round-trip differs from the accepted layout.",
+        "tests/unit/core/LayoutModel.test.ts:216-245 tests source/target drift only and does not mutate node or edge ownership, scope, or type."
+      ],
+      "confidence": 0.98,
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "Before any mutation, cross-check every non-virtual node and semantic edge against the document's type, ownerId, scopeId, and immutable identity; also validate containerId against the derived visual owner. Reject drift atomically and add node- and edge-metadata regression tests alongside connectivity."
+    },
+    {
+      "title": "Declared layout direction disagrees with live node geometry",
+      "severity": "P2",
+      "file": "src/core/LayoutEngine.ts",
+      "line": 33,
+      "why_it_matters": "The new canonical model and ports declare all four directions, but the live Mermaid layout always places graph depth on increasing y and peers on x. For LR, RL, and BT inputs the returned direction and port sides describe a different orientation from the node placement; edges can leave a side and immediately travel backward or diagonally to a vertically ranked target. Consumers cannot safely use direction as a geometry invariant, and generated BPMN does not honor the Mermaid direction it reports.",
+      "evidence": [
+        "src/core/LayoutEngine.ts:33-60 unconditionally maps depth to baseY and level position to currentX; layoutResult.direction is never consulted when assigning bounds.",
+        "src/core/layout/LayoutModel.ts:141-163 does consult model.direction when regenerating port sides, so metadata/ports and node placement diverge rather than all consistently using the legacy orientation.",
+        "Executable reproduction: LR input a->b returns both nodes at x=350 with y=60/160, direction='left-to-right', and waypoints from (450,100) to (350,200), moving left while the semantic direction claims left-to-right.",
+        "tests/unit/core/LayoutModel.test.ts uses LR but asserts only determinism and never checks rank progression or endpoint-side geometry."
+      ],
+      "confidence": 0.97,
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "Make coordinate assignment direction-aware by mapping rank/cross-rank axes and reversing the rank axis for RL/BT, then derive ports and routes from the same orientation. If only one orientation is currently supported, reject or explicitly normalize unsupported directions with a structured warning rather than returning contradictory metadata."
+    }
+  ],
+  "residual_risks": [
+    "BpmnDocumentLayoutAdapter maps processRef to one participant with a last-write-wins Map when multiple participants reference the same process. That supported shared-process state has no unambiguous single visual container; the adapter currently selects the lexicographically last participant without a warning.",
+    "refreshLayoutGeometry mutates its input model in place and regenerates ports but preserves edge waypoints whenever at least two exist. Callers that move nodes without explicitly rerouting can therefore retain endpoints that no longer coincide with the regenerated ports.",
+    "The structural validator does not check Map key/value ID agreement, label ownership/back-references, container parent/child reciprocity, node container membership, port ownership/roles, or finite/non-negative geometry. Some geometric validation is intentionally tracked by downstream layout beads, but referential invariants still need a single documented owner before those consumers are implemented."
+  ],
+  "testing_gaps": [
+    "Add permutation tests for source-less cycles, disconnected cyclic components, and gateway outgoing-edge order; the current deterministic test covers only a source-rooted DAG.",
+    "Add negative segment tests for wrong first/last endpoints, disconnected adjacent segments, nonexistent virtual nodes/ports, duplicate order, empty waypoint fragments, and disagreement between segments and edge.waypoints.",
+    "Add nested Mermaid subgraph fixtures with child-only and mixed membership and assert parent bounds contain every descendant container and node.",
+    "Add BPMN apply tests that alter node and edge type/ownerId/scopeId/containerId and prove rejection occurs before any position, size, waypoint, DI, or file mutation.",
+    "Add direction-matrix tests for LR/RL/TD/BT that assert rank-axis monotonicity, incoming/outgoing port sides, and endpoint attachment.",
+    "npm run type-check passed, and LayoutModel.test.ts plus SimpleBpmnGenerator.test.ts passed. The combined focused Jest run could not execute SimpleBpmnEngine.test.ts because that pre-existing test directly accesses content[0].text without narrowing the MCP ContentBlock union; this leaves the broader mutable-engine suite unverified in this review run."
+  ]
+}

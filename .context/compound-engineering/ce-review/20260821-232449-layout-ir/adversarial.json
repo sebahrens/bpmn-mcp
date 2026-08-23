@@ -1,0 +1,188 @@
+{
+  "reviewer": "adversarial",
+  "findings": [
+    {
+      "title": "Stable graph permutations produce different normalized layouts",
+      "severity": "P1",
+      "file": "src/core/LayoutEngine.ts",
+      "line": 129,
+      "why_it_matters": "The determinism guarantee fails for ordinary cycles and gateway branches. Two callers can submit the same semantic graph with arrays in different orders and receive different node positions, routes, normalized models, and BPMN XML, making persisted diagrams depend on parser or map iteration order.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Canonicalize every ordering input before it affects geometry: choose the lexicographically first node for the no-start cycle fallback, and sort each gateway's outgoing targets before assigning branch indexes. Add permutation tests for cycles and multi-branch gateways.",
+      "confidence": 1.0,
+      "evidence": [
+        "Trigger 1: a three-node cycle has no start nodes, so LayoutEngine.ts:128-130 chooses ast.nodes[0]. Reversing the node array changes the traversal root and rotates which semantic node receives each depth.",
+        "Reproduction 1: a->b->c->a yielded y positions a=60,b=160,c=260; reversing nodes and edges yielded a=160,b=260,c=60, and normalizeLayoutModel outputs were unequal.",
+        "Trigger 2: identifyGatewayBranches at LayoutEngine.ts:234-243 preserves ast.edges order when constructing outgoingTargets, and branchIndex directly controls the y offset at lines 43-49.",
+        "Reproduction 2: reversing two outgoing gateway edges swapped the y positions of targets a and b, again producing unequal normalized models."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Requested direction docks edges away from targets",
+      "severity": "P1",
+      "file": "src/core/LayoutEngine.ts",
+      "line": 33,
+      "why_it_matters": "LayoutEngine positions graph depth vertically regardless of LayoutModel.direction, while MermaidAstLayoutAdapter selects ports from the requested direction. In LR/RL/BT diagrams the composition produces nodes in one orientation and ports in another, so even the initial two-point route can leave a node on the side opposite its target.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Make level and within-level axes depend on LayoutDirection, including reverse ordering for RL and BT, then regenerate ports/routes after placement. Verify all five Mermaid direction spellings with endpoint-docking assertions.",
+      "confidence": 0.99,
+      "evidence": [
+        "LayoutEngine.ts:33-60 always maps depth to baseY and within-level placement to currentX; it never branches on layoutResult.direction.",
+        "MermaidAstLayoutAdapter passes the requested direction into createLayoutPorts, so LR uses right-to-left ports, RL uses left-to-right ports, and BT uses top-to-bottom ports.",
+        "Reproduction: for a two-node LR chain, both nodes were at x=382 with y=82/182, but the route ran from source right (418,100) to target left (382,200), diagonally across a vertically arranged graph.",
+        "Reproduction: BT still placed source above target, then routed from the source top (400,82) to the target bottom (400,218), pointing both endpoints away from each other."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Injected route can contradict generated flow connectivity",
+      "severity": "P1",
+      "file": "src/core/SimpleBpmnGenerator.ts",
+      "line": 43,
+      "why_it_matters": "Supplying the optional LayoutModel bypasses MermaidAstLayoutAdapter construction and no AST-to-layout connectivity check replaces it. The generator takes source and target from the AST but takes waypoints by edge ID from the unverified layout, allowing BPMN semantics to say A->B while DI is routed to C.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Before generation, validate that every nonvirtual layout node and edge maps bijectively to the AST and that each layout edge's semantic source/target matches the AST edge. Reject mismatched supplied layouts before constructing the BPMN document.",
+      "confidence": 0.99,
+      "evidence": [
+        "SimpleBpmnGenerator.ts:43 uses a supplied layout directly; validateLayoutModel is never called and no AST/layout cross-check occurs.",
+        "SimpleBpmnGenerator.ts:139-160 derives connection.source/target from ast.edges but line 161 independently copies waypoints from effectiveLayout.edges.get(edge.id).",
+        "Reproduction: mutate layout edge e from AST A->B so its target node is C and its waypoints end at C, then call generateBpmn(ast, name, layout). The returned flow and XML semantic refs remain A->B while serialized DI uses the A->C waypoint pair.",
+        "BpmnDocumentLayoutAdapter rejects equivalent connectivity changes at lines 206-213, so the two canonical-layout consumers enforce incompatible contracts."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Malformed numeric geometry persists as invalid BPMN DI",
+      "severity": "P1",
+      "file": "src/core/layout/LayoutModel.ts",
+      "line": 284,
+      "why_it_matters": "TypeScript's number type admits NaN, Infinity, zero, and negative dimensions, but layout validation accepts them. The BPMN apply path then mutates the document and serialization emits invalid DI literals, so a malformed but fully typed layout can poison both in-memory state and persisted BPMN.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Extend validateLayoutModel to require finite coordinates and waypoints plus positive finite widths/heights for all nodes, containers, and labels. Run validation before every apply/generate boundary and reject without mutation.",
+      "confidence": 1.0,
+      "evidence": [
+        "validateLayoutModel at LayoutModel.ts:284-331 validates semantic identities and edge references but never validates numeric ranges or finiteness.",
+        "BpmnDocumentLayoutAdapter.applyToDocument trusts validated node.bounds at lines 216-220 and copies the values into element position and size.",
+        "Reproduction: bounds {x: NaN, y: Infinity, width: -1, height: 0} returned {valid:true, errors:[]} and serialized as <dc:Bounds x=\"NaN\" y=\"Infinity\" width=\"-1\" height=\"0\" />."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Apply failure leaves document geometry partially mutated",
+      "severity": "P1",
+      "file": "src/core/layout/adapters/BpmnDocumentLayoutAdapter.ts",
+      "line": 216,
+      "why_it_matters": "applyToDocument mutates element and connection geometry before synchronizeDiagramInterchange performs whole-document checks that can still throw. SimpleBpmnEngine then skips serialization and saving, but retains the mutated ProcessContext in its map, leaving memory and disk disagreeing after a reported failure.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Make apply transactional: preflight the complete target document and proposed geometry before mutation, or apply to a deep cloned document, synchronize/serialize it successfully, then atomically replace the context document and aliases before saving.",
+      "confidence": 0.98,
+      "evidence": [
+        "BpmnDocumentLayoutAdapter.ts:216-225 mutates document.elements and document.connections in place before calling synchronizeDiagramInterchange at line 227.",
+        "The adapter's preflight at lines 200-214 checks layout members only; it does not prove every existing document connection can be synchronized.",
+        "Reproduction: build a valid layout, then add a document connection whose target is missing, change node A's layout x to 500, and apply. synchronizeDiagramInterchange throws 'Connection Bad references a missing source or target', but document element A remains mutated to x=500.",
+        "SimpleBpmnEngine.applyLayoutModel at lines 429-432 mutates the stored context first and only saves afterward, so any adapter/serialization/write failure can expose a new in-memory geometry with the old persisted file."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Nested subgraph passes layout then fails generation",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnGenerator.ts",
+      "line": 205,
+      "why_it_matters": "The typed Mermaid AST supports recursive subgraphs and the canonical adapter recursively accepts them, but the generator's second ownership pass only visits top-level subgraphs. A caller can successfully adapt and lay out a typed AST, then fail at the final generation boundary with an ownership error.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Define one recursive ownership/container mapping and consume it in both the adapter and generator. Decide explicitly whether nested subgraphs become BPMN subprocesses, lanes, or are rejected consistently at the first boundary.",
+      "confidence": 1.0,
+      "evidence": [
+        "MermaidSubgraph.subgraphs is recursive, and MermaidAstLayoutAdapter.ts:136-157 recursively assigns child ownership.",
+        "LayoutEngine starts from MermaidAstLayoutAdapter and therefore accepts the nested layout model.",
+        "SimpleBpmnGenerator.ts:205-223 loops only the top-level subgraphs argument; it never visits subgraph.subgraphs.",
+        "Reproduction: one node owned only by an inner subgraph adapts successfully, but generateBpmn rejects it with 'Mermaid node a is not owned by a subgraph'."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Virtual-segment route disappears during BPMN apply",
+      "severity": "P2",
+      "file": "src/core/layout/adapters/BpmnDocumentLayoutAdapter.ts",
+      "line": 222,
+      "why_it_matters": "A router can legitimately express a multi-part path in LayoutEdge.segments, and validation confirms its semantic edge identity, yet the BPMN adapter ignores all segment geometry and persists only the independent aggregate waypoints. The routing work silently disappears even though the model validates successfully.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Establish segments or aggregate waypoints as the authoritative route, derive the other representation centrally, validate segment continuity, and serialize the authoritative derived route in both generator and document adapters.",
+      "confidence": 0.97,
+      "evidence": [
+        "LayoutModel exposes waypoints and segments independently, and validateLayoutModel checks segment IDs/order/semanticEdgeId but not agreement with edge.waypoints.",
+        "The scoped virtual-segment test replaces segments only and receives valid:true, demonstrating that such a state is considered valid.",
+        "BpmnDocumentLayoutAdapter.ts:222-225 copies edge.waypoints only; no segment waypoint is read.",
+        "SimpleBpmnGenerator.ts:161 likewise serializes effectiveLayout.edges.get(edge.id).waypoints, so both live output paths discard segment-only routing."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Pool container move disappears during document apply",
+      "severity": "P2",
+      "file": "src/core/layout/adapters/BpmnDocumentLayoutAdapter.ts",
+      "line": 108,
+      "why_it_matters": "Participants and subprocesses appear as containers to a container-aware layout pass, but the adapter also creates a separate node bounds copy and only writes that copy. Moving or resizing the natural LayoutContainer representation succeeds locally yet has no effect on the BPMN element or persisted DI.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Give container-backed BPMN shapes one authoritative bounds object or explicitly synchronize container and node geometry, rejecting disagreement before apply. Ensure participant/subprocess container edits round-trip through document DI.",
+      "confidence": 0.98,
+      "evidence": [
+        "BpmnDocumentLayoutAdapter.ts:92-103 creates a node for every participant/subprocess, then lines 108-139 create a container with the same semantic ID and copied bounds.",
+        "applyToDocument at lines 216-225 writes node bounds and edge waypoints only; it never reads container bounds.",
+        "Reproduction: change only layout.containers.get('Part').bounds from (10,20,600,250) to (100,200,700,300), apply, and inspect the participant element. Its geometry remains (10,20,600,250) without an error."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Unknown pool member survives as valid canonical output",
+      "severity": "P2",
+      "file": "src/core/layout/adapters/MermaidAstLayoutAdapter.ts",
+      "line": 170,
+      "why_it_matters": "A malformed but typed subgraph may list a node ID absent from ast.nodes. The adapter preserves that dangling ID in LayoutContainer.nodeIds, validation accepts it, LayoutEngine filters it opportunistically, and the generator returns BPMN plus a canonical layout that claims membership for an element that was never generated.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Reject unknown subgraph member IDs during Mermaid adaptation and extend validateLayoutModel to require every container nodeId and childContainerId to resolve consistently with node.containerId and container.parentId.",
+      "confidence": 1.0,
+      "evidence": [
+        "MermaidAstLayoutAdapter.ts:147-153 records every subgraph node ID as ownership without checking ast.nodes, and lines 169-180 copy all IDs into LayoutContainer.nodeIds.",
+        "LayoutEngine.layoutWithPools filters missing nodes at lines 79-83 rather than rejecting the inconsistent container.",
+        "validateLayoutModel does not inspect container membership or parent/child references.",
+        "Reproduction: subgraph nodes ['a','ghost'] with only node a produced valid:true; generateBpmn emitted only Task_a but returned layout.container('pool').nodeIds ['a','ghost']."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Concurrent applyLayoutModel calls share and mutate one ProcessContext before asynchronous serialization and file writes; without request serialization, two valid layouts may interleave and persist an order-dependent result.",
+    "A filesystem write failure after successful in-memory apply/serialization can still leave the stored context newer than the on-disk diagram even if adapter mutation becomes transactional.",
+    "Label bounds and port positions are also independently mutable derived geometry, but the current public contract does not define whether routers may author them or refreshLayoutGeometry may overwrite them."
+  ],
+  "testing_gaps": [
+    "No permutation tests cover cycles or gateway branch edge order, despite the deterministic-output acceptance criterion.",
+    "No tests cover LR, RL, BT, or TD/TB placement together with port docking; current coverage uses LR but asserts neither orientation nor route endpoints.",
+    "No supplied-layout test verifies AST/layout semantic IDs and connectivity before generation.",
+    "No malformed typed-input tests cover NaN/Infinity/negative bounds, dangling container members, missing label owners, or invalid port references.",
+    "No failure-atomicity test asserts that ProcessContext and persisted XML remain unchanged when apply, synchronization, serialization, or file writing fails.",
+    "Virtual-segment tests do not apply or serialize segment-authored geometry through either live path.",
+    "Participant and subprocess tests do not mutate LayoutContainer.bounds independently and verify DI round-trip behavior."
+  ]
+}

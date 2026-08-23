@@ -1,0 +1,29 @@
+{
+  "mode": "autofix",
+  "scope": "mcp-bpmn-lz7 filename metadata and focused tests only",
+  "intent": "Preserve exact process IDs and names in listDiagrams while retaining legacy filename compatibility.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "performance",
+    "reliability",
+    "api-contract",
+    "kieran-typescript"
+  ],
+  "applied_fixes": [
+    "Use versioned filename metadata so new listings do not parse every BPMN file.",
+    "Fall back to bounded historical filenames when encoded metadata would exceed 255 bytes.",
+    "Cover versioned, legacy, unreadable, and long-name listing paths."
+  ],
+  "findings": [],
+  "residual_actionable_work": [],
+  "residual_risks": [
+    "Legacy and custom filenames require bounded BPMN parsing until they are resaved in the versioned format."
+  ],
+  "testing_gaps": [],
+  "verdict": "Ready to merge"
+}

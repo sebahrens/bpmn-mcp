@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { SimpleBpmnEngine } from '../../../src/core/SimpleBpmnEngine.js';
 import { diagramContext } from '../../../src/core/DiagramContext.js';
 import { BpmnRequestHandler } from '../../../src/server/handlers.js';
-import { parseToolRequest, tools } from '../../../src/server/tools.js';
+import { parseToolRequest, TOOL_INPUT_LIMITS, tools } from '../../../src/server/tools.js';
 import { IdGenerator } from '../../../src/utils/IdGenerator.js';
 
 describe('typed activity extension profiles', () => {
@@ -150,6 +150,35 @@ describe('typed activity extension profiles', () => {
       type: 'bpmn:ServiceTask',
       properties: { assignee: 'alice' }
     })).rejects.toThrow('assignee is only valid on bpmn:UserTask');
+  });
+
+  it('enforces candidate-group count bounds at the direct engine boundary without mutation', async () => {
+    const context = await engine.createProcess('Bounded groups', 'process', 'camunda7');
+    const maximumGroups = Array.from(
+      { length: TOOL_INPUT_LIMITS.candidateGroups.maxItems },
+      (_, index) => `group-${index}`
+    );
+    await expect(engine.createElement(context.id, {
+      type: 'bpmn:UserTask',
+      name: 'Maximum groups',
+      properties: { candidateGroups: maximumGroups }
+    })).resolves.toMatchObject({
+      properties: { candidateGroups: maximumGroups }
+    });
+
+    const elementsBefore = Array.from(context.elements.entries());
+    const xmlBefore = context.xml;
+    const diskBefore = await fs.readFile(join(directory, context.filename!), 'utf8');
+    await expect(engine.createElement(context.id, {
+      type: 'bpmn:UserTask',
+      name: 'One group too many',
+      properties: { candidateGroups: [...maximumGroups, 'overflow'] }
+    })).rejects.toThrow(
+      `candidateGroups must contain 1-${TOOL_INPUT_LIMITS.candidateGroups.maxItems} strings`
+    );
+    expect(Array.from(context.elements.entries())).toEqual(elementsBefore);
+    expect(context.xml).toBe(xmlBefore);
+    await expect(fs.readFile(join(directory, context.filename!), 'utf8')).resolves.toBe(diskBefore);
   });
 });
 

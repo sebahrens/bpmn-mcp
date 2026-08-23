@@ -1,0 +1,44 @@
+{
+  "reviewer": "maintainability",
+  "findings": [
+    {
+      "title": "New tests preserve a rejected dead engine",
+      "severity": "P2",
+      "file": "tests/unit/core/LayoutEngine.test.ts",
+      "line": 14,
+      "why_it_matters": "This 135-line behavior matrix adds a second set of contracts for LayoutEngine even though the production import graph does not reach that class, jest.config.js now explicitly excludes it as legacy, and the recorded layout decision rejected the hand-rolled engine in favor of the external adapter. Future changes can therefore be blocked by tests for an implementation that users do not execute, increasing the cost of eventually deleting the rejected branch and preserving false architectural ambiguity about which layout path is authoritative.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Remove tests/unit/core/LayoutEngine.test.ts and update the stale mcp-bpmn-21p premise that LayoutEngine is live; retain production-facing adapter/oracle coverage. If LayoutEngine is intentionally being retained as a future implementation, document that decision and its concrete consumer instead.",
+      "confidence": 0.97,
+      "evidence": [
+        "A repository import search finds no src/ consumer of src/core/LayoutEngine.ts; its consumers are tests/unit/core/LayoutModel.test.ts and the new tests/unit/core/LayoutEngine.test.ts.",
+        "jest.config.js:44 and jest.config.js:57 explicitly exclude src/core/LayoutEngine.ts from coverage collection and instrumentation as an unreachable legacy module.",
+        "tests/unit/core/LayoutModel.test.ts:70-157 already exercises LayoutEngine reorder determinism, directional placement, cycle/gateway tie-breaking, pool stacking, bottom-to-top direction, and layout validation, substantially overlapping the four new cases at tests/unit/core/LayoutEngine.test.ts:14-134.",
+        "The closed mcp-bpmn-kjn decision selects bpmn-auto-layout 2.0.0-alpha.2 and explicitly rejects the hand-rolled layered engine because of its higher maintenance risk and incomplete fixture behavior."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Legacy exclusions duplicate Jest configuration state",
+      "severity": "P3",
+      "file": "jest.config.js",
+      "line": 41,
+      "why_it_matters": "The same eleven paths must now be kept synchronized in collectCoverageFrom and coveragePathIgnorePatterns. Jest applies both filters independently before instrumenting a file, so either complete list is sufficient for these exclusions; duplicating it adds 22 maintenance lines and makes a future one-sided update silently change coverage behavior depending on which filter was missed.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Keep the legacy paths in coveragePathIgnorePatterns as the single explicit exclusion list and remove their duplicate negative entries from collectCoverageFrom, then rerun the full coverage command.",
+      "confidence": 0.94,
+      "evidence": [
+        "jest.config.js:41-51 and jest.config.js:54-64 contain the same eleven source paths in different syntax.",
+        "The installed Jest shouldInstrument implementation rejects files that fail collectCoverageFrom at node_modules/@jest/transform/build/shouldInstrument.js:134-144 and separately rejects files matching coveragePathIgnorePatterns at lines 145-149; both lists gate instrumentation.",
+        "The added comment at jest.config.js:68-70 describes one legacy exclusion boundary, so two independently edited path lists do not encode distinct policy."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": []
+}

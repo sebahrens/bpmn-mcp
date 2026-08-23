@@ -1,0 +1,10 @@
+{
+  "reviewer": "project-standards",
+  "findings": [],
+  "residual_risks": [
+    "AGENTS.md and CLAUDE.md contain no project-specific naming, formatting, API-design, or BPMN modeling conventions beyond Beads workflow guidance and the build/test command policy, so this persona cannot assess broader convention fit from an exact repository rule."
+  ],
+  "testing_gaps": [
+    "AGENTS.md, Build and test policy, and CLAUDE.md, Build & Test, require `npm run test:all` for the contributor/CI clean-build all-tests check. The available focused review evidence reports the named Jest suites and `npm run type-check`, but not `npm run test:all`; this read-only review did not run the clean/build command because it writes `dist/`."
+  ]
+}
