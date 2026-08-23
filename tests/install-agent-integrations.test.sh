@@ -101,6 +101,7 @@ case "${1:-}" in
       shift
     done
     : > "$destination/mcp-bpmn-server-$package_version.tgz"
+    printf '> mcp-bpmn-server@%s prepack\n' "$package_version"
     printf '[{"filename":"mcp-bpmn-server-%s.tgz"}]\n' "$package_version"
     ;;
   install)
@@ -443,7 +444,7 @@ assert_contains "$(cat "$FAKE_STATE_DIR/claude.log")" \
   'argv|<mcp>|<get>|<mcp-bpmn>'
 assert_contains "$(cat "$FAKE_STATE_DIR/claude.log")" \
   "argv|<mcp>|<add>|<--scope>|<user>|<mcp-bpmn>|<$PREFIX/app/node_modules/.bin/mcp-bpmn-server>|<-e>|<MCP_BPMN_DIAGRAMS_PATH=$MCP_BPMN_DIAGRAMS_PATH>"
-assert_contains "$(cat "$FAKE_STATE_DIR/npm.log")" "prefix=<$NPM_CONFIG_PREFIX>|<pack>|<--json>|<--pack-destination>"
+assert_contains "$(cat "$FAKE_STATE_DIR/npm.log")" "prefix=<$NPM_CONFIG_PREFIX>|<pack>|<--silent>|<--pack-destination>"
 assert_contains "$(cat "$FAKE_STATE_DIR/npm.log")" "prefix=<$NPM_CONFIG_PREFIX>|<install>|<--omit=dev>|<--no-audit>|<--no-fund>|<--prefix>"
 assert_contains "$(cat "$FAKE_STATE_DIR/npm.log")" "cache=<$TMPDIR/mcp-bpmn-install."
 

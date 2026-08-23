@@ -10,12 +10,12 @@ import BpmnModdle from 'bpmn-moddle';
 const STARTUP_MESSAGE = 'MCP-BPMN Server running on stdio';
 const STARTUP_TIMEOUT_MS = 3000;
 const RESPONSE_TIMEOUT_MS = 2000;
-// A cold Chrome launch approaches the renderer's 10-second production deadline
+// A cold Chrome launch can approach the renderer's 20-second production deadline
 // on contended CI runners; leave time for the response and cleanup to propagate.
-const REAL_BROWSER_START_TIMEOUT_MS = 12_000;
-const REAL_BROWSER_RESPONSE_TIMEOUT_MS = 15_000;
+const REAL_BROWSER_START_TIMEOUT_MS = 22_000;
+const REAL_BROWSER_RESPONSE_TIMEOUT_MS = 25_000;
 
-jest.setTimeout(30_000);
+jest.setTimeout(40_000);
 
 const EXPECTED_TOOL_NAMES = [
   'new_bpmn',

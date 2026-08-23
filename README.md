@@ -38,7 +38,7 @@ XML authoring, validation, layout, persistence, and XML export do not launch a
 browser. SVG export does. If the Puppeteer browser download is intentionally
 skipped, set `PUPPETEER_EXECUTABLE_PATH` to a compatible Chrome or Chromium
 executable before starting the server. SVG rendering is headless, limited to
-one concurrent render per server instance, and has a ten-second render timeout.
+one concurrent render per server instance, and has a twenty-second render timeout.
 
 ### Run from a source checkout
 
@@ -105,6 +105,44 @@ npm install --prefix "$consumer_dir" "$artifact_dir"/mcp-bpmn-server-*.tgz
 For an MCP client, use the absolute value of
 `$consumer_dir/node_modules/.bin/mcp-bpmn-server` as `command` and an empty
 `args` array. The package is a CLI, not an importable JavaScript library.
+
+### Install for Claude Code and Codex
+
+From a source checkout, the installer packages the current release into a
+stable user-owned location, registers its MCP server, and installs the
+`bpmn-modeler` skill for every supported client found on `PATH`:
+
+```bash
+make install
+make doctor
+```
+
+The default program location is `~/.local/share/mcp-bpmn`, while diagrams stay
+outside the installation in `~/mcp-bpmn`. The skill is copied to
+`~/.codex/skills/bpmn-modeler` for Codex and
+`~/.claude/skills/bpmn-modeler` for Claude Code. Restart the clients after
+installation so they discover the new skill and MCP server.
+
+Installation is idempotent: running `make install` again replaces only files
+and registrations owned by this installer. Existing third-party registrations
+or skill directories are preserved unless replacement is explicitly requested
+with `FORCE=1`. Target one client, update an existing installation, or uninstall
+while preserving diagrams with:
+
+```bash
+make install-codex
+make install-claude
+make update
+make uninstall
+```
+
+Set `PREFIX` to change the program location and
+`MCP_BPMN_DIAGRAMS_PATH` to use a different absolute diagram directory. A
+prebuilt release tarball can be installed reproducibly by setting both
+`MCP_BPMN_PACKAGE_TARBALL` and its required `MCP_BPMN_PACKAGE_SHA256`. Run
+`./scripts/install-agent-integrations.sh --help` for the complete interface.
+The installer supports macOS and Linux, including WSL with Linux-native Node.js
+and client CLIs.
 
 ### Develop the Codex plugin locally
 

@@ -814,26 +814,18 @@ build_and_install_artifact() {
     ' "$tarball_path" "$MCP_BPMN_PACKAGE_SHA256" \
       || fail "prebuilt release tarball does not match MCP_BPMN_PACKAGE_SHA256"
   else
-    pack_json=$(cd "$PROJECT_ROOT" && npm_config_cache="$TEMP_DIR/npm-cache" \
-      npm pack --json --pack-destination "$TEMP_DIR") \
+    (cd "$PROJECT_ROOT" && npm_config_cache="$TEMP_DIR/npm-cache" \
+      npm pack --silent --pack-destination "$TEMP_DIR" >/dev/null) \
       || fail "npm pack failed"
-    tarball_name=$(printf '%s' "$pack_json" | node -e '
-      let input = "";
-      process.stdin.setEncoding("utf8");
-      process.stdin.on("data", chunk => { input += chunk; });
-      process.stdin.on("end", () => {
-        try {
-          const result = JSON.parse(input);
-          if (!Array.isArray(result) || typeof result[0]?.filename !== "string") process.exit(1);
-          process.stdout.write(result[0].filename);
-        } catch {
-          process.exit(1);
-        }
-      });
-    ') || fail "npm pack did not report a tarball filename"
-    [ -n "$tarball_name" ] && [ -f "$TEMP_DIR/$tarball_name" ] \
-      || fail "npm pack did not create the expected tarball"
-    tarball_path=$TEMP_DIR/$tarball_name
+    tarball_path=
+    for packed_candidate in "$TEMP_DIR"/*.tgz; do
+      [ -f "$packed_candidate" ] || continue
+      [ -z "$tarball_path" ] \
+        || fail "npm pack created more than one tarball"
+      tarball_path=$packed_candidate
+    done
+    [ -n "$tarball_path" ] \
+      || fail "npm pack did not create a tarball"
   fi
 
   mkdir -p "$TEMP_DIR/app"

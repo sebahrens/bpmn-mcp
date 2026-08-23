@@ -20,7 +20,10 @@ const SYSTEM_BROWSER_PATHS = [
   '/usr/bin/chromium-browser'
 ];
 
-const DEFAULT_RENDER_TIMEOUT_MS = 10_000;
+// A cold browser launch can exceed ten seconds on contended hosts even though
+// subsequent renders are fast. Keep the operation bounded while allowing the
+// first SVG export to finish on supported CI and installed environments.
+const DEFAULT_RENDER_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_CONCURRENT_RENDERS = 1;
 
 const RENDERER_DOCUMENT = `<!doctype html>
