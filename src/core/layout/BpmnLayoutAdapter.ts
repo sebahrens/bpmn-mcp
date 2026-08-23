@@ -1,4 +1,18 @@
 import { spawn } from 'node:child_process';
+import { existsSync, realpathSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+// The worker runs an inline module from the MCP client's working directory.
+// Resolve the dependency beside the installed server before spawning it.
+const moduleAnchor = process.argv[1] && existsSync(process.argv[1])
+  ? realpathSync(process.argv[1])
+  : resolve(process.cwd(), 'package.json');
+const requireFromHere = createRequire(moduleAnchor);
+const BPMN_AUTO_LAYOUT_MODULE_URL = pathToFileURL(
+  requireFromHere.resolve('bpmn-auto-layout')
+).href;
 
 export const BPMN_AUTO_LAYOUT_VERSION = '2.0.0-alpha.2' as const;
 
@@ -190,7 +204,7 @@ async function loadSelectedLayoutInSubprocess(
     process.stdin.setEncoding('utf8');
     for await (const chunk of process.stdin) source += chunk;
     try {
-      const { layoutProcess } = await import('bpmn-auto-layout');
+      const { layoutProcess } = await import(${JSON.stringify(BPMN_AUTO_LAYOUT_MODULE_URL)});
       const output = await layoutProcess(source);
       process.stdout.write(JSON.stringify({
         result: {

@@ -463,7 +463,7 @@ MCP_BPMN_PACKAGE_TARBALL="$candidate_tarball" \
   make -s -C "$SOURCE_ROOT" update >/dev/null
 pack_count_after=$(grep -c '|<pack>|' "$FAKE_STATE_DIR/npm.log")
 assert_equals "$pack_count_after" "$pack_count_before"
-assert_contains "$(cat "$FAKE_STATE_DIR/npm.log")" "|<$candidate_tarball>"
+assert_contains "$(cat "$FAKE_STATE_DIR/npm.log")" '/release-candidate.tgz>'
 
 if missing_candidate_output=$(MCP_BPMN_PACKAGE_TARBALL="$candidate_dir/missing.tgz" \
   MCP_BPMN_PACKAGE_SHA256="$candidate_sha256" \

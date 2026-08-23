@@ -609,10 +609,12 @@ try {
   if (!installedBinTarget.startsWith(`${realpathSync(installedPackageRoot)}/`)) {
     throw new Error(`Installed executable resolves outside its private package: ${installedBinTarget}`);
   }
+  const consumerProject = join(temporaryRoot, 'consumer-project');
+  mkdirSync(consumerProject);
   const packagedResult = await runMcpSession(
     installedBin,
     [],
-    installRoot,
+    consumerProject,
     [
       { method: 'tools/list', params: {} },
       {
@@ -620,6 +622,13 @@ try {
         params: {
           name: 'new_bpmn',
           arguments: { name: 'Packaged XML smoke' }
+        }
+      },
+      {
+        method: 'tools/call',
+        params: {
+          name: 'auto_layout',
+          arguments: { algorithm: 'horizontal' }
         }
       },
       {
@@ -647,14 +656,20 @@ try {
   );
 
   const createResult = packagedResult.results[1];
-  const xmlResult = packagedResult.results[2];
-  const svgResult = packagedResult.results[3];
+  const layoutResult = packagedResult.results[2];
+  const xmlResult = packagedResult.results[3];
+  const svgResult = packagedResult.results[4];
   if (createResult?.isError
+    || layoutResult?.isError
     || xmlResult?.isError
     || !xmlResult?.content?.some(item => (
       item.type === 'text' && item.text.includes('<bpmn:definitions')
     ))) {
-    throw new Error('Packaged executable could not create and export BPMN XML without Chrome');
+    const layoutDiagnostic = layoutResult?.content?.find(item => item.type === 'text')?.text ?? '';
+    throw new Error(
+      'Packaged executable could not create, auto-layout, and export BPMN XML '
+      + `from a consumer repository: ${layoutDiagnostic}`
+    );
   }
   const svgDiagnostic = svgResult?.content?.find(item => item.type === 'text')?.text ?? '';
   if (!svgResult?.isError
