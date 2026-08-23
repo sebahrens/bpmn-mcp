@@ -1,13 +1,57 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  readdirSync,
+  rmSync
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, normalize } from 'node:path';
+import { join, normalize, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 
 const projectRoot = process.cwd();
+const suppliedTarballSource = process.env.MCP_BPMN_PACKAGE_TARBALL
+  ? realpathSync(resolve(projectRoot, process.env.MCP_BPMN_PACKAGE_TARBALL))
+  : undefined;
+const temporaryRoot = mkdtempSync(join(tmpdir(), 'mcp-bpmn-package-'));
+const suppliedTarball = suppliedTarballSource
+  ? join(temporaryRoot, 'release-candidate.tgz')
+  : undefined;
+if (suppliedTarballSource && suppliedTarball) {
+  copyFileSync(suppliedTarballSource, suppliedTarball);
+  const expectedDigest = process.env.MCP_BPMN_PACKAGE_SHA256?.toLowerCase();
+  const actualDigest = createHash('sha256')
+    .update(readFileSync(suppliedTarball))
+    .digest('hex');
+  if (!expectedDigest || !/^[a-f0-9]{64}$/.test(expectedDigest)
+    || actualDigest !== expectedDigest) {
+    throw new Error('Supplied release tarball does not match MCP_BPMN_PACKAGE_SHA256');
+  }
+}
+const npmEnvironment = {
+  ...process.env,
+  npm_config_cache: join(temporaryRoot, 'npm-cache')
+};
+process.once('exit', () => {
+  rmSync(temporaryRoot, { recursive: true, force: true });
+});
 const packageMetadata = JSON.parse(
   readFileSync(join(projectRoot, 'package.json'), 'utf8')
+);
+const mcpMetadata = JSON.parse(
+  readFileSync(join(projectRoot, 'mcp.json'), 'utf8')
+);
+const claudePluginMetadata = JSON.parse(
+  readFileSync(join(projectRoot, '.claude-plugin', 'plugin.json'), 'utf8')
+);
+const shrinkwrapMetadata = JSON.parse(
+  readFileSync(join(projectRoot, 'npm-shrinkwrap.json'), 'utf8')
 );
 const readme = readFileSync(join(projectRoot, 'README.md'), 'utf8');
 const license = readFileSync(join(projectRoot, 'LICENSE'), 'utf8');
@@ -105,22 +149,116 @@ if (packageMetadata.main !== undefined || packageMetadata.exports !== undefined)
   throw new Error('The CLI-only package must not declare importable library entrypoints');
 }
 
-execFileSync('npm', ['run', 'clean'], { cwd: projectRoot, stdio: 'pipe' });
+execFileSync('npm', ['run', 'clean'], {
+  cwd: projectRoot,
+  env: npmEnvironment,
+  stdio: 'pipe'
+});
 
 const dryRun = JSON.parse(
   execFileSync('npm', ['pack', '--dry-run', '--json'], {
     cwd: projectRoot,
     encoding: 'utf8',
+    env: npmEnvironment,
   })
 )[0];
 const packedFiles = new Set(dryRun.files.map(({ path }) => normalize(path)));
 
-const packedKilobytes = Math.round(dryRun.size / 1000);
-if (!readme.includes(`approximately \`${packedKilobytes} kB\` compressed`)
-  || !readme.includes(`\`${dryRun.unpackedSize}\` unpacked bytes`)) {
-  throw new Error(
-    `README package measurement is stale; expected approximately ${packedKilobytes} kB compressed and ${dryRun.unpackedSize} unpacked bytes`
-  );
+const expectedPackageIncludes = [
+  'dist',
+  'bin',
+  'mcp.json',
+  'skills',
+  'evals',
+  '.codex-plugin',
+  '.claude-plugin',
+  '.mcp.json',
+  'npm-shrinkwrap.json',
+  'THIRD_PARTY_NOTICES.md'
+];
+for (const includedPath of expectedPackageIncludes) {
+  if (!packageMetadata.files?.includes(includedPath)) {
+    throw new Error(`package.json files is missing release path: ${includedPath}`);
+  }
+}
+
+const requiredPackagedFiles = [
+  'package.json',
+  'README.md',
+  'LICENSE',
+  'THIRD_PARTY_NOTICES.md',
+  'npm-shrinkwrap.json',
+  'mcp.json',
+  '.codex-plugin/plugin.json',
+  '.claude-plugin/plugin.json',
+  '.mcp.json',
+  'bin/mcp-bpmn-plugin-server',
+  'skills/bpmn-modeler/SKILL.md',
+  'skills/bpmn-modeler/agents/openai.yaml',
+  'evals/bpmn-modeler/cases.json',
+  'dist/server/index.js'
+];
+for (const requiredFile of requiredPackagedFiles) {
+  if (!packedFiles.has(requiredFile)) {
+    throw new Error(`Published package is missing required file: ${requiredFile}`);
+  }
+}
+
+function collectFiles(directory, relativeDirectory = directory) {
+  if (!existsSync(join(projectRoot, directory))) return [];
+
+  return readdirSync(join(projectRoot, directory), { withFileTypes: true })
+    .flatMap(entry => {
+      const relativePath = join(relativeDirectory, entry.name);
+      return entry.isDirectory()
+        ? collectFiles(join(directory, entry.name), relativePath)
+        : [normalize(relativePath)];
+    });
+}
+
+for (const distributionDirectory of ['skills', 'evals', '.codex-plugin', '.claude-plugin']) {
+  for (const sourceFile of collectFiles(distributionDirectory)) {
+    if (!packedFiles.has(sourceFile)) {
+      throw new Error(`Release file is present in the repository but not packaged: ${sourceFile}`);
+    }
+  }
+}
+
+for (const manifestPath of [
+  '.codex-plugin/plugin.json',
+  '.claude-plugin/plugin.json'
+]) {
+  if (!existsSync(join(projectRoot, manifestPath))) continue;
+  const manifest = JSON.parse(readFileSync(join(projectRoot, manifestPath), 'utf8'));
+  if (manifest.version !== packageMetadata.version) {
+    throw new Error(
+      `${manifestPath} version ${String(manifest.version)} differs from package version ${packageMetadata.version}`
+    );
+  }
+}
+
+const packagedMcpServer = mcpMetadata.mcpServers?.['mcp-bpmn'];
+if (packagedMcpServer?.command !== 'mcp-bpmn-server'
+  || JSON.stringify(packagedMcpServer.args) !== '[]') {
+  throw new Error('mcp.json must launch the stable installed mcp-bpmn-server executable');
+}
+
+const claudeMcpServer = claudePluginMetadata.mcpServers?.['mcp-bpmn'];
+if (Object.keys(claudePluginMetadata.mcpServers ?? {}).length !== 1
+  || claudeMcpServer?.command !== 'node'
+  || JSON.stringify(claudeMcpServer.args)
+    !== JSON.stringify(['${CLAUDE_PLUGIN_ROOT}/dist/server/index.js'])
+  || claudeMcpServer.env !== undefined) {
+  throw new Error('Claude plugin must define one cache-relative MCP server and no cache-local state');
+}
+if (claudePluginMetadata.skills !== undefined
+  || claudePluginMetadata.commands !== undefined
+  || existsSync(join(projectRoot, 'commands'))) {
+  throw new Error('Claude plugin must use automatic skills/ discovery without legacy commands');
+}
+if (JSON.stringify(shrinkwrapMetadata.packages?.['']?.dependencies)
+  !== JSON.stringify(packageMetadata.dependencies)) {
+  throw new Error('npm-shrinkwrap.json root dependencies differ from package.json');
 }
 
 const builtToolsUrl = pathToFileURL(join(projectRoot, 'dist', 'server', 'tools.js')).href;
@@ -139,38 +277,60 @@ for (const entrypoint of declaredEntrypoints) {
   }
 }
 
-if (!packedFiles.has('THIRD_PARTY_NOTICES.md')) {
-  throw new Error('Published package is missing THIRD_PARTY_NOTICES.md');
-}
-
-if (!packedFiles.has('LICENSE')) {
-  throw new Error('Published package is missing the project MIT LICENSE');
-}
-
 for (const entrypoint of declaredEntrypoints) {
   if (!packedFiles.has(entrypoint)) {
     throw new Error(`Declared package entrypoint is not published: ${entrypoint}`);
   }
 }
 
-const unnecessaryRoots = ['.beads/', 'scripts/', 'src/', 'tests/'];
+const allowedPackagedFiles = new Set([
+  'package.json',
+  'README.md',
+  'LICENSE',
+  'THIRD_PARTY_NOTICES.md',
+  'npm-shrinkwrap.json',
+  'mcp.json',
+  '.mcp.json'
+]);
+const allowedPackagedRoots = [
+  'dist/',
+  'bin/',
+  'skills/',
+  'evals/',
+  '.codex-plugin/',
+  '.claude-plugin/'
+];
 for (const packedFile of packedFiles) {
-  if (unnecessaryRoots.some((root) => packedFile.startsWith(root))) {
-    throw new Error(`Unnecessary development file is published: ${packedFile}`);
+  if (!allowedPackagedFiles.has(packedFile)
+    && !allowedPackagedRoots.some(root => packedFile.startsWith(root))) {
+    throw new Error(`Unexpected repository file is published: ${packedFile}`);
+  }
+  if (/(^|[/\\])(\.env(?:\.|$)|credentials?(?:\.|$)|id_rsa(?:\.|$))|\.(?:key|pem|p12)$/i
+    .test(packedFile)) {
+    throw new Error(`Potential secret file is published: ${packedFile}`);
   }
 }
 
-function initialize(command, args, cwd) {
+function runMcpSession(
+  command,
+  args,
+  cwd,
+  requests = [{ method: 'tools/list', params: {} }],
+  environment = process.env
+) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
       detached: process.platform !== 'win32',
+      env: environment,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
     let stderr = '';
     let settled = false;
     let initializeResult;
+    const results = [];
+    let nextRequestIndex = 0;
 
     const stop = () => {
       if (child.exitCode !== null) {
@@ -223,21 +383,22 @@ function initialize(command, args, cwd) {
                 jsonrpc: '2.0',
                 method: 'notifications/initialized'
               })}\n`);
-              child.stdin.write(`${JSON.stringify({
-                jsonrpc: '2.0',
-                id: 2,
-                method: 'tools/list',
-                params: {}
-              })}\n`);
+              sendNextRequest();
             }
-          } else if (response.id === 2) {
+          } else if (Number.isSafeInteger(response.id) && response.id >= 2) {
             if (response.error) {
-              finish(new Error(`tools/list failed: ${JSON.stringify(response.error)}`));
+              finish(new Error(`MCP request failed: ${JSON.stringify(response.error)}`));
             } else {
-              finish(undefined, {
-                initializeResult,
-                tools: response.result?.tools
-              });
+              results[response.id - 2] = response.result;
+              if (nextRequestIndex < requests.length) {
+                sendNextRequest();
+              } else {
+                finish(undefined, {
+                  initializeResult,
+                  results,
+                  tools: results[0]?.tools
+                });
+              }
             }
           }
         } catch {
@@ -258,7 +419,14 @@ function initialize(command, args, cwd) {
 
     const timeout = setTimeout(() => {
       finish(new Error(`Timed out waiting for initialize response: ${stderr}`));
-    }, 15_000);
+    }, 30_000);
+
+    function sendNextRequest() {
+      const request = requests[nextRequestIndex];
+      const id = nextRequestIndex + 2;
+      nextRequestIndex += 1;
+      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, ...request })}\n`);
+    }
 
     child.stdin.write(`${JSON.stringify({
       jsonrpc: '2.0',
@@ -276,39 +444,76 @@ function initialize(command, args, cwd) {
   });
 }
 
-const temporaryRoot = mkdtempSync(join(tmpdir(), 'mcp-bpmn-package-'));
-
 try {
   execFileSync('npm', ['run', 'build:bundle'], {
     cwd: projectRoot,
+    env: npmEnvironment,
     stdio: 'pipe'
   });
 
-  const sourceTreeResult = await initialize(
+  const sourceTreeResult = await runMcpSession(
     'npm',
     ['start', '--silent'],
-    projectRoot
+    projectRoot,
+    undefined,
+    npmEnvironment
   );
-  const bundledResult = await initialize(
+  const bundledResult = await runMcpSession(
     'npm',
     ['run', 'start:bundle', '--silent'],
-    projectRoot
+    projectRoot,
+    undefined,
+    npmEnvironment
   );
 
-  const packResult = JSON.parse(
-    execFileSync('npm', ['pack', '--json', '--pack-destination', temporaryRoot], {
+  let tarballPath;
+  let packedVersion;
+  let actualPackedFiles;
+  if (suppliedTarball) {
+    tarballPath = suppliedTarball;
+    const tarEntries = execFileSync('tar', ['-tzf', tarballPath], {
       cwd: projectRoot,
-      encoding: 'utf8',
-    })
-  )[0];
-  const tarballPath = join(temporaryRoot, packResult.filename);
+      encoding: 'utf8'
+    }).trim().split('\n');
+    actualPackedFiles = new Set(tarEntries
+      .filter(entry => entry.startsWith('package/') && !entry.endsWith('/'))
+      .map(entry => normalize(entry.slice('package/'.length))));
+    const packedMetadata = JSON.parse(
+      execFileSync('tar', ['-xOzf', tarballPath, 'package/package.json'], {
+        cwd: projectRoot,
+        encoding: 'utf8'
+      })
+    );
+    packedVersion = packedMetadata.version;
+  } else {
+    const packResult = JSON.parse(
+      execFileSync('npm', ['pack', '--json', '--pack-destination', temporaryRoot], {
+        cwd: projectRoot,
+        encoding: 'utf8',
+        env: npmEnvironment,
+      })
+    )[0];
+    tarballPath = join(temporaryRoot, packResult.filename);
+    packedVersion = packResult.version;
+    actualPackedFiles = new Set(
+      packResult.files.map(({ path }) => normalize(path))
+    );
+  }
+  if (JSON.stringify([...actualPackedFiles].sort())
+    !== JSON.stringify([...packedFiles].sort())) {
+    throw new Error('Packed tarball contents differ from npm pack --dry-run inspection');
+  }
+  if (packedVersion !== packageMetadata.version) {
+    throw new Error(
+      `Packed tarball version ${String(packedVersion)} differs from package version ${packageMetadata.version}`
+    );
+  }
   const installRoot = join(temporaryRoot, 'install');
   mkdirSync(installRoot);
   execFileSync(
     'npm',
     [
       'install',
-      '--ignore-scripts',
       '--omit=dev',
       '--no-audit',
       '--no-fund',
@@ -316,7 +521,14 @@ try {
       installRoot,
       tarballPath,
     ],
-    { cwd: projectRoot, stdio: 'pipe' }
+    {
+      cwd: temporaryRoot,
+      env: {
+        ...npmEnvironment,
+        PUPPETEER_SKIP_DOWNLOAD: 'true'
+      },
+      stdio: 'pipe'
+    }
   );
 
   const installedPackageRoot = join(
@@ -326,6 +538,9 @@ try {
   );
   const installedPackageMetadata = JSON.parse(
     readFileSync(join(installedPackageRoot, 'package.json'), 'utf8')
+  );
+  const installedMcpMetadata = JSON.parse(
+    readFileSync(join(installedPackageRoot, 'mcp.json'), 'utf8')
   );
   const installedLicense = readFileSync(join(installedPackageRoot, 'LICENSE'), 'utf8');
   const installedBpmnJsRoot = join(installRoot, 'node_modules', 'bpmn-js');
@@ -340,10 +555,30 @@ try {
   const requiredWatermarkClause =
     'The source code responsible for displaying the bpmn.io project watermark';
 
+  if (installedPackageMetadata.version !== packageMetadata.version) {
+    throw new Error(
+      `Installed package version ${String(installedPackageMetadata.version)} differs from source package version ${packageMetadata.version}`
+    );
+  }
+  for (const dependencyName of Object.keys(packageMetadata.dependencies)) {
+    const dependencyPackage = join(
+      installRoot,
+      'node_modules',
+      ...dependencyName.split('/'),
+      'package.json'
+    );
+    if (!existsSync(dependencyPackage)) {
+      throw new Error(`Production dependency is missing from the private prefix: ${dependencyName}`);
+    }
+  }
+
   for (const [field, expected] of Object.entries(expectedProvenance)) {
     if (JSON.stringify(installedPackageMetadata[field]) !== JSON.stringify(expected)) {
       throw new Error(`Installed package has incorrect ${field} provenance metadata`);
     }
+  }
+  if (JSON.stringify(installedMcpMetadata) !== JSON.stringify(mcpMetadata)) {
+    throw new Error('Installed mcp.json differs from the inspected package adapter metadata');
   }
   if (!installedLicense.includes('MIT License')
     || !installedLicense.includes('Copyright (c) 2025 Alice V.')
@@ -364,47 +599,69 @@ try {
     throw new Error('Published bpmn-js license notice is missing or changed');
   }
 
-  const rendererModuleUrl = pathToFileURL(
-    join(installedPackageRoot, 'dist', 'core', 'BpmnSvgRenderer.js')
-  ).href;
-  const { BpmnSvgRenderer } = await import(rendererModuleUrl);
-  const fixture = readFileSync(
-    join(projectRoot, 'tests', 'fixtures', 'simple-process.bpmn'),
-    'utf8'
-  );
-  const packagedSvg = await new BpmnSvgRenderer().render(fixture);
-  const packagedLinks = [...packagedSvg.matchAll(/\shref="([^"]+)"/gi)]
-    .map((match) => match[1]);
-  const viewBox = packagedSvg.match(/\bviewBox="([^"]+)"/)?.[1]
-    .trim()
-    .split(/[ ,]+/)
-    .map(Number);
-  const attributionBounds = packagedSvg.match(
-    /<a id="bpmn-io-attribution"[^>]*><rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)" fill="#fff"\/>/
-  )?.slice(1).map(Number);
-  const attributionIsContained = viewBox?.length === 4
-    && attributionBounds?.length === 4
-    && attributionBounds[0] >= viewBox[0]
-    && attributionBounds[1] >= viewBox[1]
-    && attributionBounds[0] + attributionBounds[2] <= viewBox[0] + viewBox[2]
-    && attributionBounds[1] + attributionBounds[3] <= viewBox[1] + viewBox[3];
-
-  if (!packagedSvg.includes('id="bpmn-io-attribution"')
-    || !packagedSvg.includes('aria-label="Powered by bpmn.io"')
-    || !packagedSvg.includes('viewBox="0 0 14.02 5.57" width="53" height="21"')
-    || JSON.stringify(packagedLinks) !== JSON.stringify(['https://bpmn.io'])
-    || !attributionIsContained
-    || !/<a id="bpmn-io-attribution"[\s\S]*<\/a><\/svg>$/.test(packagedSvg)) {
-    throw new Error('Packed SVG renderer did not preserve the safe bpmn.io attribution');
-  }
-
   const installedBin = join(
     installRoot,
     'node_modules',
     '.bin',
     'mcp-bpmn-server'
   );
-  const packagedResult = await initialize(installedBin, [], installRoot);
+  const installedBinTarget = realpathSync(installedBin);
+  if (!installedBinTarget.startsWith(`${realpathSync(installedPackageRoot)}/`)) {
+    throw new Error(`Installed executable resolves outside its private package: ${installedBinTarget}`);
+  }
+  const packagedResult = await runMcpSession(
+    installedBin,
+    [],
+    installRoot,
+    [
+      { method: 'tools/list', params: {} },
+      {
+        method: 'tools/call',
+        params: {
+          name: 'new_bpmn',
+          arguments: { name: 'Packaged XML smoke' }
+        }
+      },
+      {
+        method: 'tools/call',
+        params: {
+          name: 'export',
+          arguments: { format: 'xml' }
+        }
+      },
+      {
+        method: 'tools/call',
+        params: {
+          name: 'export',
+          arguments: { format: 'svg' }
+        }
+      }
+    ],
+    {
+      ...process.env,
+      MCP_BPMN_DIAGRAMS_PATH: join(temporaryRoot, 'diagrams'),
+      NODE_PATH: '',
+      PUPPETEER_CACHE_DIR: join(temporaryRoot, 'empty-puppeteer-cache'),
+      PUPPETEER_EXECUTABLE_PATH: join(temporaryRoot, 'missing-chrome')
+    }
+  );
+
+  const createResult = packagedResult.results[1];
+  const xmlResult = packagedResult.results[2];
+  const svgResult = packagedResult.results[3];
+  if (createResult?.isError
+    || xmlResult?.isError
+    || !xmlResult?.content?.some(item => (
+      item.type === 'text' && item.text.includes('<bpmn:definitions')
+    ))) {
+    throw new Error('Packaged executable could not create and export BPMN XML without Chrome');
+  }
+  const svgDiagnostic = svgResult?.content?.find(item => item.type === 'text')?.text ?? '';
+  if (!svgResult?.isError
+    || !svgDiagnostic.includes('SVG export requires Chrome or Chromium')
+    || !svgDiagnostic.includes('PUPPETEER_EXECUTABLE_PATH')) {
+    throw new Error(`Packaged SVG prerequisite diagnostic was not actionable: ${svgDiagnostic}`);
+  }
 
   if (sourceTreeResult.initializeResult.serverInfo.version !== packageMetadata.version) {
     throw new Error(

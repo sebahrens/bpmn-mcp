@@ -1,0 +1,39 @@
+{
+  "name": "mcp-bpmn",
+  "version": "0.2.0",
+  "description": "Create, inspect, edit, validate, lay out, and export BPMN diagrams with a bundled local MCP server.",
+  "author": {
+    "name": "Alice V.",
+    "email": "ooisee@gmail.com",
+    "url": "https://github.com/oisee"
+  },
+  "homepage": "https://github.com/oisee/mcp-bpmn#readme",
+  "repository": "https://github.com/oisee/mcp-bpmn",
+  "license": "MIT",
+  "keywords": [
+    "bpmn",
+    "diagramming",
+    "mcp",
+    "workflow"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "MCP BPMN",
+    "shortDescription": "Create and edit validated BPMN diagrams",
+    "longDescription": "Model BPMN processes and collaborations with typed tools for inspection, editing, validation, layout, and XML or SVG export.",
+    "developerName": "Alice V.",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/oisee/mcp-bpmn",
+    "defaultPrompt": [
+      "Create and validate a BPMN diagram for this workflow.",
+      "Review the current BPMN diagram for modeling problems.",
+      "Open a BPMN file, make the requested changes, and export SVG."
+    ]
+  }
+}

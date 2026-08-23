@@ -321,10 +321,16 @@ function updateDerivedContainerBounds(
 
 function paddedBounds(bounds: LayoutBounds[]): LayoutBounds {
   if (bounds.length === 0) return { x: 0, y: 0, width: 0, height: 0 };
-  const minX = Math.min(...bounds.map(item => item.x));
-  const minY = Math.min(...bounds.map(item => item.y));
-  const maxX = Math.max(...bounds.map(item => item.x + item.width));
-  const maxY = Math.max(...bounds.map(item => item.y + item.height));
+  const minX = bounds.reduce((minimum, item) => Math.min(minimum, item.x), Infinity);
+  const minY = bounds.reduce((minimum, item) => Math.min(minimum, item.y), Infinity);
+  const maxX = bounds.reduce(
+    (maximum, item) => Math.max(maximum, item.x + item.width),
+    -Infinity
+  );
+  const maxY = bounds.reduce(
+    (maximum, item) => Math.max(maximum, item.y + item.height),
+    -Infinity
+  );
   return { x: minX - 20, y: minY - 20, width: maxX - minX + 40, height: maxY - minY + 40 };
 }
 

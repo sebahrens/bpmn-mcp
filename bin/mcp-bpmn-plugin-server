@@ -1,0 +1,18 @@
+#!/bin/sh
+
+set -eu
+
+if [ -n "${XDG_DATA_HOME:-}" ]; then
+  install_root=$XDG_DATA_HOME/mcp-bpmn
+else
+  install_root=$HOME/.local/share/mcp-bpmn
+fi
+server_bin=$install_root/app/node_modules/.bin/mcp-bpmn-server
+
+if [ ! -x "$server_bin" ]; then
+  printf '%s\n' \
+    "mcp-bpmn-server is not installed at $server_bin; run 'make install-codex' from an mcp-bpmn release checkout" >&2
+  exit 1
+fi
+
+exec "$server_bin"

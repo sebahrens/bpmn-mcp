@@ -40,6 +40,8 @@ const RENDERER_DOCUMENT = `<!doctype html>
 export class BpmnSvgRenderer {
   private activeRenders = 0;
   private readonly browsers = new Set<Browser>();
+  private browser: Browser | undefined;
+  private browserLaunch: Promise<Browser> | undefined;
   private closed = false;
 
   constructor(
@@ -62,12 +64,7 @@ export class BpmnSvgRenderer {
     this.activeRenders += 1;
 
     try {
-      const browser = await this.launchBrowser();
-      if (this.closed) {
-        await browser.close().catch(() => undefined);
-        throw new Error('SVG renderer is closed');
-      }
-      this.browsers.add(browser);
+      const browser = await this.getBrowser();
       return await this.renderWithBrowser(browser, xml);
     } finally {
       this.activeRenders -= 1;
@@ -76,32 +73,47 @@ export class BpmnSvgRenderer {
 
   async close(): Promise<void> {
     this.closed = true;
-    await Promise.all(Array.from(this.browsers, browser => (
-      browser.close().catch(() => undefined)
-    )));
+    const browser = this.browser;
+    const browserLaunch = this.browserLaunch;
+
+    await Promise.all([
+      ...Array.from(this.browsers, launched => launched.close().catch(() => undefined)),
+      browserLaunch?.then(launched => (
+        launched === browser || this.browsers.has(launched)
+          ? undefined
+          : launched.close().catch(() => undefined)
+      )).catch(() => undefined)
+    ]);
+
+    this.browsers.clear();
+    this.browser = undefined;
+    this.browserLaunch = undefined;
   }
 
   private async renderWithBrowser(browser: Browser, xml: string): Promise<string> {
     let renderTimeout: NodeJS.Timeout | undefined;
+    let browserClose: Promise<void> | undefined;
 
     try {
       const timeout = new Promise<never>((_resolve, reject) => {
         renderTimeout = setTimeout(() => {
           reject(new Error(`SVG rendering exceeded ${this.renderTimeoutMs}ms`));
-          void browser.close().catch(() => undefined);
+          this.invalidateBrowser(browser);
+          browserClose = browser.close().catch(() => undefined);
         }, this.renderTimeoutMs);
       });
 
       return await Promise.race([this.renderPage(browser, xml), timeout]);
     } finally {
       if (renderTimeout) clearTimeout(renderTimeout);
-      await browser.close().catch(() => undefined);
-      this.browsers.delete(browser);
+      await browserClose;
     }
   }
 
   private async renderPage(browser: Browser, xml: string): Promise<string> {
-      const page = await browser.newPage();
+    const page = await browser.newPage();
+
+    try {
       let blockedExternalRequest = false;
 
       await page.setRequestInterception(true);
@@ -259,6 +271,57 @@ export class BpmnSvgRenderer {
       }
 
       return normalizeMarkerIds(renderedSvg);
+    } finally {
+      await page.close().catch(() => undefined);
+    }
+  }
+
+  private async getBrowser(): Promise<Browser> {
+    if (this.closed) {
+      throw new Error('SVG renderer is closed');
+    }
+
+    if (this.browser?.connected) {
+      return this.browser;
+    }
+    this.browser = undefined;
+
+    const browserLaunch = this.browserLaunch ?? this.launchBrowser();
+    this.browserLaunch = browserLaunch;
+
+    let browser: Browser;
+    try {
+      browser = await browserLaunch;
+    } catch (error) {
+      if (this.browserLaunch === browserLaunch) this.browserLaunch = undefined;
+      throw error;
+    }
+
+    if (this.browserLaunch === browserLaunch) this.browserLaunch = undefined;
+    if (this.closed) {
+      await browser.close().catch(() => undefined);
+      throw new Error('SVG renderer is closed');
+    }
+    if (!browser.connected) {
+      return this.getBrowser();
+    }
+    if (this.browser === browser) {
+      return browser;
+    }
+
+    this.browser = browser;
+    this.browsers.add(browser);
+    browser.once('disconnected', () => {
+      this.invalidateBrowser(browser);
+      this.browsers.delete(browser);
+    });
+    return browser;
+  }
+
+  private invalidateBrowser(browser: Browser): void {
+    if (this.browser === browser) {
+      this.browser = undefined;
+    }
   }
 
   private async launchBrowser(): Promise<Browser> {
@@ -274,7 +337,17 @@ export class BpmnSvgRenderer {
     };
     const executablePath = await resolveBrowserExecutable();
     if (executablePath) options.executablePath = executablePath;
-    return puppeteer.launch(options);
+    try {
+      return await puppeteer.launch(options);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        'SVG export requires Chrome or Chromium. Install Puppeteer\'s managed browser '
+        + 'or set PUPPETEER_EXECUTABLE_PATH to a working executable. '
+        + `Browser launch failed: ${detail}`,
+        { cause: error }
+      );
+    }
   }
 }
 

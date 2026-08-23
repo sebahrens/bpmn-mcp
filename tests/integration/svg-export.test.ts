@@ -1,7 +1,9 @@
 import { BpmnRequestHandler } from '../../src/server/handlers.js';
+import { BpmnSvgRenderer } from '../../src/core/BpmnSvgRenderer.js';
 import { diagramContext } from '../../src/core/DiagramContext.js';
 import { SimpleBpmnEngine } from '../../src/core/SimpleBpmnEngine.js';
 import { IdGenerator } from '../../src/utils/IdGenerator.js';
+import { jest } from '@jest/globals';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
@@ -34,7 +36,7 @@ describe('SVG export integration', () => {
   });
 
   afterEach(async () => {
-    diagramContext.clear();
+    await handler.shutdown();
     await sandbox?.cleanup();
     sandbox = undefined;
   });
@@ -123,5 +125,30 @@ describe('SVG export integration', () => {
       text: 'Error: SVG renderer concurrency limit reached'
     });
     expect(concurrent.find(item => !item.isError)?.content[0].type).toBe('resource');
+  }, 15_000);
+
+  it('reuses one browser without leaking render pages until shutdown', async () => {
+    const launchBrowser = jest.spyOn(
+      BpmnSvgRenderer.prototype as unknown as {
+        launchBrowser(): Promise<import('puppeteer').Browser>;
+      },
+      'launchBrowser'
+    );
+
+    const first = await handler.handleRequest('export', { format: 'svg' });
+    expect(first.isError).toBeUndefined();
+    expect(launchBrowser).toHaveBeenCalledTimes(1);
+
+    const browser = await launchBrowser.mock.results[0].value;
+    const pageCount = (await browser.pages()).length;
+    const second = await handler.handleRequest('export', { format: 'svg' });
+
+    expect(second.isError).toBeUndefined();
+    expect(launchBrowser).toHaveBeenCalledTimes(1);
+    expect(await browser.pages()).toHaveLength(pageCount);
+    expect(browser.connected).toBe(true);
+
+    await handler.shutdown();
+    expect(browser.connected).toBe(false);
   }, 15_000);
 });

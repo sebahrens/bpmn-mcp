@@ -106,6 +106,118 @@ For an MCP client, use the absolute value of
 `$consumer_dir/node_modules/.bin/mcp-bpmn-server` as `command` and an empty
 `args` array. The package is a CLI, not an importable JavaScript library.
 
+### Develop the Codex plugin locally
+
+The release artifact is also a Codex plugin. Its manifest discovers the
+canonical `skills/bpmn-modeler` skill and starts one `mcp-bpmn` stdio server
+through a launcher copied into the plugin cache. The launcher uses the stable
+private release installed by `make install-codex`; it does not execute
+TypeScript or depend on the checkout after installation.
+
+Build the release artifact, add this checkout as a temporary repo marketplace,
+and install the plugin with:
+
+```bash
+npm ci
+npm run build
+make install-codex
+codex plugin marketplace add .
+codex plugin list --available
+codex plugin add mcp-bpmn@mcp-bpmn-local
+```
+
+Start a new Codex conversation after installation so the skill and MCP tools
+are loaded. The bundled server defaults to `writes` approval mode: tools marked
+read-only can run automatically, while diagram mutations remain visible for
+approval. Remove the development installation with:
+
+```bash
+codex plugin remove mcp-bpmn@mcp-bpmn-local
+codex plugin marketplace remove mcp-bpmn-local
+```
+
+Run the isolated marketplace, cache, discovery, MCP startup, and removal smoke
+without changing the real Codex configuration:
+
+```bash
+npm run test:codex-plugin
+```
+
+### Develop the Claude Code plugin locally
+
+The release artifact is also a Claude Code plugin. Claude discovers the
+canonical `skills/bpmn-modeler/SKILL.md` as the namespaced
+`/mcp-bpmn:bpmn-modeler` skill and starts the inline `mcp-bpmn` server from the
+plugin cache. The plugin uses `skills/`; it does not carry a legacy `commands/`
+copy.
+
+From a source checkout, install dependencies, build, validate, and load the
+plugin for one development session:
+
+```bash
+npm ci
+npm run build
+claude plugin validate .
+claude --plugin-dir .
+```
+
+Inside Claude Code, use `/mcp` to confirm the plugin-provided server, invoke
+`/mcp-bpmn:bpmn-modeler` to inspect the skill, and run `/reload-plugins` after
+changing the manifest or MCP configuration. The checkout contains a root
+`CLAUDE.md` for repository contributors, so source validation reports that it
+is not plugin context; the command still succeeds. The packed plugin excludes
+that repository-only file and passes strict validation.
+
+Run the complete local marketplace smoke with:
+
+```bash
+npm run test:claude-plugin
+```
+
+That check uses a temporary Claude home and marketplace. It installs a copied
+release artifact, checks Claude's component inventory, launches the cached MCP
+server, exercises a reload, and then disables, enables, and removes the plugin.
+It does not change the developer's real Claude configuration.
+
+Diagrams are never written into `${CLAUDE_PLUGIN_ROOT}`. They remain in
+`MCP_BPMN_DIAGRAMS_PATH` when set, or in `~/mcp-bpmn` by default, so plugin
+reloads, updates, disablement, and removal do not delete them. Before switching
+from a manual Claude MCP registration to the plugin, inspect `claude mcp list`
+and remove the old `mcp-bpmn` registration if its command differs from the
+plugin endpoint; Claude only deduplicates plugin and user servers that resolve
+to the same command.
+
+### Evaluate agent workflows
+
+The canonical machine-readable corpus is
+`evals/bpmn-modeler/cases.json`. Both client adapters consume those exact
+prompts and semantic expectations. The deterministic check is safe for normal
+development and CI: it verifies activation boundaries, skill metadata, tool
+names, client parity, and the create/mutate/validate/layout/validate/export
+sequence without calling a model:
+
+```bash
+npm run test:evaluations
+```
+
+Authenticated model runs are opt-in. Build first, then select one bounded case
+while iterating:
+
+```bash
+npm run build
+npm run eval:codex -- --case direct-process-svg
+npm run eval:claude -- --case direct-process-svg
+```
+
+The Codex adapter runs `codex exec` in a temporary project containing the
+canonical skill and a project-scoped stdio MCP configuration. The Claude
+adapter materializes the same cases as native `claude plugin eval` cases in a
+temporary plugin copy. Both set `MCP_BPMN_DIAGRAMS_PATH` to a temporary
+directory, copy only declared setup fixtures there, and remove the directory
+afterward; they never read, overwrite, or delete diagrams from the user's real
+store. Omit `--case` to run the complete corpus. These commands can consume
+model quota and are intentionally excluded from `npm run check` and CI.
+
 ### Optional CommonJS bundle
 
 The CommonJS bundle is a separate source-checkout build and is not produced by
@@ -731,7 +843,7 @@ last successful state.
 - `SimpleBpmnEngine` - Canonical BPMN document mutation, persistence, and XML export
 - `BpmnSvgRenderer` - Isolated, browser-backed `bpmn-js` SVG rendering
 - `DiagramContext` - Stateful context management for current diagram
-- `AutoLayout` - Smart positioning algorithm with branch handling
+- `BpmnAutoLayoutV2Adapter` - BPMN auto-layout integration
 - `BpmnRequestHandler` - MCP request processing
 - `MermaidConverter` - Mermaid to BPMN conversion
 - `TypeMappings` - BPMN element type conversions

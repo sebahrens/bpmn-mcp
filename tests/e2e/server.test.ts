@@ -1498,8 +1498,23 @@ describe('MCP Server End-to-End Tests', () => {
         serverInfo: {
           name: 'mcp-bpmn-server',
           version: packageMetadata.version
-        }
+        },
+        instructions: expect.any(String)
       });
+      const instructions = initialize.instructions as string;
+      const portableBaseline = instructions.split('\n\n')[0];
+      expect(portableBaseline.length).toBeLessThanOrEqual(512);
+      expect(portableBaseline).toContain('one active BPMN diagram');
+      expect(portableBaseline).toContain('mutations auto-save');
+      expect(portableBaseline).toContain('element IDs returned');
+      expect(portableBaseline).toContain('configured diagram store');
+      expect(portableBaseline).toContain('explicit user confirmation');
+      expect(portableBaseline).toContain('destructively replacing');
+      expect(instructions).toContain('validate, then auto_layout, then validate again');
+      expect(instructions).toContain('while hasMore is true');
+      expect(instructions).toContain('offset + returnedCount');
+      expect(instructions).toContain('tools/list');
+      expect(instructions.length).toBeLessThanOrEqual(750);
 
       await sendNotification(launch.process, {
         jsonrpc: '2.0',
@@ -1576,21 +1591,37 @@ describe('MCP Server End-to-End Tests', () => {
         label: 'approve'
       });
 
-      expect(textContent(await callTool(launch, 11, 'auto_layout', {
+      const validationBeforeLayout = JSON.parse(textContent(
+        await callTool(launch, 11, 'validate', { level: 'full' })
+      )) as { valid: boolean; summary: string };
+      expect(validationBeforeLayout).toEqual(expect.objectContaining({
+        valid: true,
+        summary: expect.stringContaining('Validation passed')
+      }));
+
+      expect(textContent(await callTool(launch, 12, 'auto_layout', {
         algorithm: 'horizontal'
       }))).toContain('Applied horizontal auto-layout');
 
       const unsupportedLayout = expectProtocolSuccess(await sendRequest(launch, {
         jsonrpc: '2.0',
-        id: 12,
+        id: 13,
         method: 'tools/call',
         params: { name: 'auto_layout', arguments: { algorithm: 'vertical' } }
-      }), 12);
+      }), 13);
       expect(unsupportedLayout.isError).toBe(true);
       expect(textContent(unsupportedLayout)).toContain('algorithm: Invalid enum value');
       expect(textContent(unsupportedLayout)).not.toContain('Only horizontal layout algorithm');
 
-      const xml = textContent(await callTool(launch, 13, 'export', {
+      const validationAfterLayout = JSON.parse(textContent(
+        await callTool(launch, 14, 'validate', { level: 'full' })
+      )) as { valid: boolean; summary: string };
+      expect(validationAfterLayout).toEqual(expect.objectContaining({
+        valid: true,
+        summary: expect.stringContaining('Validation passed')
+      }));
+
+      const xml = textContent(await callTool(launch, 15, 'export', {
         format: 'xml',
         formatted: true
       }));
@@ -1634,11 +1665,11 @@ describe('MCP Server End-to-End Tests', () => {
 
       const submitFlow = flows.find(flow => flow.name === 'submit');
       expect(submitFlow).toBeDefined();
-      expect(textContent(await callTool(launch, 14, 'delete_element', {
+      expect(textContent(await callTool(launch, 16, 'delete_element', {
         elementId: submitFlow.id
       }))).toBe(`Deleted sequence flow ${submitFlow.id}`);
 
-      const deletedXml = textContent(await callTool(launch, 15, 'export', {
+      const deletedXml = textContent(await callTool(launch, 17, 'export', {
         format: 'xml',
         formatted: true
       }));
@@ -1654,25 +1685,25 @@ describe('MCP Server End-to-End Tests', () => {
 
       const unknownConnection = expectProtocolSuccess(await sendRequest(launch, {
         jsonrpc: '2.0',
-        id: 16,
+        id: 18,
         method: 'tools/call',
         params: { name: 'delete_element', arguments: { elementId: 'Flow_Missing' } }
-      }), 16);
+      }), 18);
       expect(unknownConnection).toEqual({
         content: [{ type: 'text', text: 'Error: Element Flow_Missing not found' }],
         isError: true
       });
-      expect(textContent(await callTool(launch, 17, 'export', {
+      expect(textContent(await callTool(launch, 19, 'export', {
         format: 'xml',
         formatted: true
       }))).toBe(deletedXml);
 
       const expectedToolError = expectProtocolSuccess(await sendRequest(launch, {
         jsonrpc: '2.0',
-        id: 18,
+        id: 20,
         method: 'tools/call',
         params: { name: 'invalid_tool_name', arguments: {} }
-      }), 18);
+      }), 20);
       expect(expectedToolError).toEqual({
         content: [{ type: 'text', text: 'Error: Unknown tool: invalid_tool_name' }],
         isError: true

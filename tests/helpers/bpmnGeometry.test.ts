@@ -115,6 +115,33 @@ describe('BPMN geometry oracle', () => {
     ]));
   });
 
+  it('reports connector crossings once with both edge IDs', async () => {
+    const xml = (await fixture('simple-process.bpmn'))
+      .replace(
+        '<di:waypoint x="188" y="120" />\n        <di:waypoint x="240" y="120" />',
+        '<di:waypoint x="200" y="200" />\n        <di:waypoint x="300" y="300" />'
+      )
+      .replace(
+        '<di:waypoint x="340" y="120" />\n        <di:waypoint x="392" y="120" />',
+        '<di:waypoint x="200" y="300" />\n        <di:waypoint x="300" y="200" />'
+      );
+    const report = await validateBpmnGeometry(xml);
+
+    expect(report.diagnostics.filter(item => item.code === 'EDGE_EDGE_CROSSING')).toEqual([
+      expect.objectContaining({ ids: ['Flow_1', 'Flow_2'] })
+    ]);
+  });
+
+  it('does not report connectors that only meet at a shared waypoint', async () => {
+    const xml = (await fixture('simple-process.bpmn')).replace(
+      '<di:waypoint x="340" y="120" />',
+      '<di:waypoint x="240" y="120" />'
+    );
+    const report = await validateBpmnGeometry(xml);
+
+    expect(report.diagnostics.map(item => item.code)).not.toContain('EDGE_EDGE_CROSSING');
+  });
+
   it('extracts label bounds and reports label-to-shape overlap', async () => {
     const xml = (await fixture('simple-process.bpmn')).replace(
       '        <di:waypoint x="240" y="120" />\n      </bpmndi:BPMNEdge>',
@@ -127,6 +154,40 @@ describe('BPMN geometry oracle', () => {
     ]));
     expect(report.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'LABEL_OVERLAP', ids: ['Flow_1', 'Task_1'] })
+    ]));
+  });
+
+  it('reports overlapping labels with both owner IDs', async () => {
+    const xml = (await fixture('simple-process.bpmn'))
+      .replace(
+        '        <di:waypoint x="240" y="120" />\n      </bpmndi:BPMNEdge>',
+        '        <di:waypoint x="240" y="120" />\n        <bpmndi:BPMNLabel id="Flow_1_label">\n          <dc:Bounds x="250" y="180" width="80" height="30" />\n        </bpmndi:BPMNLabel>\n      </bpmndi:BPMNEdge>'
+      )
+      .replace(
+        '        <di:waypoint x="392" y="120" />\n      </bpmndi:BPMNEdge>',
+        '        <di:waypoint x="392" y="120" />\n        <bpmndi:BPMNLabel id="Flow_2_label">\n          <dc:Bounds x="300" y="190" width="80" height="30" />\n        </bpmndi:BPMNLabel>\n      </bpmndi:BPMNEdge>'
+      );
+    const report = await validateBpmnGeometry(xml);
+
+    expect(report.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'LABEL_OVERLAP', ids: ['Flow_1', 'Flow_2'] })
+    ]));
+  });
+
+  it('does not report overlapping labels on different DI planes', async () => {
+    const xml = (await fixture('simple-process.bpmn'))
+      .replace(
+        '        <di:waypoint x="240" y="120" />\n      </bpmndi:BPMNEdge>',
+        '        <di:waypoint x="240" y="120" />\n        <bpmndi:BPMNLabel id="Flow_1_label">\n          <dc:Bounds x="250" y="180" width="80" height="30" />\n        </bpmndi:BPMNLabel>\n      </bpmndi:BPMNEdge>'
+      )
+      .replace(
+        '  </bpmndi:BPMNDiagram>\n</bpmn:definitions>',
+        '  </bpmndi:BPMNDiagram>\n  <bpmndi:BPMNDiagram id="BPMNDiagram_2">\n    <bpmndi:BPMNPlane id="BPMNPlane_2" bpmnElement="Process_test">\n      <bpmndi:BPMNEdge id="Flow_2_di_plane_2" bpmnElement="Flow_2">\n        <di:waypoint x="340" y="120" />\n        <di:waypoint x="392" y="120" />\n        <bpmndi:BPMNLabel id="Flow_2_label">\n          <dc:Bounds x="250" y="180" width="80" height="30" />\n        </bpmndi:BPMNLabel>\n      </bpmndi:BPMNEdge>\n    </bpmndi:BPMNPlane>\n  </bpmndi:BPMNDiagram>\n</bpmn:definitions>'
+      );
+    const report = await validateBpmnGeometry(xml);
+
+    expect(report.diagnostics).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'LABEL_OVERLAP', ids: ['Flow_1', 'Flow_2'] })
     ]));
   });
 
@@ -157,5 +218,31 @@ describe('BPMN geometry oracle', () => {
     expect(normalizeGeometry(createGeometry(0, 0, 0), 0.5)).toEqual(
       normalizeGeometry(createGeometry(1000, -200, 0.1), 0.5)
     );
+  });
+
+  it('normalizes more waypoints than can be passed as function arguments', () => {
+    const waypointCount = 150_000;
+    const geometry: BpmnGeometry = {
+      shapes: [],
+      edges: [{
+        id: 'Flow_large',
+        diId: 'Flow_large_di',
+        type: 'bpmn:SequenceFlow',
+        planeId: 'Plane_1',
+        waypoints: Array.from({ length: waypointCount }, (_, index) => ({
+          x: index + 100,
+          y: waypointCount - index + 100
+        }))
+      }],
+      labels: []
+    };
+
+    const normalized = normalizeGeometry(geometry);
+
+    expect(normalized.edges[0].waypoints[0]).toEqual({ x: 0, y: waypointCount - 1 });
+    expect(normalized.edges[0].waypoints[waypointCount - 1]).toEqual({
+      x: waypointCount - 1,
+      y: 0
+    });
   });
 });

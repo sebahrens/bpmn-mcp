@@ -12,6 +12,7 @@ export type GeometryDiagnosticCode =
   | 'SHAPE_OVERLAP'
   | 'LABEL_OVERLAP'
   | 'EDGE_SHAPE_COLLISION'
+  | 'EDGE_EDGE_CROSSING'
   | 'CONTAINMENT_FAILURE';
 
 export interface GeometryDiagnostic {
@@ -160,6 +161,7 @@ export async function validateBpmnGeometry(
   validateContainment(geometry, diagnostics, tolerance);
   validateShapeAndLabelOverlaps(geometry, diagnostics, clearance, tolerance);
   validateEdgeShapeCollisions(geometry, diagnostics, clearance, tolerance);
+  validateEdgeEdgeCrossings(geometry, diagnostics);
 
   diagnostics.sort((left, right) =>
     left.code.localeCompare(right.code)
@@ -183,25 +185,23 @@ export function normalizeGeometry(
     throw new Error('Geometry normalization tolerance must be a positive finite number');
   }
 
-  const coordinates = [
-    ...geometry.shapes.flatMap(shape => [shape.bounds.x, shape.bounds.y]),
-    ...geometry.edges.flatMap(edge => edge.waypoints.flatMap(point => [point.x, point.y])),
-    ...geometry.labels.flatMap(label => [label.bounds.x, label.bounds.y])
-  ].filter(Number.isFinite);
-  const origin = coordinates.length === 0
+  let hasFiniteCoordinate = false;
+  let minimumX = Infinity;
+  let minimumY = Infinity;
+  const includeOriginPoint = (point: GeometryPoint): void => {
+    hasFiniteCoordinate ||= Number.isFinite(point.x) || Number.isFinite(point.y);
+    minimumX = Math.min(minimumX, point.x);
+    minimumY = Math.min(minimumY, point.y);
+  };
+  for (const shape of geometry.shapes) includeOriginPoint(shape.bounds);
+  for (const edge of geometry.edges) {
+    for (const waypoint of edge.waypoints) includeOriginPoint(waypoint);
+  }
+  for (const label of geometry.labels) includeOriginPoint(label.bounds);
+
+  const origin = !hasFiniteCoordinate
     ? { x: 0, y: 0 }
-    : {
-        x: Math.min(
-          ...geometry.shapes.map(shape => shape.bounds.x),
-          ...geometry.edges.flatMap(edge => edge.waypoints.map(point => point.x)),
-          ...geometry.labels.map(label => label.bounds.x)
-        ),
-        y: Math.min(
-          ...geometry.shapes.map(shape => shape.bounds.y),
-          ...geometry.edges.flatMap(edge => edge.waypoints.map(point => point.y)),
-          ...geometry.labels.map(label => label.bounds.y)
-        )
-      };
+    : { x: minimumX, y: minimumY };
   const quantize = (value: number): number => {
     const rounded = Math.round(value / tolerance) * tolerance;
     return Object.is(rounded, -0) ? 0 : Number(rounded.toFixed(12));
@@ -548,6 +548,22 @@ function validateShapeAndLabelOverlaps(
     }
   }
 
+  for (let leftIndex = 0; leftIndex < geometry.labels.length; leftIndex++) {
+    const left = geometry.labels[leftIndex];
+    if (!finiteBounds(left.bounds)) continue;
+    for (let rightIndex = leftIndex + 1; rightIndex < geometry.labels.length; rightIndex++) {
+      const right = geometry.labels[rightIndex];
+      if (left.planeId !== right.planeId || !finiteBounds(right.bounds)) continue;
+      if (rectanglesCollide(left.bounds, right.bounds, clearance, tolerance)) {
+        diagnostics.push(diagnostic(
+          'LABEL_OVERLAP',
+          `Label ${left.id} for ${left.ownerId} overlaps label ${right.id} for ${right.ownerId}`,
+          [left.ownerId, right.ownerId].sort()
+        ));
+      }
+    }
+  }
+
   for (const label of geometry.labels) {
     if (!finiteBounds(label.bounds)) continue;
     for (const shape of geometry.shapes) {
@@ -594,6 +610,43 @@ function validateEdgeShapeCollisions(
             [edge.id, shape.id]
           ));
         }
+      }
+    }
+  }
+}
+
+function validateEdgeEdgeCrossings(
+  geometry: BpmnGeometry,
+  diagnostics: GeometryDiagnostic[]
+): void {
+  for (let leftIndex = 0; leftIndex < geometry.edges.length; leftIndex++) {
+    const left = geometry.edges[leftIndex];
+    for (let rightIndex = leftIndex + 1; rightIndex < geometry.edges.length; rightIndex++) {
+      const right = geometry.edges[rightIndex];
+      if (left.planeId !== right.planeId) continue;
+
+      let crossing: [number, number] | undefined;
+      for (let leftSegment = 0; leftSegment < left.waypoints.length - 1 && !crossing; leftSegment++) {
+        const leftStart = left.waypoints[leftSegment];
+        const leftEnd = left.waypoints[leftSegment + 1];
+        if (!finitePoint(leftStart) || !finitePoint(leftEnd)) continue;
+        for (let rightSegment = 0; rightSegment < right.waypoints.length - 1; rightSegment++) {
+          const rightStart = right.waypoints[rightSegment];
+          const rightEnd = right.waypoints[rightSegment + 1];
+          if (!finitePoint(rightStart) || !finitePoint(rightEnd)) continue;
+          if (segmentsProperlyCross(leftStart, leftEnd, rightStart, rightEnd)) {
+            crossing = [leftSegment, rightSegment];
+            break;
+          }
+        }
+      }
+
+      if (crossing) {
+        diagnostics.push(diagnostic(
+          'EDGE_EDGE_CROSSING',
+          `Edge ${left.id} segment ${crossing[0]} crosses edge ${right.id} segment ${crossing[1]}`,
+          [left.id, right.id].sort()
+        ));
       }
     }
   }
@@ -710,6 +763,25 @@ function segmentIntersectsBounds(start: GeometryPoint, end: GeometryPoint, bound
     if (minimum > maximum) return false;
   }
   return true;
+}
+
+function segmentsProperlyCross(
+  leftStart: GeometryPoint,
+  leftEnd: GeometryPoint,
+  rightStart: GeometryPoint,
+  rightEnd: GeometryPoint
+): boolean {
+  const leftToRightStart = crossProduct(leftStart, leftEnd, rightStart);
+  const leftToRightEnd = crossProduct(leftStart, leftEnd, rightEnd);
+  const rightToLeftStart = crossProduct(rightStart, rightEnd, leftStart);
+  const rightToLeftEnd = crossProduct(rightStart, rightEnd, leftEnd);
+  return leftToRightStart * leftToRightEnd < 0
+    && rightToLeftStart * rightToLeftEnd < 0;
+}
+
+function crossProduct(start: GeometryPoint, end: GeometryPoint, point: GeometryPoint): number {
+  return (end.x - start.x) * (point.y - start.y)
+    - (end.y - start.y) * (point.x - start.x);
 }
 
 function expandBounds(bounds: GeometryBounds, amount: number): GeometryBounds {

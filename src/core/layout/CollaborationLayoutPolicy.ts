@@ -2,7 +2,9 @@ import type {
   BpmnDocument,
   BpmnDocumentConnection,
   BpmnDocumentElement,
+  BpmnEdgeModel,
   BpmnLane,
+  BpmnShapeModel,
   Position
 } from '../../types/index.js';
 
@@ -24,6 +26,11 @@ interface Translation {
 interface Bounds extends Position {
   width: number;
   height: number;
+}
+
+interface DiagramLookup {
+  shapesByElement: Map<string, BpmnShapeModel>;
+  edgesByConnection: Map<string, BpmnEdgeModel>;
 }
 
 /**
@@ -50,8 +57,9 @@ export function applyCollaborationLayoutPolicy(
       left.position.y - right.position.y
         || left.position.x - right.position.x
         || left.id.localeCompare(right.id)
-    );
+  );
   if (participants.length === 0) return;
+  const diagramLookup = createDiagramLookup(laidOut);
 
   for (const participant of participants) {
     const constraint = requested.elements.get(participant.id);
@@ -68,24 +76,28 @@ export function applyCollaborationLayoutPolicy(
         : COLLABORATION_LAYOUT_POLICY.participantMinHeight
     );
     expandParticipantAroundOwnedGeometry(participant, laidOut);
-    applyLaneConstraints(participant, requested, laidOut);
+    applyLaneConstraints(participant, requested, laidOut, diagramLookup);
   }
 
-  let nextY = Math.min(...participants.map(participant => participant.position.y));
+  let nextY = participants.reduce(
+    (minimum, participant) => Math.min(minimum, participant.position.y),
+    Infinity
+  );
   for (const participant of participants) {
     const translation = { x: 0, y: nextY - participant.position.y };
-    translateParticipant(participant, translation, laidOut);
+    translateParticipant(participant, translation, laidOut, diagramLookup);
     nextY = participant.position.y + participant.size.height
       + COLLABORATION_LAYOUT_POLICY.participantGap;
   }
 
-  routeCollaborationConnections(laidOut, participants);
+  routeCollaborationConnections(laidOut, participants, diagramLookup);
 }
 
 function applyLaneConstraints(
   participant: Extract<BpmnDocumentElement, { kind: 'participant' }>,
   requested: BpmnDocument,
-  laidOut: BpmnDocument
+  laidOut: BpmnDocument,
+  diagramLookup: DiagramLookup
 ): void {
   if (!participant.processRef) return;
   const laneSet = Array.from(laidOut.laneSets.values()).find(candidate =>
@@ -108,12 +120,13 @@ function applyLaneConstraints(
     participant.size.height,
     heights.reduce((total, height) => total + height, 0)
   );
-  participant.size.width = Math.max(
-    participant.size.width,
-    ...lanes.map(lane => Math.max(
-      lane.size.width,
-      requested.lanes.get(lane.id)?.size.width || 0
-    ) + COLLABORATION_LAYOUT_POLICY.participantHeaderWidth)
+  participant.size.width = lanes.reduce(
+    (width, lane) => Math.max(
+      width,
+      Math.max(lane.size.width, requested.lanes.get(lane.id)?.size.width || 0)
+        + COLLABORATION_LAYOUT_POLICY.participantHeaderWidth
+    ),
+    participant.size.width
   );
   heights[heights.length - 1] += participant.size.height
     - heights.reduce((total, height) => total + height, 0);
@@ -123,7 +136,7 @@ function applyLaneConstraints(
   lanes.forEach((lane, index) => {
     const previous = originalPositions.get(lane.id)!;
     const translation = { x: 0, y: nextY - previous.y };
-    translateLaneContents(lane, translation, laidOut, new Set());
+    translateLaneContents(lane, translation, laidOut, diagramLookup, new Set());
     lane.position = {
       x: participant.position.x + COLLABORATION_LAYOUT_POLICY.participantHeaderWidth,
       y: nextY
@@ -134,21 +147,27 @@ function applyLaneConstraints(
     };
     nextY += heights[index];
   });
-  adjustProcessConnectionRoutes(participant.processRef, originalNodePositions, laidOut);
+  adjustProcessConnectionRoutes(
+    participant.processRef,
+    originalNodePositions,
+    laidOut,
+    diagramLookup
+  );
 }
 
 function translateLaneContents(
   lane: BpmnLane,
   translation: Translation,
   document: BpmnDocument,
+  diagramLookup: DiagramLookup,
   movedNodes: Set<string>
 ): void {
-  translateLane(lane, translation, document);
+  translateLane(lane, translation, diagramLookup);
   for (const nodeId of lane.flowNodeRefs) {
     if (movedNodes.has(nodeId)) continue;
     const node = document.elements.get(nodeId);
     if (node) {
-      translateElement(node, translation, document);
+      translateElement(node, translation, diagramLookup);
       movedNodes.add(nodeId);
     }
   }
@@ -156,7 +175,9 @@ function translateLaneContents(
     if (childSet.parentLaneId !== lane.id) continue;
     for (const childLaneId of childSet.laneIds) {
       const child = document.lanes.get(childLaneId);
-      if (child) translateLaneContents(child, translation, document, movedNodes);
+      if (child) {
+        translateLaneContents(child, translation, document, diagramLookup, movedNodes);
+      }
     }
   }
 }
@@ -164,7 +185,8 @@ function translateLaneContents(
 function adjustProcessConnectionRoutes(
   processId: string,
   originalPositions: Map<string, Position>,
-  document: BpmnDocument
+  document: BpmnDocument,
+  diagramLookup: DiagramLookup
 ): void {
   for (const connection of document.connections.values()) {
     if (connection.ownerId !== processId || connection.waypoints.length < 2) continue;
@@ -187,7 +209,7 @@ function adjustProcessConnectionRoutes(
       point.x += sourceTranslation.x * (1 - ratio) + targetTranslation.x * ratio;
       point.y += sourceTranslation.y * (1 - ratio) + targetTranslation.y * ratio;
     });
-    const edge = edgeFor(document, connection.id);
+    const edge = diagramLookup.edgesByConnection.get(connection.id);
     if (edge?.labelBounds) {
       edge.labelBounds.x += (sourceTranslation.x + targetTranslation.x) / 2;
       edge.labelBounds.y += (sourceTranslation.y + targetTranslation.y) / 2;
@@ -210,8 +232,14 @@ function expandParticipantAroundOwnedGeometry(
   ];
   if (owned.length === 0) return;
 
-  const maxRight = Math.max(...owned.map(bounds => bounds.x + bounds.width));
-  const maxBottom = Math.max(...owned.map(bounds => bounds.y + bounds.height));
+  const maxRight = owned.reduce(
+    (maximum, bounds) => Math.max(maximum, bounds.x + bounds.width),
+    -Infinity
+  );
+  const maxBottom = owned.reduce(
+    (maximum, bounds) => Math.max(maximum, bounds.y + bounds.height),
+    -Infinity
+  );
   participant.size.width = Math.max(
     participant.size.width,
     maxRight - participant.position.x
@@ -225,24 +253,25 @@ function expandParticipantAroundOwnedGeometry(
 function translateParticipant(
   participant: Extract<BpmnDocumentElement, { kind: 'participant' }>,
   translation: Translation,
-  document: BpmnDocument
+  document: BpmnDocument,
+  diagramLookup: DiagramLookup
 ): void {
-  translateElement(participant, translation, document);
+  translateElement(participant, translation, diagramLookup);
   if (!participant.processRef) return;
 
   for (const element of document.elements.values()) {
     if (element.ownerId === participant.processRef) {
-      translateElement(element, translation, document);
+      translateElement(element, translation, diagramLookup);
     }
   }
   for (const lane of document.lanes.values()) {
     if (lane.processId === participant.processRef) {
-      translateLane(lane, translation, document);
+      translateLane(lane, translation, diagramLookup);
     }
   }
   for (const connection of document.connections.values()) {
     if (connection.ownerId === participant.processRef) {
-      translateConnection(connection, translation, document);
+      translateConnection(connection, translation, diagramLookup);
     }
   }
 }
@@ -250,11 +279,11 @@ function translateParticipant(
 function translateElement(
   element: BpmnDocumentElement,
   translation: Translation,
-  document: BpmnDocument
+  diagramLookup: DiagramLookup
 ): void {
   element.position.x += translation.x;
   element.position.y += translation.y;
-  const shape = shapeFor(document, element.id);
+  const shape = diagramLookup.shapesByElement.get(element.id);
   if (shape?.labelBounds) {
     shape.labelBounds.x += translation.x;
     shape.labelBounds.y += translation.y;
@@ -264,11 +293,11 @@ function translateElement(
 function translateLane(
   lane: BpmnLane,
   translation: Translation,
-  document: BpmnDocument
+  diagramLookup: DiagramLookup
 ): void {
   lane.position.x += translation.x;
   lane.position.y += translation.y;
-  const shape = shapeFor(document, lane.id);
+  const shape = diagramLookup.shapesByElement.get(lane.id);
   if (shape?.labelBounds) {
     shape.labelBounds.x += translation.x;
     shape.labelBounds.y += translation.y;
@@ -278,13 +307,13 @@ function translateLane(
 function translateConnection(
   connection: BpmnDocumentConnection,
   translation: Translation,
-  document: BpmnDocument
+  diagramLookup: DiagramLookup
 ): void {
   connection.waypoints.forEach(point => {
     point.x += translation.x;
     point.y += translation.y;
   });
-  const edge = edgeFor(document, connection.id);
+  const edge = diagramLookup.edgesByConnection.get(connection.id);
   if (edge?.labelBounds) {
     edge.labelBounds.x += translation.x;
     edge.labelBounds.y += translation.y;
@@ -293,7 +322,8 @@ function translateConnection(
 
 function routeCollaborationConnections(
   document: BpmnDocument,
-  participants: Array<Extract<BpmnDocumentElement, { kind: 'participant' }>>
+  participants: Array<Extract<BpmnDocumentElement, { kind: 'participant' }>>,
+  diagramLookup: DiagramLookup
 ): void {
   const participantByProcess = new Map(participants
     .filter(participant => participant.processRef)
@@ -306,14 +336,28 @@ function routeCollaborationConnections(
     ...Array.from(document.lanes.values()).map(laneBounds)
   ];
   const outer = {
-    left: Math.min(...participants.map(participant => participant.position.x)),
-    right: Math.max(...participants.map(participant =>
-      participant.position.x + participant.size.width
-    )),
-    top: Math.min(...participants.map(participant => participant.position.y)),
-    bottom: Math.max(...participants.map(participant =>
-      participant.position.y + participant.size.height
-    ))
+    left: participants.reduce(
+      (minimum, participant) => Math.min(minimum, participant.position.x),
+      Infinity
+    ),
+    right: participants.reduce(
+      (maximum, participant) => Math.max(
+        maximum,
+        participant.position.x + participant.size.width
+      ),
+      -Infinity
+    ),
+    top: participants.reduce(
+      (minimum, participant) => Math.min(minimum, participant.position.y),
+      Infinity
+    ),
+    bottom: participants.reduce(
+      (maximum, participant) => Math.max(
+        maximum,
+        participant.position.y + participant.size.height
+      ),
+      -Infinity
+    )
   };
 
   for (const connection of document.connections.values()) {
@@ -344,7 +388,7 @@ function routeCollaborationConnections(
       }))
       .sort((left, right) => left.collisions - right.collisions || left.length - right.length)[0]
       .points;
-    const edge = edgeFor(document, connection.id);
+    const edge = diagramLookup.edgesByConnection.get(connection.id);
     if (edge?.labelBounds) {
       edge.labelBounds = placeMessageLabel(
         connection.waypoints,
@@ -352,6 +396,7 @@ function routeCollaborationConnections(
         labelObstacles,
         outer
       );
+      labelObstacles.push({ id: connection.id, ...edge.labelBounds });
     }
   }
 }
@@ -383,11 +428,24 @@ function placeMessageLabel(
   const selected = candidates.sort((left, right) => right.length - left.length)[0];
   if (selected) return { ...label, x: selected.x, y: selected.y };
 
-  return {
+  const fallback = {
     ...label,
     x: outer.right + gap,
     y: (outer.top + outer.bottom - label.height) / 2
   };
+  for (let attempt = 0; attempt <= obstacles.length; attempt++) {
+    const collisions = obstacles.filter(obstacle => rectanglesOverlap(
+      fallback,
+      { width: fallback.width, height: fallback.height },
+      obstacle
+    ));
+    if (collisions.length === 0) return fallback;
+    fallback.y = collisions.reduce(
+      (maximum, obstacle) => Math.max(maximum, obstacle.y + obstacle.height),
+      -Infinity
+    ) + gap;
+  }
+  return fallback;
 }
 
 function messageRouteCandidates(
@@ -487,12 +545,15 @@ function rectanglesOverlap(
     && position.y + size.height > obstacle.y;
 }
 
-function shapeFor(document: BpmnDocument, elementId: string) {
-  return Array.from(document.diagram.shapes.values()).find(shape => shape.elementId === elementId);
-}
-
-function edgeFor(document: BpmnDocument, connectionId: string) {
-  return Array.from(document.diagram.edges.values()).find(edge => edge.connectionId === connectionId);
+function createDiagramLookup(document: BpmnDocument): DiagramLookup {
+  return {
+    shapesByElement: new Map(
+      Array.from(document.diagram.shapes.values(), shape => [shape.elementId, shape])
+    ),
+    edgesByConnection: new Map(
+      Array.from(document.diagram.edges.values(), edge => [edge.connectionId, edge])
+    )
+  };
 }
 
 function elementBounds(element: BpmnDocumentElement): Bounds & { id: string } {

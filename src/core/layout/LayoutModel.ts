@@ -231,21 +231,31 @@ export function refreshLayoutGeometry(model: LayoutModel): LayoutModel {
 }
 
 export function calculateLayoutBounds(model: LayoutModel, padding = 20): LayoutBounds {
-  const points: LayoutBounds[] = [];
-  points.push(...Array.from(model.nodes.values(), node => node.bounds));
-  points.push(...Array.from(model.labels.values(), label => label.bounds));
-  points.push(...Array.from(model.containers.values())
-    .filter(container => container.kind !== 'root')
-    .map(container => container.bounds));
-  for (const edge of model.edges.values()) {
-    points.push(...edge.waypoints.map(point => ({ ...point, width: 0, height: 0 })));
-  }
-  if (points.length === 0) return { ...EMPTY_BOUNDS };
+  let pointCount = 0;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const includeBounds = (bounds: LayoutBounds): void => {
+    pointCount++;
+    minX = Math.min(minX, bounds.x);
+    minY = Math.min(minY, bounds.y);
+    maxX = Math.max(maxX, bounds.x + bounds.width);
+    maxY = Math.max(maxY, bounds.y + bounds.height);
+  };
 
-  const minX = Math.min(...points.map(bounds => bounds.x));
-  const minY = Math.min(...points.map(bounds => bounds.y));
-  const maxX = Math.max(...points.map(bounds => bounds.x + bounds.width));
-  const maxY = Math.max(...points.map(bounds => bounds.y + bounds.height));
+  for (const node of model.nodes.values()) includeBounds(node.bounds);
+  for (const label of model.labels.values()) includeBounds(label.bounds);
+  for (const container of model.containers.values()) {
+    if (container.kind !== 'root') includeBounds(container.bounds);
+  }
+  for (const edge of model.edges.values()) {
+    for (const point of edge.waypoints) {
+      includeBounds({ ...point, width: 0, height: 0 });
+    }
+  }
+  if (pointCount === 0) return { ...EMPTY_BOUNDS };
+
   return {
     x: minX - padding,
     y: minY - padding,

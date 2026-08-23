@@ -1287,10 +1287,22 @@ export class SimpleBpmnEngine {
           const topPadding = 50;
           const bottomPadding = 30;
           const minimum = getDefaultElementSize(container.type);
-          const minimumX = Math.min(...children.map(child => child.position.x));
-          const minimumY = Math.min(...children.map(child => child.position.y));
-          const maximumX = Math.max(...children.map(child => child.position.x + child.size.width));
-          const maximumY = Math.max(...children.map(child => child.position.y + child.size.height));
+          const minimumX = children.reduce(
+            (minimum, child) => Math.min(minimum, child.position.x),
+            Infinity
+          );
+          const minimumY = children.reduce(
+            (minimum, child) => Math.min(minimum, child.position.y),
+            Infinity
+          );
+          const maximumX = children.reduce(
+            (maximum, child) => Math.max(maximum, child.position.x + child.size.width),
+            -Infinity
+          );
+          const maximumY = children.reduce(
+            (maximum, child) => Math.max(maximum, child.position.y + child.size.height),
+            -Infinity
+          );
           const right = Math.max(
             container.position.x + Math.max(container.size.width, minimum.width),
             maximumX + horizontalPadding
@@ -1384,9 +1396,9 @@ export class SimpleBpmnEngine {
     const lanes = laneSet.laneIds
       .map(id => context.document.lanes.get(id))
       .filter((lane): lane is BpmnLane => lane !== undefined);
-    const laneHeights = lanes.map(lane => Math.max(
-      100,
-      ...lane.flowNodeRefs.map(id => (context.elements.get(id)?.size.height || 0) + 40)
+    const laneHeights = lanes.map(lane => lane.flowNodeRefs.reduce(
+      (height, id) => Math.max(height, (context.elements.get(id)?.size.height || 0) + 40),
+      100
     ));
     const requestedParticipantHeight = participant.size.height;
     let laneWidth = Math.max(1, participant.size.width - 30);

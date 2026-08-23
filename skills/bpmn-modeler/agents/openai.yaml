@@ -1,0 +1,12 @@
+interface:
+  display_name: "BPMN Modeler"
+  short_description: "Create and edit validated BPMN diagrams"
+  default_prompt: "Use $bpmn-modeler to create and validate a BPMN diagram for this workflow."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "mcp-bpmn"
+      description: "Bundled local mcp-bpmn stdio server"
+      transport: "stdio"
+      command: "./bin/mcp-bpmn-plugin-server"

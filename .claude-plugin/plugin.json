@@ -1,0 +1,26 @@
+{
+  "name": "mcp-bpmn",
+  "version": "0.2.0",
+  "description": "Create, edit, validate, lay out, and export BPMN diagrams with Claude Code.",
+  "author": {
+    "name": "Alice V.",
+    "email": "ooisee@gmail.com",
+    "url": "https://github.com/oisee"
+  },
+  "homepage": "https://github.com/oisee/mcp-bpmn#readme",
+  "repository": "https://github.com/oisee/mcp-bpmn",
+  "license": "MIT",
+  "keywords": [
+    "bpmn",
+    "mcp",
+    "modeling"
+  ],
+  "mcpServers": {
+    "mcp-bpmn": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/dist/server/index.js"
+      ]
+    }
+  }
+}

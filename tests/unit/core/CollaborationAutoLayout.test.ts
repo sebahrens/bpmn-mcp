@@ -1,8 +1,10 @@
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { jest } from '@jest/globals';
 import BpmnModdle from 'bpmn-moddle';
 import { SimpleBpmnEngine } from '../../../src/core/SimpleBpmnEngine.js';
+import { applyCollaborationLayoutPolicy } from '../../../src/core/layout/CollaborationLayoutPolicy.js';
 import { validateBpmnGeometry } from '../../helpers/bpmnGeometry.js';
 
 interface Bounds {
@@ -191,6 +193,79 @@ describe('collaboration auto-layout policy', () => {
     );
     expect(onBoundary(plainPoint(edge.waypoint[0]), shapes.get(first.id)!)).toBe(true);
     expect(onBoundary(plainPoint(edge.waypoint.at(-1)), shapes.get(second.id)!)).toBe(true);
+  });
+
+  it('places peer message-flow labels without overlapping each other', async () => {
+    const engine = new SimpleBpmnEngine(directory);
+    const collaboration = await engine.createProcess('External exchange', 'collaboration');
+    const first = await engine.createElement(collaboration.id, {
+      id: 'Participant_FirstExternal',
+      type: 'bpmn:Participant',
+      name: 'First external party',
+      properties: { blackBox: true }
+    });
+    const second = await engine.createElement(collaboration.id, {
+      id: 'Participant_SecondExternal',
+      type: 'bpmn:Participant',
+      name: 'Second external party',
+      properties: { blackBox: true }
+    });
+    const messages = await Promise.all([
+      engine.connect(collaboration.id, first.id, second.id, 'Order accepted'),
+      engine.connect(collaboration.id, first.id, second.id, 'Order rejected'),
+      engine.connect(collaboration.id, first.id, second.id, 'Order delayed'),
+      engine.connect(collaboration.id, first.id, second.id, 'Order cancelled')
+    ]);
+
+    for (const message of messages) {
+      const edge = Array.from(collaboration.document.diagram.edges.values())
+        .find(candidate => candidate.connectionId === message.id);
+      if (!edge) throw new Error(`Expected DI edge for ${message.id}`);
+      edge.labelBounds = { x: 0, y: 0, width: 100, height: 20 };
+    }
+
+    await engine.applyAutoLayout(collaboration.id);
+
+    const labelBounds = messages.map(message => {
+      const edge = Array.from(collaboration.document.diagram.edges.values())
+        .find(candidate => candidate.connectionId === message.id);
+      if (!edge?.labelBounds) throw new Error(`Expected DI label for ${message.id}`);
+      return edge.labelBounds;
+    });
+    for (let left = 0; left < labelBounds.length; left++) {
+      for (let right = left + 1; right < labelBounds.length; right++) {
+        expect(overlaps(labelBounds[left], labelBounds[right])).toBe(false);
+      }
+    }
+  });
+
+  it('indexes DI shapes and edges once per collaboration layout pass', async () => {
+    const engine = new SimpleBpmnEngine(directory);
+    const collaboration = await engine.createProcess('External exchange', 'collaboration');
+    const first = await engine.createElement(collaboration.id, {
+      id: 'Participant_FirstExternal',
+      type: 'bpmn:Participant',
+      name: 'First external party',
+      properties: { blackBox: true }
+    });
+    const second = await engine.createElement(collaboration.id, {
+      id: 'Participant_SecondExternal',
+      type: 'bpmn:Participant',
+      name: 'Second external party',
+      properties: { blackBox: true }
+    });
+    for (let index = 0; index < 4; index++) {
+      await engine.connect(collaboration.id, first.id, second.id, `Message ${index}`);
+    }
+
+    const document = collaboration.document;
+    const shapeValues = jest.spyOn(document.diagram.shapes, 'values');
+    const edgeValues = jest.spyOn(document.diagram.edges, 'values');
+
+    applyCollaborationLayoutPolicy(document, document);
+
+    expect(shapeValues).toHaveBeenCalledTimes(1);
+    expect(edgeValues).toHaveBeenCalledTimes(1);
   });
 });
 

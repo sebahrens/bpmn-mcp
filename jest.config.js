@@ -38,10 +38,8 @@ export default {
     '!src/**/*.d.ts',
   ],
   coveragePathIgnorePatterns: [
-    '<rootDir>/src/core/LayoutEngine.ts',
     '<rootDir>/src/core/layout/index.ts',
     '<rootDir>/src/core/layout/adapters/index.ts',
-    '<rootDir>/src/utils/AutoLayout.ts',
     '<rootDir>/src/utils/AutoLayoutEnhanced.ts',
   ],
   coverageDirectory: 'coverage',

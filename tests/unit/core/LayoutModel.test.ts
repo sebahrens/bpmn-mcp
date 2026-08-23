@@ -5,12 +5,12 @@ import type { MermaidAST } from '../../../src/converters/ASTTypes.js';
 import {
   createProcessContext
 } from '../../../src/core/BpmnDocument.js';
-import { LayoutEngine } from '../../../src/core/LayoutEngine.js';
 import { SimpleBpmnEngine } from '../../../src/core/SimpleBpmnEngine.js';
 import { SimpleBpmnGenerator } from '../../../src/core/SimpleBpmnGenerator.js';
 import { BpmnDocumentLayoutAdapter } from '../../../src/core/layout/adapters/BpmnDocumentLayoutAdapter.js';
 import { MermaidAstLayoutAdapter } from '../../../src/core/layout/adapters/MermaidAstLayoutAdapter.js';
 import {
+  calculateLayoutBounds,
   normalizeLayoutModel,
   refreshLayoutGeometry,
   setLayoutEdgeWaypoints,
@@ -35,6 +35,30 @@ const mermaidAst = (): MermaidAST => ({
 });
 
 describe('canonical layout model', () => {
+  it('calculates bounds for more elements than can be passed as function arguments', () => {
+    const layout = MermaidAstLayoutAdapter.toLayoutModel(mermaidAst());
+    const node = layout.nodes.get('task')!;
+    const label = layout.labels.get('node:task:label')!;
+    const container = layout.containers.get('pool')!;
+    node.bounds = { x: 10, y: 20, width: 30, height: 40 };
+    label.bounds = { ...node.bounds };
+    container.bounds = { ...node.bounds };
+    const repeatedMap = <T>(prefix: string, value: T): Map<string, T> => new Map(
+      Array.from({ length: 50_000 }, (_, index) => [`${prefix}-${index}`, value])
+    );
+    layout.nodes = repeatedMap('node', node);
+    layout.labels = repeatedMap('label', label);
+    layout.containers = repeatedMap('container', container);
+    layout.edges.clear();
+
+    expect(calculateLayoutBounds(layout)).toEqual({
+      x: -10,
+      y: 0,
+      width: 70,
+      height: 80
+    });
+  });
+
   it('adapts Mermaid nodes, edges, labels, containers, ports and warnings deterministically', () => {
     const first = MermaidAstLayoutAdapter.toLayoutModel(mermaidAst());
     const second = MermaidAstLayoutAdapter.toLayoutModel(mermaidAst());
@@ -68,12 +92,11 @@ describe('canonical layout model', () => {
   });
 
   it('returns identical normalized layout and BPMN IDs for repeated stable Mermaid input', async () => {
-    const engine = new LayoutEngine();
     const reordered = mermaidAst();
     reordered.nodes.reverse();
     reordered.edges.reverse();
-    const firstLayout = engine.layoutWithPools(mermaidAst());
-    const secondLayout = engine.layoutWithPools(reordered);
+    const firstLayout = MermaidAstLayoutAdapter.toLayoutModel(mermaidAst());
+    const secondLayout = MermaidAstLayoutAdapter.toLayoutModel(reordered);
     expect(normalizeLayoutModel(firstLayout)).toEqual(normalizeLayoutModel(secondLayout));
 
     const generator = new SimpleBpmnGenerator();
@@ -86,25 +109,17 @@ describe('canonical layout model', () => {
   });
 
   it.each([
-    ['LR', 'left-to-right', 'right', (start: number, end: number) => start < end],
-    ['RL', 'right-to-left', 'left', (start: number, end: number) => start > end],
-    ['TD', 'top-to-bottom', 'bottom', (start: number, end: number) => start < end],
-    ['BT', 'bottom-to-top', 'top', (start: number, end: number) => start > end]
-  ] as const)('places and docks %s geometry consistently', (mermaidDirection, direction, outputSide, ordered) => {
+    ['LR', 'left-to-right', 'right'],
+    ['RL', 'right-to-left', 'left'],
+    ['TD', 'top-to-bottom', 'bottom'],
+    ['BT', 'bottom-to-top', 'top']
+  ] as const)('adapts and docks %s geometry consistently', (mermaidDirection, direction, outputSide) => {
     const ast = mermaidAst();
     ast.direction = mermaidDirection;
-    const layout = new LayoutEngine().layout(ast);
+    const layout = MermaidAstLayoutAdapter.toLayoutModel(ast);
     const start = layout.nodes.get('start')!;
-    const end = layout.nodes.get('end')!;
-    const startCoordinate = direction.includes('right') || direction.includes('left')
-      ? start.bounds.x
-      : start.bounds.y;
-    const endCoordinate = direction.includes('right') || direction.includes('left')
-      ? end.bounds.x
-      : end.bounds.y;
 
     expect(layout.direction).toBe(direction);
-    expect(ordered(startCoordinate, endCoordinate)).toBe(true);
     expect(start.ports.find(port => port.role === 'outgoing')).toMatchObject({ side: outputSide });
     expect(validateLayoutModel(layout)).toEqual({ valid: true, errors: [] });
   });
@@ -132,29 +147,8 @@ describe('canonical layout model', () => {
       edges: [...ast.edges].reverse()
     };
 
-    expect(normalizeLayoutModel(new LayoutEngine().layout(ast)))
-      .toEqual(normalizeLayoutModel(new LayoutEngine().layout(reordered)));
-  });
-
-  it('stacks pools on the cross-axis without reversing vertical flow direction', () => {
-    const ast: MermaidAST = {
-      type: 'flowchart',
-      direction: 'BT',
-      nodes: [
-        { id: 'start', type: 'start', label: 'Start' },
-        { id: 'end', type: 'end', label: 'End' }
-      ],
-      edges: [{ id: 'message', source: 'start', target: 'end', type: 'directed' }],
-      subgraphs: [
-        { id: 'sender', title: 'Sender', nodes: ['start'] },
-        { id: 'receiver', title: 'Receiver', nodes: ['end'] }
-      ]
-    };
-    const layout = new LayoutEngine().layoutWithPools(ast);
-    expect(layout.nodes.get('start')!.bounds.y).toBeGreaterThan(layout.nodes.get('end')!.bounds.y);
-    expect(layout.containers.get('sender')!.bounds.x)
-      .not.toBe(layout.containers.get('receiver')!.bounds.x);
-    expect(validateLayoutModel(layout).valid).toBe(true);
+    expect(normalizeLayoutModel(MermaidAstLayoutAdapter.toLayoutModel(ast)))
+      .toEqual(normalizeLayoutModel(MermaidAstLayoutAdapter.toLayoutModel(reordered)));
   });
 
   it('includes nested child geometry and rejects unknown container members', () => {
@@ -379,7 +373,7 @@ describe('canonical layout model', () => {
 
   it('rejects an explicit Mermaid layout that changes edge connectivity', async () => {
     const ast = mermaidAst();
-    const layout = new LayoutEngine().layoutWithPools(ast);
+    const layout = MermaidAstLayoutAdapter.toLayoutModel(ast);
     const edge = layout.edges.get('flow-a')!;
     edge.target = { nodeId: 'end', portId: 'end:port:in' };
     const sourcePort = layout.nodes.get('start')!.ports.find(port => port.role === 'outgoing')!;

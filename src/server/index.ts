@@ -18,6 +18,11 @@ const packageMetadata = requirePackage('../../package.json') as {
   version: string;
 };
 
+const SERVER_INSTRUCTIONS = [
+  'Work with one active BPMN diagram at a time; creating or opening a diagram replaces the active context. Successful mutations auto-save to its active file. Use element IDs returned by create and query calls for all later connections, lookups, updates, and deletions. File tools are confined to the configured diagram store. Obtain explicit user confirmation before deleting a stored file or destructively replacing existing diagram or file state.',
+  'Recommended finish: validate, then auto_layout, then validate again. list_elements and list_diagrams are paginated; while hasMore is true, request the next page with offset + returnedCount. See tools/list for tool-specific arguments and outputs.'
+].join('\n\n');
+
 // Create server instance
 const server = new Server(
   {
@@ -28,6 +33,7 @@ const server = new Server(
     capabilities: {
       tools: {},
     },
+    instructions: SERVER_INSTRUCTIONS,
   }
 );
 

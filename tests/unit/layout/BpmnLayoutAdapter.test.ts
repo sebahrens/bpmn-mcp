@@ -47,6 +47,16 @@ describe('BpmnAutoLayoutV2Adapter', () => {
     expect(packageMetadata.dependencies['bpmn-auto-layout']).toBe(BPMN_AUTO_LAYOUT_VERSION);
   });
 
+  it('uses nullish fallbacks for subprocess error diagnostics', async () => {
+    const adapterSource = await fs.readFile(
+      join(process.cwd(), 'src/core/layout/BpmnLayoutAdapter.ts'),
+      'utf8'
+    );
+
+    expect(adapterSource).toContain("code: error?.code ?? 'LAYOUT_FAILED'");
+    expect(adapterSource).toContain('message: error?.message ?? String(error)');
+  });
+
   it('surfaces structured unsupported-feature failures without leaking package classes', async () => {
     const packageError = Object.assign(new Error('Unsupported collaboration'), {
       name: 'LayoutError',

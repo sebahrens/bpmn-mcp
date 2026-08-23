@@ -43,6 +43,8 @@ interface ResolvedSafeRoot {
 
 type AnchoredOperation = 'read' | 'write' | 'delete';
 
+const ANCHORED_FILE_WORKER_IDLE_TIMEOUT_MS = 5_000;
+
 /*
  * Node does not expose openat(2), renameat(2), or unlinkat(2). This worker
  * obtains the equivalent directory anchor by starting with the validated root
@@ -195,7 +197,10 @@ const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
 let idleTimer;
 const armIdleExit = () => {
   clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => process.exit(0), 100);
+  idleTimer = setTimeout(
+    () => process.exit(0),
+    ${ANCHORED_FILE_WORKER_IDLE_TIMEOUT_MS}
+  );
 };
 armIdleExit();
 
@@ -414,6 +419,7 @@ class AnchoredFileWorker {
     if (!child || child.exitCode !== null) {
       throw new WorkerTransportError('Worker is not running');
     }
+    this.setChildReferenced(child, true);
 
     const request = `${JSON.stringify({
       operation,
@@ -422,20 +428,26 @@ class AnchoredFileWorker {
       input: input.length === 0 ? undefined : input.toString('base64')
     })}\n`;
     try {
-      await new Promise<void>((resolve, reject) => {
-        child.stdin.write(request, error => {
-          if (error) reject(error);
-          else resolve();
+      try {
+        await new Promise<void>((resolve, reject) => {
+          child.stdin.write(request, error => {
+            if (error) reject(error);
+            else resolve();
+          });
         });
-      });
-    } catch {
-      child.kill();
-      throw new WorkerTransportError('Unable to write worker request');
-    }
+      } catch {
+        child.kill();
+        throw new WorkerTransportError('Unable to write worker request');
+      }
 
-    const message = this.parseResponse(await this.nextLine());
-    if (!message.ok) throw workerError(message.error || 'access');
-    return Buffer.from(message.data || '', 'base64');
+      const message = this.parseResponse(await this.nextLine());
+      if (!message.ok) throw workerError(message.error || 'access');
+      return Buffer.from(message.data || '', 'base64');
+    } finally {
+      if (this.child === child && child.exitCode === null) {
+        this.setChildReferenced(child, false);
+      }
+    }
   }
 
   private async ensureStarted(): Promise<void> {
@@ -477,6 +489,15 @@ class AnchoredFileWorker {
       if (!response.ready) throw workerError(response.error || 'access');
     });
     return this.startup;
+  }
+
+  private setChildReferenced(child: ChildProcessWithoutNullStreams, referenced: boolean): void {
+    const method = referenced ? 'ref' : 'unref';
+    child[method]();
+    for (const stream of [child.stdin, child.stdout, child.stderr]) {
+      const refable = stream as typeof stream & { ref?: () => void; unref?: () => void };
+      refable[method]?.();
+    }
   }
 
   private consumeOutput(chunk: Buffer): void {
