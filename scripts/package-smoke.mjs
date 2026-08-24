@@ -887,7 +887,7 @@ try {
         method: 'tools/call',
         params: {
           name: 'auto_layout',
-          arguments: {}
+          arguments: { algorithm: 'horizontal' }
         }
       },
       {
@@ -923,11 +923,16 @@ try {
     throw new Error(`Packed auto_layout failed: ${layoutDiagnostic}`);
   }
   if (createResult?.isError
+    || layoutResult?.isError
     || xmlResult?.isError
     || !xmlResult?.content?.some(item => (
       item.type === 'text' && item.text.includes('<bpmn:definitions')
     ))) {
-    throw new Error('Packaged executable could not create and export BPMN XML without Chrome');
+    const layoutDiagnostic = layoutResult?.content?.find(item => item.type === 'text')?.text ?? '';
+    throw new Error(
+      'Packaged executable could not create, auto-layout, and export BPMN XML '
+      + `from a consumer repository: ${layoutDiagnostic}`
+    );
   }
   const svgDiagnostic = svgResult?.content?.find(item => item.type === 'text')?.text ?? '';
   if (!svgResult?.isError

@@ -42,7 +42,7 @@ browser. SVG export and managed SVG/PNG artifact rendering do. If the Puppeteer
 browser download is intentionally skipped, set `PUPPETEER_EXECUTABLE_PATH` to a
 compatible Chrome or Chromium executable before starting the server. Rendering
 is headless, limited to one concurrent render per server instance, and has a
-ten-second timeout.
+twenty-second timeout.
 
 ### Install for Codex and Claude Code
 

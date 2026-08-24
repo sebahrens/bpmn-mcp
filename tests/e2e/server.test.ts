@@ -10,8 +10,10 @@ import BpmnModdle from 'bpmn-moddle';
 const STARTUP_MESSAGE = 'MCP-BPMN Server running on stdio';
 const STARTUP_TIMEOUT_MS = 3000;
 const RESPONSE_TIMEOUT_MS = 2000;
-const BROWSER_START_TIMEOUT_MS = 15_000;
-const SVG_RESPONSE_TIMEOUT_MS = 25_000;
+// A cold Chrome launch can approach the renderer's 20-second production deadline
+// on contended CI runners; leave time for the response and cleanup to propagate.
+const REAL_BROWSER_START_TIMEOUT_MS = 22_000;
+const REAL_BROWSER_RESPONSE_TIMEOUT_MS = 25_000;
 
 jest.setTimeout(40_000);
 
@@ -634,8 +636,8 @@ describe('MCP server process lifecycle', () => {
         id: 3,
         method: 'tools/call',
         params: { name: 'export', arguments: { format: 'svg' } }
-      }, SVG_RESPONSE_TIMEOUT_MS);
-      await waitForFile(marker, BROWSER_START_TIMEOUT_MS);
+      }, REAL_BROWSER_RESPONSE_TIMEOUT_MS);
+      await waitForFile(marker, REAL_BROWSER_START_TIMEOUT_MS);
       const browserPid = Number(await readFile(marker, 'utf8'));
       expect(isPidAlive(browserPid)).toBe(true);
 
@@ -937,12 +939,15 @@ describe('MCP Server End-to-End Tests', () => {
       };
       const calledTools = new Set<string>();
       let requestId = 3;
-      const call = async (name: string, args: Record<string, unknown> = {}) => {
-        const responseTimeoutMs = (name === 'export' && args.format === 'svg')
+      const call = async (
+        name: string,
+        args: Record<string, unknown> = {},
+        responseTimeoutMs = (name === 'export' && args.format === 'svg')
           || name === 'save_svg'
           || name === 'save_png'
-          ? SVG_RESPONSE_TIMEOUT_MS
-          : 6_000;
+          ? REAL_BROWSER_RESPONSE_TIMEOUT_MS
+          : 6_000
+      ) => {
         const result = await callTool(launch, requestId++, name, args, responseTimeoutMs);
         calledTools.add(name);
         expect(result.structuredContent).toEqual(expect.any(Object));
@@ -1355,7 +1360,11 @@ describe('MCP Server End-to-End Tests', () => {
       });
       expect(textContent(xmlExport)).toMatch(/^<\?xml[^>]*>\n/);
       expect(textContent(xmlExport)).toContain('\n  <');
-      const svgExport = await call('export', { format: 'svg' });
+      const svgExport = await call(
+        'export',
+        { format: 'svg' },
+        REAL_BROWSER_RESPONSE_TIMEOUT_MS
+      );
       const svgResource = svgExport.content[0].resource;
       expect(svgExport.structuredContent).toMatchObject({
         processId: mermaidCreation.structuredContent.processId,
