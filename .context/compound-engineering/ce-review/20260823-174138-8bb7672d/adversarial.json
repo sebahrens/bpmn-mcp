@@ -1,0 +1,113 @@
+{
+  "reviewer": "adversarial",
+  "findings": [
+    {
+      "title": "Packaging race replaces late third-party state",
+      "severity": "P1",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 480,
+      "why_it_matters": "The installer makes all conflict and ownership decisions before a potentially long npm pack/install, then destructively snapshots whatever exists afterward without revalidating it. If a user or another tool creates a third-party skill, app directory, or state file during packaging, a non-force install moves that new path into the rollback directory, installs over it, commits, and deletes the only remaining copy. This violates the safety-harness requirement that third-party state is never silently replaced.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Serialize mutation per INSTALL_ROOT and re-run ownership/conflict validation after acquiring the lock and immediately before each destructive snapshot. Have snapshot_moved_path reject an unexpected current path rather than treating every post-preflight path as rollback data.",
+      "confidence": 0.97,
+      "evidence": [
+        "run_install performs preflight_install at line 515, then build_and_install_artifact at line 516, and only afterward starts the transaction and mutation at lines 517-526.",
+        "preflight_install rejects non-owned skills at lines 301-314 and non-owned app/state paths at lines 280-290, but those checks are not repeated after packaging.",
+        "activate_staged_artifact at lines 443-454 and install_skill at lines 475-481 call snapshot_moved_path unconditionally; snapshot_moved_path moves any current destination into ROLLBACK_DIR without checking ownership.",
+        "commit_install_transaction only clears TRANSACTION_ACTIVE at lines 399-401, and cleanup deletes TEMP_DIR at lines 89-90, so a late third-party path captured by the snapshot is discarded after a successful install."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Concurrent rollback undoes another successful installation",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 387,
+      "why_it_matters": "Two normal installer invocations against the same prefix can interleave because there is no transaction lock. One process can snapshot the other process's newly activated app and the old client configs, pause, let the first process finish and report success, and then fail or receive a signal. Its rollback restores the old configs over the successful process's registrations while restoring that process's app, leaving a broken installation even though one invocation completed successfully.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Add an exclusive per-INSTALL_ROOT transaction lock covering the final preflight, activation, skill installation, registration, and rollback/commit. Fail clearly or wait with a bounded policy when another installer owns the lock, and add a deterministic two-process test.",
+      "confidence": 0.9,
+      "evidence": [
+        "begin_install_transaction at lines 387-397 creates only a process-private rollback directory; it does not acquire any shared lock for INSTALL_ROOT or the client configuration files.",
+        "A concrete interleaving is: A and B both pass preflight; A activates its app/state; B snapshots A's app/state and the still-old client configs, activates B's app, and pauses; A installs skills/registers both clients and commits; B is terminated; B's EXIT cleanup runs rollback_install.",
+        "B's rollback restores its old client-config snapshots at lines 376-377 and A's captured state/app at lines 380-381. The final filesystem contains A's installation, but A's registrations have been erased even though A already returned success.",
+        "The test harness executes every install/update/rollback serially and contains no competing process, so this interleaving is not exercised."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Rollback erases concurrent unrelated client changes",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 366,
+      "why_it_matters": "Rollback treats each client's entire configuration file as installer-owned transaction state. If the user, another client process, or a second command adds an unrelated MCP server or changes another setting after the snapshot, a later installer failure copies the stale whole-file snapshot over the live file and silently loses the unrelated change. The isolated fake configs cannot reveal this because each file models only the mcp-bpmn registration.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Choose a target-scoped recovery contract instead of whole-file replacement: capture the prior mcp-bpmn registration, detect whether that target changed concurrently, and restore only that registration through supported client operations. If the clients cannot support conditional target restoration, narrow and document the rollback guarantee and prevent concurrent client-config mutation during the transaction.",
+      "confidence": 0.94,
+      "evidence": [
+        "begin_install_transaction snapshots the complete Codex and Claude configuration files at lines 390-395 before any registration mutations.",
+        "register_codex and register_claude mutate those shared client configs through remove/add operations at lines 485-503; unrelated client activity can mutate the same files during this interval.",
+        "On any downstream failure, cleanup calls rollback_install at lines 82-87, and restore_config_file copies the old complete file directly onto the live destination at lines 360-369 rather than merging or checking for intervening changes.",
+        "tests/install-agent-integrations.test.sh represents CODEX_STATE and CLAUDE_STATE as two-line files containing only command and diagrams path at lines 108-145 and 159-190, while its 'unrelated config' assertions use separate files at lines 227-228 and 333-334."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Targeted path change strands the other client",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 524,
+      "why_it_matters": "The diagrams path is recorded as one global installation value, but targeted installs mutate only the selected client's registration. After an all-client install at D1, a forced Codex-only install at D2 writes D2 to global state and Codex while leaving Claude registered at D1. Doctor then labels Claude as conflicting, and uninstall preserves that 'conflict' before deleting the shared server, leaving Claude with a stale registration pointing to removed program files.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Either reject a diagrams-path change when an unselected installer-owned client exists and require an all-client update, or persist and manage diagrams paths and ownership per client. Add a lifecycle test that installs both at D1, targets one client at D2 with force, runs doctor, and uninstalls.",
+      "confidence": 0.97,
+      "evidence": [
+        "activate_staged_artifact writes one diagrams-path value to STATE_FILE at lines 449-454 for every install, regardless of client selection.",
+        "run_install updates Codex only inside lines 520-523 and Claude only inside lines 524-527; a targeted Codex invocation never reconciles the existing Claude registration.",
+        "claude_registration_state compares Claude's environment against the now-global DIAGRAMS_DIR at lines 219-240, so the unchanged D1 registration becomes conflict when state records D2.",
+        "run_uninstall preserves a conflicting Claude registration at lines 628-636, then removes installer-owned program files at lines 646-655, producing a registration whose stable SERVER_BIN no longer exists.",
+        "The targeted-client tests at tests/install-agent-integrations.test.sh lines 291-309 reuse the same diagrams path, so they cannot expose this split-brain transition."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Missing client hides partial upgrade version skew",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 263,
+      "why_it_matters": "An `update all` performed while one CLI is temporarily absent exits successfully after upgrading the shared app and available client, but skips the absent client's skill. When that CLI returns, doctor reports the old skill as installed because ownership checks only the marker's first line, hiding a mixed-version installation that can pair stale instructions with the new server.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Separate skill maintenance from CLI availability. For an existing installer-owned skill, update or roll it back transactionally even when the corresponding CLI is absent; alternatively make `update all` fail before mutation when a previously installed client cannot be reconciled. Doctor should compare each skill marker's package version with STATE_FILE.",
+      "confidence": 0.96,
+      "evidence": [
+        "prepare_clients sets USE_CLAUDE=0 and only logs a skip when selection is all and Claude is absent at lines 263-270; the same behavior applies to Codex at lines 253-260.",
+        "run_install still upgrades the global app/state at lines 516-518, but gates both skill installation and registration on USE_CLAUDE/USE_CODEX at lines 520-527.",
+        "skill_is_owned at lines 183-186 checks only the first ownership-marker line, although install_skill records package version at lines 469-473; run_doctor therefore prints 'installed' at lines 744-752 without detecting version skew.",
+        "The missing-client harness case at tests/install-agent-integrations.test.sh lines 352-369 starts after uninstall and later performs targeted installs; it never updates an existing two-client installation with one CLI missing or checks doctor after the CLI returns."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Uninstall performs a get/classify operation followed by a separate remove. A third-party process that replaces the mcp-bpmn registration between those CLI calls can have its new registration deleted; the client interfaces shown here provide no compare-and-swap primitive.",
+    "Uninstall has no transaction spanning both clients, skills, app, and ownership state. Any signal or filesystem failure after the first successful removal can leave a mixed installed/uninstalled state even beyond the confirmed second-client failure path.",
+    "The manual WSL2 smoke validates only the Windows-Node rejection path; a successful native-Linux runtime lifecycle under the actual WSL2 kernel remains operationally unverified."
+  ],
+  "testing_gaps": [
+    "No test creates a non-owned app, state file, skill, or registration after preflight but before activation to prove the installer revalidates late conflicts.",
+    "No test runs two installer processes against the same PREFIX or mutates a real-shaped client config during a transaction and then forces rollback.",
+    "No test changes MCP_BPMN_DIAGRAMS_PATH during a targeted forced install while the other client remains installed.",
+    "No update test temporarily removes one previously installed client CLI and then checks skill package versions and doctor output after restoring the CLI.",
+    "The rollback fixture covers a failed fresh forced install but not a failed upgrade of an existing installer-owned app, state marker, and both client skills."
+  ]
+}

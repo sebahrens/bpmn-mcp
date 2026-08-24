@@ -1,7 +1,10 @@
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { SimpleBpmnEngine } from '../../src/core/SimpleBpmnEngine.js';
+import {
+  DocumentRevisionConflictError,
+  SimpleBpmnEngine
+} from '../../src/core/SimpleBpmnEngine.js';
 import { diagramContext } from '../../src/core/DiagramContext.js';
 import { BpmnRequestHandler } from '../../src/server/handlers.js';
 import { FileManager } from '../../src/utils/FileManager.js';
@@ -116,6 +119,7 @@ describe('transactional diagram persistence', () => {
     await handler.handleRequest('new_bpmn', { name: 'Serialization rollback' });
     const context = diagramContext.getCurrent();
     const beforeXml = context.xml;
+    const beforeRevision = context.revision;
     const beforeDisk = await fs.readFile(join(directory, context.filename!), 'utf8');
     const serializer = (engine as unknown as {
       serializer: { serialize: (...args: unknown[]) => Promise<string> };
@@ -131,6 +135,7 @@ describe('transactional diagram persistence', () => {
     expect(textOf(result)).toContain('injected serialization failure');
     expect(context.elements.size).toBe(0);
     expect(context.xml).toBe(beforeXml);
+    expect(context.revision).toBe(beforeRevision);
     await expect(fs.readFile(join(directory, context.filename!), 'utf8')).resolves.toBe(beforeDisk);
   });
 
@@ -155,6 +160,123 @@ describe('transactional diagram persistence', () => {
     expect(context.elements.get('Task_1')?.name).toBe('Before');
     expect(context.xml).toBe(beforeXml);
     await expect(fs.readFile(join(directory, context.filename!), 'utf8')).resolves.toBe(beforeXml);
+  });
+
+  it('rolls back connection geometry and leaves the previous file intact when writing fails', async () => {
+    await handler.handleRequest('new_bpmn', { name: 'Connection geometry rollback' });
+    await handler.handleRequest('add_activity', { activityType: 'task', name: 'Source' });
+    await handler.handleRequest('add_activity', { activityType: 'task', name: 'Target' });
+    const connected = await handler.handleRequest('connect', {
+      sourceId: 'Task_1', targetId: 'Task_2'
+    });
+    const connectionId = (connected.structuredContent as any).connectionId as string;
+    const context = diagramContext.getCurrent();
+    const edge = Array.from(context.document.diagram.edges.values()).find(
+      candidate => candidate.connectionId === connectionId
+    )!;
+    const beforeXml = context.xml;
+    const beforeRevision = context.revision;
+    const beforeWaypoints = structuredClone(edge.waypoints);
+    const beforeDisk = await fs.readFile(join(directory, context.filename!), 'utf8');
+    const midpoint = {
+      x: (beforeWaypoints[0].x + beforeWaypoints[1].x) / 2,
+      y: (beforeWaypoints[0].y + beforeWaypoints[1].y) / 2
+    };
+    const fileManager = (engine as unknown as { fileManager: FileManager }).fileManager;
+    jest.spyOn(fileManager, 'saveBpmnFile').mockResolvedValueOnce({
+      success: false,
+      error: 'injected connection geometry failure'
+    });
+
+    const result = await handler.handleRequest('update_connection_geometry', {
+      connectionId,
+      waypoints: [beforeWaypoints[0], midpoint, beforeWaypoints[1]],
+      collisionPolicy: 'allow'
+    });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('injected connection geometry failure');
+    expect(context.connections.get(connectionId)?.waypoints).toEqual(beforeWaypoints);
+    expect(edge.waypoints).toEqual(beforeWaypoints);
+    expect(context.xml).toBe(beforeXml);
+    expect(context.revision).toBe(beforeRevision);
+    await expect(fs.readFile(join(directory, context.filename!), 'utf8')).resolves.toBe(beforeDisk);
+  });
+
+  it('rolls back a rewired default connection completely when writing fails', async () => {
+    await handler.handleRequest('new_bpmn', { name: 'Connection rewire rollback' });
+    await handler.handleRequest('add_activity', {
+      activityType: 'task', name: 'Old source', position: { x: 100, y: 100 }
+    });
+    await handler.handleRequest('add_activity', {
+      activityType: 'task', name: 'Old target', position: { x: 350, y: 100 }
+    });
+    const context = diagramContext.getCurrent();
+    const subprocessResult = await handler.handleRequest('add_activity', {
+      activityType: 'subProcess', name: 'Nested scope', position: { x: 500, y: 250 }
+    });
+    const subprocessId = (subprocessResult.structuredContent as any).elementId as string;
+    const newSourceResult = await handler.handleRequest('add_activity', {
+      activityType: 'task',
+      name: 'New source',
+      ownerId: context.id,
+      scopeId: subprocessId,
+      position: { x: 550, y: 300 }
+    });
+    const newSourceId = (newSourceResult.structuredContent as any).elementId as string;
+    const newTargetResult = await handler.handleRequest('add_activity', {
+      activityType: 'task',
+      name: 'New target',
+      ownerId: context.id,
+      scopeId: subprocessId,
+      position: { x: 700, y: 300 }
+    });
+    const newTargetId = (newTargetResult.structuredContent as any).elementId as string;
+    const connected = await handler.handleRequest('connect', {
+      sourceId: 'Task_1', targetId: 'Task_2', label: 'Before', isDefault: true
+    });
+    const connectionId = (connected.structuredContent as any).connectionId as string;
+    const details = (await handler.handleRequest('get_connection', {
+      connectionId
+    })).structuredContent as any;
+    const beforeXml = context.xml;
+    const beforeRevision = context.revision;
+    const beforeConnection = structuredClone(context.connections.get(connectionId));
+    const edge = Array.from(context.document.diagram.edges.values()).find(
+      candidate => candidate.connectionId === connectionId
+    )!;
+    const beforeEdge = structuredClone(edge);
+    const beforeDisk = await fs.readFile(join(directory, context.filename!), 'utf8');
+    const fileManager = (engine as unknown as { fileManager: FileManager }).fileManager;
+    jest.spyOn(fileManager, 'saveBpmnFile').mockResolvedValueOnce({
+      success: false,
+      error: 'injected connection rewire failure'
+    });
+
+    const result = await handler.handleRequest('update_connection', {
+      connectionId,
+      sourceId: newSourceId,
+      targetId: newTargetId,
+      endpointPolicy: 'snap-to-boundary',
+      collisionPolicy: 'allow',
+      expectedSemanticRevision: details.semanticRevision
+    });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('injected connection rewire failure');
+    expect(context.connections.get(connectionId)).toEqual(beforeConnection);
+    expect(context.connections.get(connectionId)).toMatchObject({
+      source: 'Task_1',
+      target: 'Task_2',
+      ownerId: context.id,
+      scopeId: context.id
+    });
+    expect(context.elements.get('Task_1')?.defaultFlow).toBe(connectionId);
+    expect(context.elements.get(newSourceId)?.defaultFlow).toBeUndefined();
+    expect(edge).toEqual(beforeEdge);
+    expect(context.xml).toBe(beforeXml);
+    expect(context.revision).toBe(beforeRevision);
+    await expect(fs.readFile(join(directory, context.filename!), 'utf8')).resolves.toBe(beforeDisk);
   });
 
   it('rolls back connection deletion and default ownership when writing fails', async () => {
@@ -429,5 +551,117 @@ describe('transactional diagram persistence', () => {
     );
     await expect(fs.readFile(join(directory, first.filename!))).resolves.toEqual(firstBytes);
     expect(() => competingEngine.getProcess(first.id)).toThrow(`Process ${first.id} not found`);
+  });
+
+  it('exposes stable query revisions and before/after mutation revisions', async () => {
+    const created = await handler.handleRequest('new_bpmn', { name: 'Revision contract' });
+    const createdRevision = (created.structuredContent as { revision: string }).revision;
+    expect(createdRevision).toMatch(/^sha256:[a-f0-9]{64}:v1$/);
+
+    const firstCurrent = await handler.handleRequest('current', {});
+    const secondCurrent = await handler.handleRequest('current', {});
+    expect(firstCurrent.structuredContent).toEqual(secondCurrent.structuredContent);
+    expect((firstCurrent.structuredContent as any).diagram.revision).toBe(createdRevision);
+
+    const added = await handler.handleRequest('add_activity', {
+      activityType: 'task',
+      name: 'Revisioned',
+      expectedRevision: createdRevision
+    });
+    expect(added.structuredContent).toMatchObject({
+      beforeRevision: createdRevision,
+      afterRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}:v2$/)
+    });
+    const afterRevision = (added.structuredContent as any).afterRevision;
+    expect((await handler.handleRequest('list_elements', {})).structuredContent)
+      .toMatchObject({ revision: afterRevision });
+    expect((await handler.handleRequest('get_element', { elementId: 'Task_1' })).structuredContent)
+      .toMatchObject({ revision: afterRevision });
+  });
+
+  it('rejects external edits without changing memory and supports explicit revision recovery', async () => {
+    await handler.handleRequest('new_bpmn', { name: 'External conflict' });
+    const context = diagramContext.getCurrent();
+    const beforeRevision = context.revision;
+    const beforeXml = context.xml;
+    const externalXml = beforeXml!.replace('External conflict', 'External winner');
+    await fs.writeFile(join(directory, context.filename!), externalXml, 'utf8');
+
+    const conflict = await handler.handleRequest('add_activity', {
+      activityType: 'task',
+      name: 'Rejected',
+      expectedRevision: beforeRevision
+    });
+    expect(conflict).toMatchObject({
+      isError: true,
+      structuredContent: {
+        code: 'revision_conflict',
+        conflict: true,
+        reason: 'external_change',
+        expectedRevision: beforeRevision,
+        actualRevision: expect.any(String)
+      }
+    });
+    expect(context.revision).toBe(beforeRevision);
+    expect(context.xml).toBe(beforeXml);
+    expect(context.elements.size).toBe(0);
+    await expect(fs.readFile(join(directory, context.filename!), 'utf8')).resolves.toBe(externalXml);
+
+    const actualRevision = (conflict.structuredContent as any).actualRevision;
+    const recovered = await handler.handleRequest('add_activity', {
+      activityType: 'task',
+      name: 'Explicit overwrite',
+      expectedRevision: actualRevision
+    });
+    expect(recovered.isError).toBeUndefined();
+    expect(recovered.structuredContent).toMatchObject({
+      beforeRevision,
+      afterRevision: expect.any(String)
+    });
+    expect(Array.from(context.elements.values()).map(element => element.name))
+      .toContain('Explicit overwrite');
+    await expect(fs.readFile(join(directory, context.filename!), 'utf8')).resolves.toBe(context.xml);
+  });
+
+  it('prevents stale independent engines from silently overwriting the same file', async () => {
+    const seed = await engine.createProcess('Independent sessions');
+    const filename = seed.filename!;
+    const firstEngine = new SimpleBpmnEngine(directory);
+    const secondEngine = new SimpleBpmnEngine(directory);
+    const first = await firstEngine.loadDiagram(filename);
+    const second = await secondEngine.loadDiagram(filename);
+    expect(first.revision).toBe(second.revision);
+
+    await firstEngine.createElement(first.id, {
+      type: 'bpmn:Task', name: 'First writer'
+    }, first.revision);
+    const winnerBytes = await fs.readFile(join(directory, filename), 'utf8');
+    const secondMemory = second.xml;
+
+    await expect(secondEngine.createElement(second.id, {
+      type: 'bpmn:Task', name: 'Stale writer'
+    }, second.revision)).rejects.toBeInstanceOf(DocumentRevisionConflictError);
+    expect(second.elements.size).toBe(0);
+    expect(second.xml).toBe(secondMemory);
+    await expect(fs.readFile(join(directory, filename), 'utf8')).resolves.toBe(winnerBytes);
+  });
+
+  it('allows only one independent save_as writer to claim a new target', async () => {
+    const seed = await engine.createProcess('Save as race');
+    const originalBytes = await fs.readFile(join(directory, seed.filename!), 'utf8');
+    const firstEngine = new SimpleBpmnEngine(directory);
+    const secondEngine = new SimpleBpmnEngine(directory);
+    const first = await firstEngine.loadDiagram(seed.filename!);
+    const second = await secondEngine.loadDiagram(seed.filename!);
+
+    const outcomes = await Promise.allSettled([
+      firstEngine.saveAs(first.id, 'shared-target.bpmn', first.revision),
+      secondEngine.saveAs(second.id, 'shared-target.bpmn', second.revision)
+    ]);
+    expect(outcomes.filter(outcome => outcome.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter(outcome => outcome.status === 'rejected')).toHaveLength(1);
+    await expect(fs.readFile(join(directory, seed.filename!), 'utf8')).resolves.toBe(originalBytes);
+    await expect(fs.readFile(join(directory, 'shared-target.bpmn'), 'utf8'))
+      .resolves.toBe(originalBytes);
   });
 });

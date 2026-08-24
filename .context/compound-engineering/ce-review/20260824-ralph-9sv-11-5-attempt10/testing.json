@@ -1,0 +1,96 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Rewire test misses flow-reference reconciliation",
+      "severity": "P2",
+      "file": "tests/integration/handlers.test.ts",
+      "line": 1059,
+      "why_it_matters": "A sequence-flow rewire can preserve sourceRef/targetRef while leaving the old source's outgoing list or old target's incoming list stale. The new reconciliation code is specifically responsible for moving those references; without asserting them before and after reopen, a regression can emit semantically inconsistent BPMN that the current test still accepts.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Extend the rewire case to change both source and target, then assert the old source/target no longer contain the flow and the replacements contain it in outgoing/incoming in serialized XML and after open_bpmn.",
+      "confidence": 0.96,
+      "evidence": [
+        "src/core/BpmnDocument.ts:1208-1250 adds reconcileConnectionReferences, including the old/new outgoing and incoming collection transitions.",
+        "tests/integration/handlers.test.ts:1059-1124 rewires only targetId and verifies sourceRef/targetRef/default, but never inspects outgoing or incoming references on either old or new endpoint."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Association endpoint migration lacks coverage",
+      "severity": "P2",
+      "file": "tests/integration/handlers.test.ts",
+      "line": 1161,
+      "why_it_matters": "Association ownership is recalculated from its endpoints, which can move its semantic artifact between process or nested-scope containers. The only Association test changes label and direction, so it cannot catch a rewire that leaves the association in its old artifacts collection, becomes unparseable, or fails after persistence.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add a cross-container Association rewire with snap-to-boundary, assert ownerId/scopeId, old and new artifacts collections, snapped edge endpoints, and the same state after reopening the saved file.",
+      "confidence": 0.94,
+      "evidence": [
+        "src/core/SimpleBpmnEngine.ts:1139-1140 resolves Association ownerId and scopeId from the replacement endpoints.",
+        "src/core/BpmnDocument.ts:1210-1232 moves a retained connection among flowElements, artifacts, and messageFlows when its container changes.",
+        "tests/integration/handlers.test.ts:1161-1172 updates an Association's label and direction only; its endpoint, owner/scope, container, DI, and reopened XML are not exercised."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Document CAS conflict remains untested",
+      "severity": "P2",
+      "file": "tests/integration/handlers.test.ts",
+      "line": 1041,
+      "why_it_matters": "The public contract accepts either semanticRevision or document revision. The test proves a stale semantic revision is rejected and proves only a current expectedRevision succeeds, so a stale document-revision path could regress into an overwrite or an incorrectly shaped conflict response without detection.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "After one successful connection update, retry update_connection with the prior document revision and assert revision_conflict, unchanged semantic state, revision, memory XML, and disk bytes.",
+      "confidence": 0.95,
+      "evidence": [
+        "src/core/SimpleBpmnEngine.ts:1271 passes update.expectedRevision into commitMutation, whose revision-mismatch/external-change branches are at lines 1967-2006.",
+        "tests/integration/handlers.test.ts:1041-1057 asserts semantic_conflict only; the later expectedRevision at lines 1080-1084 is the current revision success path."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Semantic rewire collision rollback is untested",
+      "severity": "P2",
+      "file": "tests/integration/handlers.test.ts",
+      "line": 1059,
+      "why_it_matters": "Endpoint rewiring changes both semantic endpoints and edge waypoints, then evaluates introduced geometry diagnostics under reject-new, warn, or allow. The covered rewire opts into allow and only checks successful waypoints, leaving the rejection path and its atomic no-write guarantee unprotected for this destructive tool.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Create a rewire whose snapped route introduces a diagnostic; assert default reject-new returns an error with unchanged endpoints, edge, XML, revision, and disk, then assert warn/allow return the introduced diagnostic as documented.",
+      "confidence": 0.91,
+      "evidence": [
+        "src/core/SimpleBpmnEngine.ts:1248-1269 serializes before/after candidates and routes introduced diagnostics through assertSafeConnectionGeometry with update.collisionPolicy.",
+        "tests/integration/handlers.test.ts:1059-1078 uses collisionPolicy: allow, while its reject/warn collision coverage is limited to update_connection_geometry at lines 1335-1390."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Rollback test omits endpoint state",
+      "severity": "P2",
+      "file": "tests/integration/persistence.test.ts",
+      "line": 228,
+      "why_it_matters": "The save-failure test changes only a label, whereas a semantic rewire mutates endpoint IDs, ownership/scope, default ownership, and retained edge waypoints before persistence. A partial rollback in that path would strand the in-memory diagram even though the existing label-only test passes.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Inject the save failure during a snapped endpoint rewire (including a default flow if practical) and compare the complete connection, relevant endpoint default fields, edge waypoints, XML, revision, and disk bytes to their snapshots.",
+      "confidence": 0.93,
+      "evidence": [
+        "src/core/SimpleBpmnEngine.ts:1200-1246 applies semantic, ownership/default, and geometry mutations in the same candidate before save.",
+        "tests/integration/persistence.test.ts:228-241 invokes update_connection with label only and therefore never exercises rollback of the rewire-specific mutations."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "Focused suites passed for handlers, persistence, request validation, contracts, tool annotations, and server e2e, but the passing coverage does not exercise source-side sequence-flow reference reconciliation, Association container migration, stale document CAS, or semantic-rewire diagnostic rejection.",
+    "MessageFlow rewiring is asserted in memory only; it is not reopened from disk after the mutation, so serialized endpoint and DI retention remain implicit."
+  ]
+}

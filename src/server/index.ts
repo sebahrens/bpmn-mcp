@@ -7,6 +7,8 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { tools } from './tools.js';
 import { BpmnRequestHandler } from './handlers.js';
 import { config } from '../config/index.js';
+import { WorkspaceSession } from '../config/WorkspaceSession.js';
+import { SimpleBpmnEngine } from '../core/SimpleBpmnEngine.js';
 
 /** Maximum time accepted calls get to drain before shutdown is forced. */
 const SHUTDOWN_TIMEOUT_MS = config.shutdownTimeoutMs;
@@ -20,7 +22,7 @@ const packageMetadata = requirePackage('../../package.json') as {
 
 const SERVER_INSTRUCTIONS = [
   'Work with one active BPMN diagram at a time; creating or opening a diagram replaces the active context. Successful mutations auto-save to its active file. Use element IDs returned by create and query calls for all later connections, lookups, updates, and deletions. File tools are confined to the configured diagram store. Obtain explicit user confirmation before deleting a stored file or destructively replacing existing diagram or file state.',
-  'Recommended finish: validate, then auto_layout, then validate again. list_elements and list_diagrams are paginated; while hasMore is true, request the next page with offset + returnedCount. See tools/list for tool-specific arguments and outputs.'
+  'Recommended finish: validate, then auto_layout, then validate again. list_elements, list_connections, and list_diagrams are paginated; while hasMore is true, request the next page with offset + returnedCount. See tools/list for tool-specific arguments and outputs.'
 ].join('\n\n');
 
 // Create server instance
@@ -37,8 +39,17 @@ const server = new Server(
   }
 );
 
-// Create request handler
-const handler = new BpmnRequestHandler();
+// Resolve storage from the client session cwd without changing cwd. Imports
+// remain anchored to this installed module while each stdio child gets its own
+// repository-scoped workspace.
+const workspace = WorkspaceSession.fromLaunch();
+const handler = new BpmnRequestHandler(
+  new SimpleBpmnEngine(workspace.path),
+  undefined,
+  config.resourceLimits,
+  undefined,
+  workspace
+);
 
 // Handle list tools request
 server.setRequestHandler(ListToolsRequestSchema, async () => {

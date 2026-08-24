@@ -1,0 +1,30 @@
+{
+  "mode": "autofix",
+  "scope": {
+    "bead": "mcp-bpmn-3g8.4",
+    "files": [
+      "src/core/layout/CollaborationLayoutPolicy.ts",
+      "tests/unit/core/CollaborationAutoLayout.test.ts"
+    ],
+    "excluded": "All pre-existing working-tree changes and unrelated hunks"
+  },
+  "intent": "Replace repeated semantic-ID scans of BPMN DI collections with indexes built once per collaboration layout pass.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "performance"
+  ],
+  "findings": [],
+  "applied_fixes": [],
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "No matching docs/solutions knowledge base was present.",
+    "No agent-native capability change; this is an internal layout optimization.",
+    "Route collision scoring remains proportional to message flows times obstacles and is outside this bead."
+  ],
+  "verdict": "Ready to merge"
+}

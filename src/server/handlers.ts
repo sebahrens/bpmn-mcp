@@ -1,12 +1,26 @@
-import { SimpleBpmnEngine } from '../core/SimpleBpmnEngine.js';
+import {
+  ConnectionGeometryConflictError,
+  ConnectionRoutingFailureError,
+  ConnectionSemanticConflictError,
+  DocumentRevisionConflictError,
+  ElementGeometryConflictError,
+  GeometryPatchConflictError,
+  SimpleBpmnEngine,
+  connectionGeometryRevision,
+  connectionSemanticState
+} from '../core/SimpleBpmnEngine.js';
 import { BpmnSvgRenderer } from '../core/BpmnSvgRenderer.js';
 import { config } from '../config/index.js';
 import type { ResourceLimits } from '../config/index.js';
+import { WorkspaceSession } from '../config/WorkspaceSession.js';
 import { TypeMappings } from '../utils/TypeMappings.js';
+import { assertSafeFilename } from '../utils/SafeFilePath.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { MermaidConverter } from '../converters/MermaidConverter.js';
 import { diagramContext } from '../core/DiagramContext.js';
 import { BpmnValidator } from '../core/BpmnValidator.js';
+import { validateBpmnGeometry } from '../core/BpmnGeometry.js';
+import type { GeometryDiagnostic } from '../core/BpmnGeometry.js';
 import {
   BpmnAutoLayoutV2Adapter,
   closeActiveLayoutSubprocesses,
@@ -14,6 +28,8 @@ import {
 } from '../core/layout/BpmnLayoutAdapter.js';
 import type {
   AssociationDirection,
+  BpmnEdgeModel,
+  BpmnDocument,
   BpmnDocumentConnection,
   BpmnDocumentElement,
   BpmnLane,
@@ -35,6 +51,12 @@ type ToolDispatchers = {
   [Name in ToolName]: (args: ToolArguments<Name>) => Promise<CallToolResult>;
 };
 
+interface DiagramArtifactRenderer {
+  render(xml: string): Promise<string>;
+  renderPng(xml: string): Promise<Buffer>;
+  close(): Promise<void>;
+}
+
 interface ElementQueryView {
   id: string;
   type: string;
@@ -44,6 +66,9 @@ interface ElementQueryView {
   scopeId: string;
   position: Position;
   size: Size;
+  shapeId?: string;
+  bounds?: Position & Size;
+  labelBounds?: Position & Size;
   properties: Record<string, unknown>;
   processRef?: string;
   defaultFlow?: string;
@@ -61,11 +86,31 @@ interface AssociationQueryView {
   waypoints: Position[];
 }
 
+interface ConnectionQueryView {
+  id: string;
+  type: BpmnDocumentConnection['type'];
+  ownerId: string;
+  scopeId: string;
+  sourceId: string;
+  targetId: string;
+  label?: string;
+  condition?: BpmnDocumentConnection['condition'];
+  isDefault: boolean;
+  defaultOwnerId?: string;
+  associationDirection?: AssociationDirection;
+  waypoints: Position[];
+  edgeId?: string;
+  labelBounds?: Position & Size;
+  geometryRevision: string;
+  semanticRevision: string;
+}
+
 export class BpmnRequestHandler {
   private engine: SimpleBpmnEngine;
+  private readonly workspace: WorkspaceSession;
   private mermaidConverter: MermaidConverter;
   private validator: BpmnValidator;
-  private svgRenderer: BpmnSvgRenderer;
+  private svgRenderer: DiagramArtifactRenderer;
   private resourceLimits: ResourceLimits;
   private requestQueue: Promise<void> = Promise.resolve();
   private readonly activeSnapshotReads = new Set<Promise<void>>();
@@ -76,7 +121,7 @@ export class BpmnRequestHandler {
     new_from_mermaid: args => this.newFromMermaid(args),
     open_bpmn: args => this.openBpmn(args),
     open_mermaid_file: args => this.openMermaidFile(args),
-    save: () => this.save(),
+    save: args => this.save(args),
     save_as: args => this.saveAs(args),
     close: () => this.closeDiagram(),
     current: () => this.current(),
@@ -91,23 +136,37 @@ export class BpmnRequestHandler {
     add_lane: args => this.addLane(args),
     list_elements: args => this.listElements(args),
     get_element: args => this.getElement(args),
+    list_connections: args => this.listConnections(args),
+    get_connection: args => this.getConnection(args),
     update_element: args => this.updateElement(args),
+    update_connection: args => this.updateConnection(args),
+    update_element_geometry: args => this.updateElementGeometry(args),
+    update_connection_geometry: args => this.updateConnectionGeometry(args),
+    apply_geometry_patch: args => this.applyGeometryPatch(args),
+    route_connection: args => this.routeConnection(args),
     delete_element: args => this.deleteElement(args),
     export: args => this.export(args),
+    save_svg: args => this.saveSvg(args),
+    save_png: args => this.savePng(args),
     validate: args => this.validate(args),
+    analyze_geometry: args => this.analyzeGeometry(args),
     auto_layout: args => this.autoLayout(args),
     list_diagrams: args => this.listDiagrams(args),
     delete_diagram_file: args => this.deleteDiagramFile(args),
-    get_diagrams_path: () => this.getDiagramsPath()
+    get_diagrams_path: () => this.getDiagramsPath(),
+    get_workspace: () => this.getWorkspace(),
+    select_workspace: args => this.selectWorkspace(args)
   };
 
   constructor(
     engine = new SimpleBpmnEngine(),
     mermaidConverter: MermaidConverter | undefined = undefined,
     resourceLimits: ResourceLimits = config.resourceLimits,
-    svgRenderer = new BpmnSvgRenderer()
+    svgRenderer: DiagramArtifactRenderer = new BpmnSvgRenderer(),
+    workspace = WorkspaceSession.fixed(engine.getDiagramsPath())
   ) {
     this.engine = engine;
+    this.workspace = workspace;
     this.mermaidConverter = mermaidConverter ?? new MermaidConverter(
       new BpmnAutoLayoutV2Adapter(
         undefined,
@@ -135,7 +194,7 @@ export class BpmnRequestHandler {
       });
     }
 
-    if (name === 'export') {
+    if (name === 'export' || name === 'analyze_geometry') {
       return this.enqueueSnapshotRead(name, args);
     }
 
@@ -194,6 +253,99 @@ export class BpmnRequestHandler {
       const request = parseToolRequest(name, args);
       return await this.dispatch(request);
     } catch (error: unknown) {
+      if (error instanceof DocumentRevisionConflictError) {
+        return {
+          content: [{ type: 'text', text: `Error: ${error.message}` }],
+          isError: true,
+          structuredContent: {
+            code: error.code,
+            conflict: true,
+            reason: error.reason,
+            filename: error.filename,
+            expectedRevision: error.expectedRevision ?? null,
+            actualRevision: error.actualRevision ?? null,
+            recovery: error.actualRevision
+              ? 'Reopen the file, or retry with actualRevision to explicitly overwrite that version.'
+              : 'Reopen the file before retrying.'
+          }
+        };
+      }
+      if (error instanceof ElementGeometryConflictError) {
+        return {
+          content: [{ type: 'text', text: `Error: ${error.message}` }],
+          isError: true,
+          structuredContent: {
+            code: error.code,
+            conflict: true,
+            elementId: error.elementId,
+            expectedBounds: error.expectedBounds,
+            actualBounds: error.actualBounds,
+            recovery: 'Refresh the element geometry and retry with its current bounds or revision.'
+          }
+        };
+      }
+      if (error instanceof ConnectionGeometryConflictError) {
+        return {
+          content: [{ type: 'text', text: `Error: ${error.message}` }],
+          isError: true,
+          structuredContent: {
+            code: error.code,
+            conflict: true,
+            reason: error.reason,
+            connectionId: error.connectionId,
+            ...(error.expectedWaypoints
+              ? { expectedWaypoints: error.expectedWaypoints }
+              : {}),
+            actualWaypoints: error.actualWaypoints,
+            expectedGeometryRevision: error.expectedGeometryRevision ?? null,
+            actualGeometryRevision: error.actualGeometryRevision,
+            recovery: 'Refresh the connection geometry and retry with its current waypoints or geometry revision.'
+          }
+        };
+      }
+      if (error instanceof ConnectionSemanticConflictError) {
+        return {
+          content: [{ type: 'text', text: `Error: ${error.message}` }],
+          isError: true,
+          structuredContent: {
+            code: error.code,
+            conflict: true,
+            connectionId: error.connectionId,
+            expectedSemanticRevision: error.expectedSemanticRevision,
+            actualSemanticRevision: error.actualSemanticRevision,
+            recovery: 'Refresh the connection and retry with its current semantic or document revision.'
+          }
+        };
+      }
+      if (error instanceof GeometryPatchConflictError) {
+        return {
+          content: [{ type: 'text', text: `Error: ${error.message}` }],
+          isError: true,
+          structuredContent: {
+            code: error.code,
+            conflict: true,
+            objectType: error.objectType,
+            objectId: error.objectId,
+            field: error.field,
+            expectedValue: error.expectedValue,
+            actualValue: error.actualValue,
+            recovery: 'Refresh the object geometry and retry with its current before values or document revision.'
+          }
+        };
+      }
+      if (error instanceof ConnectionRoutingFailureError) {
+        return {
+          content: [{ type: 'text', text: `Error: ${error.message}` }],
+          isError: true,
+          structuredContent: {
+            code: error.code,
+            connectionId: error.connectionId,
+            mutated: false,
+            rankedDiagnostics: error.rankedDiagnostics,
+            recovery: 'Move an obstacle, reduce clearance, or inspect the ranked candidate diagnostics before retrying.'
+          }
+        };
+      }
       return {
         content: [
           {
@@ -227,14 +379,26 @@ export class BpmnRequestHandler {
       case 'add_lane': return this.dispatchers.add_lane(request.args);
       case 'list_elements': return this.dispatchers.list_elements(request.args);
       case 'get_element': return this.dispatchers.get_element(request.args);
+      case 'list_connections': return this.dispatchers.list_connections(request.args);
+      case 'get_connection': return this.dispatchers.get_connection(request.args);
       case 'update_element': return this.dispatchers.update_element(request.args);
+      case 'update_connection': return this.dispatchers.update_connection(request.args);
+      case 'update_element_geometry': return this.dispatchers.update_element_geometry(request.args);
+      case 'update_connection_geometry': return this.dispatchers.update_connection_geometry(request.args);
+      case 'apply_geometry_patch': return this.dispatchers.apply_geometry_patch(request.args);
+      case 'route_connection': return this.dispatchers.route_connection(request.args);
       case 'delete_element': return this.dispatchers.delete_element(request.args);
       case 'export': return this.dispatchers.export(request.args);
+      case 'save_svg': return this.dispatchers.save_svg(request.args);
+      case 'save_png': return this.dispatchers.save_png(request.args);
       case 'validate': return this.dispatchers.validate(request.args);
+      case 'analyze_geometry': return this.dispatchers.analyze_geometry(request.args);
       case 'auto_layout': return this.dispatchers.auto_layout(request.args);
       case 'list_diagrams': return this.dispatchers.list_diagrams(request.args);
       case 'delete_diagram_file': return this.dispatchers.delete_diagram_file(request.args);
       case 'get_diagrams_path': return this.dispatchers.get_diagrams_path(request.args);
+      case 'get_workspace': return this.dispatchers.get_workspace(request.args);
+      case 'select_workspace': return this.dispatchers.select_workspace(request.args);
       default: return assertNever(request);
     }
   }
@@ -250,7 +414,8 @@ export class BpmnRequestHandler {
       name,
       type,
       extensionProfile: context.extensionProfile,
-      filename: activeFilename(context)
+      filename: activeFilename(context),
+      revision: context.revision
     }, `Created new ${type} diagram "${name}"\nExtension profile: ${context.extensionProfile}`);
   }
 
@@ -271,6 +436,7 @@ export class BpmnRequestHandler {
       type: context.type,
       extensionProfile: context.extensionProfile,
       filename: activeFilename(context),
+      revision: context.revision,
       nodeCount: conversionResult.stats.nodeCount,
       flowCount: conversionResult.stats.edgeCount,
       warnings: conversionResult.warnings
@@ -290,6 +456,7 @@ export class BpmnRequestHandler {
       type: context.type,
       extensionProfile: context.extensionProfile,
       filename: activeFilename(context),
+      revision: context.revision,
       elementCount: context.elements.size,
       connectionCount: context.connections.size
     }, `Opened BPMN diagram "${context.name}" from ${filename}\nExtension profile: ${context.extensionProfile}\nElements: ${context.elements.size}, Connections: ${context.connections.size}`);
@@ -318,6 +485,7 @@ export class BpmnRequestHandler {
       type: context.type,
       extensionProfile: context.extensionProfile,
       filename: activeFilename(context),
+      revision: context.revision,
       sourceFilename: filename,
       nodeCount: conversionResult.stats.nodeCount,
       flowCount: conversionResult.stats.edgeCount,
@@ -325,7 +493,7 @@ export class BpmnRequestHandler {
     }, `Opened and converted Mermaid file "${filename}" to BPMN\nExtension profile: ${context.extensionProfile}\nElements: ${conversionResult.stats.nodeCount} nodes, ${conversionResult.stats.edgeCount} flows${this.conversionWarningText(conversionResult.warnings)}`);
   }
 
-  private async save(): Promise<CallToolResult> {
+  private async save(args: ToolArguments<'save'>): Promise<CallToolResult> {
     const info = diagramContext.getCurrentInfo();
     if (!info) {
       throw new Error('No current diagram to save');
@@ -336,25 +504,31 @@ export class BpmnRequestHandler {
     }
     
     const context = diagramContext.getCurrent();
-    await this.engine.save(context.id);
+    const beforeRevision = context.revision;
+    await this.engine.save(context.id, args.expectedRevision);
     
     return textToolResult('save', {
       processId: context.id,
       name: info.name,
-      filename: info.filename
+      filename: info.filename,
+      beforeRevision,
+      afterRevision: context.revision
     }, `Saved diagram "${info.name}" to ${info.filename}`);
   }
 
   private async saveAs(args: ToolArguments<'save_as'>): Promise<CallToolResult> {
-    const { filename } = args;
+    const { filename, expectedRevision } = args;
     const context = diagramContext.getCurrent();
     const info = diagramContext.getCurrentInfo()!;
-    const activeFilename = await this.engine.saveAs(context.id, filename);
+    const beforeRevision = context.revision;
+    const activeFilename = await this.engine.saveAs(context.id, filename, expectedRevision);
     
     return textToolResult('save_as', {
       processId: context.id,
       name: info.name,
-      filename: activeFilename
+      filename: activeFilename,
+      beforeRevision,
+      afterRevision: context.revision
     }, `Saved diagram "${info.name}" as ${activeFilename}`);
   }
 
@@ -373,7 +547,8 @@ export class BpmnRequestHandler {
     return textToolResult('close', {
       processId: context.id,
       name,
-      filename
+      filename,
+      revision: context.revision
     }, `Closed diagram "${name}"`);
   }
 
@@ -414,7 +589,8 @@ export class BpmnRequestHandler {
       position,
       attachTo,
       ownerId,
-      scopeId
+      scopeId,
+      expectedRevision
     } = args;
     const context = diagramContext.getCurrent();
     
@@ -433,17 +609,22 @@ export class BpmnRequestHandler {
       scopeId
     };
 
-    const element = await this.engine.createElement(context.id, elementDef);
+    const beforeRevision = context.revision;
+    const element = await this.engine.createElement(context.id, elementDef, expectedRevision);
 
     return textToolResult('add_event', {
       elementId: element.id,
       elementType: element.type,
-      filename: activeFilename(context)
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
     }, `Added ${eventType} event "${name || 'Unnamed'}" with ID: ${element.id}`);
   }
 
   private async addActivity(args: ToolArguments<'add_activity'>): Promise<CallToolResult> {
-    const { activityType, name, position, properties = {}, ownerId, scopeId } = args;
+    const {
+      activityType, name, position, properties = {}, ownerId, scopeId, expectedRevision
+    } = args;
     const context = diagramContext.getCurrent();
     
     const bpmnType = TypeMappings.mapActivityType(activityType);
@@ -456,17 +637,20 @@ export class BpmnRequestHandler {
       scopeId
     };
 
-    const element = await this.engine.createElement(context.id, elementDef);
+    const beforeRevision = context.revision;
+    const element = await this.engine.createElement(context.id, elementDef, expectedRevision);
 
     return textToolResult('add_activity', {
       elementId: element.id,
       elementType: element.type,
-      filename: activeFilename(context)
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
     }, `Added ${activityType} "${name}" with ID: ${element.id}`);
   }
 
   private async addGateway(args: ToolArguments<'add_gateway'>): Promise<CallToolResult> {
-    const { gatewayType, name, position, ownerId, scopeId } = args;
+    const { gatewayType, name, position, ownerId, scopeId, expectedRevision } = args;
     const context = diagramContext.getCurrent();
     
     const bpmnType = TypeMappings.mapGatewayType(gatewayType);
@@ -478,12 +662,15 @@ export class BpmnRequestHandler {
       scopeId
     };
 
-    const element = await this.engine.createElement(context.id, elementDef);
+    const beforeRevision = context.revision;
+    const element = await this.engine.createElement(context.id, elementDef, expectedRevision);
 
     return textToolResult('add_gateway', {
       elementId: element.id,
       elementType: element.type,
-      filename: activeFilename(context)
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
     }, `Added ${gatewayType} gateway "${name || 'Gateway'}" with ID: ${element.id}`);
   }
 
@@ -494,40 +681,49 @@ export class BpmnRequestHandler {
       isCollection = false,
       itemSubjectRef,
       ownerId,
-      scopeId
+      scopeId,
+      expectedRevision
     } = args;
     const context = diagramContext.getCurrent();
+    const beforeRevision = context.revision;
     const { dataObject, reference } = await this.engine.addDataObject(context.id, name, {
       position,
       isCollection,
       itemSubjectRef,
       ownerId,
-      scopeId
+      scopeId,
+      expectedRevision
     });
 
     return textToolResult('add_data_object', {
       referenceId: reference.id,
       dataObjectId: dataObject.id,
-      filename: activeFilename(context)
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
     }, `Added data object "${name}" with reference ID: ${reference.id} and backing ID: ${dataObject.id}`);
   }
 
   private async addTextAnnotation(
     args: ToolArguments<'add_text_annotation'>
   ): Promise<CallToolResult> {
-    const { text, textFormat, position, size, associatedElementId } = args;
+    const { text, textFormat, position, size, associatedElementId, expectedRevision } = args;
     const context = diagramContext.getCurrent();
+    const beforeRevision = context.revision;
     const { annotation, association } = await this.engine.addTextAnnotation(context.id, text, {
       textFormat,
       position,
       size,
-      associatedElementId
+      associatedElementId,
+      expectedRevision
     });
 
     return textToolResult('add_text_annotation', {
       annotationId: annotation.id,
       associationId: association?.id,
-      filename: activeFilename(context)
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
     }, association
       ? `Added text annotation ${annotation.id} with association ${association.id} to ${associatedElementId}`
       : `Added text annotation ${annotation.id}`);
@@ -541,15 +737,18 @@ export class BpmnRequestHandler {
       condition,
       conditionLanguage,
       conditionType,
-      isDefault
+      isDefault,
+      expectedRevision
     } = args;
     const context = diagramContext.getCurrent();
 
+    const beforeRevision = context.revision;
     const connection = await this.engine.connect(context.id, sourceId, targetId, label, {
       condition,
       conditionLanguage,
       conditionType,
-      isDefault
+      isDefault,
+      expectedRevision
     });
 
     return textToolResult('connect', {
@@ -557,18 +756,22 @@ export class BpmnRequestHandler {
       connectionType: connection.type,
       sourceId,
       targetId,
-      filename: activeFilename(context)
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
     }, `Connected ${sourceId} to ${targetId}${label ? ` with label "${label}"` : ''}`);
   }
 
   private async addAssociation(args: ToolArguments<'add_association'>): Promise<CallToolResult> {
-    const { sourceId, targetId, associationDirection = 'None' } = args;
+    const { sourceId, targetId, associationDirection = 'None', expectedRevision } = args;
     const context = diagramContext.getCurrent();
+    const beforeRevision = context.revision;
     const association = await this.engine.addAssociation(
       context.id,
       sourceId,
       targetId,
-      associationDirection
+      associationDirection,
+      expectedRevision
     );
 
     return textToolResult('add_association', {
@@ -576,12 +779,14 @@ export class BpmnRequestHandler {
       sourceId,
       targetId,
       associationDirection,
-      filename: activeFilename(context)
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
     }, `Added association ${association.id} from ${sourceId} to ${targetId} (${associationDirection})`);
   }
 
   private async addPool(args: ToolArguments<'add_pool'>): Promise<CallToolResult> {
-    const { name, position, size, blackBox = false } = args;
+    const { name, position, size, blackBox = false, expectedRevision } = args;
     const context = diagramContext.getCurrent();
     
     if (context.type !== 'collaboration') {
@@ -596,26 +801,34 @@ export class BpmnRequestHandler {
       properties: { blackBox }
     };
 
-    const element = await this.engine.createElement(context.id, elementDef);
+    const beforeRevision = context.revision;
+    const element = await this.engine.createElement(context.id, elementDef, expectedRevision);
 
     return textToolResult('add_pool', {
       elementId: element.id,
       processId: element.kind === 'participant' ? element.processRef : undefined,
       blackBox,
-      filename: activeFilename(context)
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
     }, `Added pool "${name}" with ID: ${element.id}`);
   }
 
   private async addLane(args: ToolArguments<'add_lane'>): Promise<CallToolResult> {
-    const { poolId, name, flowNodeIds, position = 'bottom' } = args;
+    const { poolId, name, flowNodeIds, position = 'bottom', expectedRevision } = args;
     const context = diagramContext.getCurrent();
-    const lane = await this.engine.addLane(context.id, poolId, name, flowNodeIds, position);
+    const beforeRevision = context.revision;
+    const lane = await this.engine.addLane(
+      context.id, poolId, name, flowNodeIds, position, expectedRevision
+    );
 
     return textToolResult('add_lane', {
       laneId: lane.id,
       poolId,
       assignedFlowNodeCount: lane.flowNodeRefs.length,
-      filename: activeFilename(context)
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
     }, `Added lane "${name}" with ID: ${lane.id}; assigned ${lane.flowNodeRefs.length} flow node(s)`);
   }
 
@@ -674,6 +887,7 @@ export class BpmnRequestHandler {
         processRef: e.kind === 'participant' ? e.processRef : undefined,
         position: e.position,
         size: e.size,
+        ...elementGeometryQueryFields(context.document, e.id),
         defaultFlow: e.kind === 'flowNode' ? e.defaultFlow : undefined,
         incoming: incomingCounts.get(e.id) ?? 0,
         outgoing: outgoingCounts.get(e.id) ?? 0
@@ -686,7 +900,8 @@ export class BpmnRequestHandler {
       offset,
       limit,
       hasMore: offset + elementList.length < filteredElements.length,
-      elements: elementList
+      elements: elementList,
+      revision: context.revision
     };
     return textToolResult('list_elements', result, JSON.stringify(result, null, 2));
   }
@@ -697,7 +912,7 @@ export class BpmnRequestHandler {
     
     const connection = context.connections.get(elementId);
     if (connection?.type === 'bpmn:Association') {
-      const result = associationQueryView(connection);
+      const result = { ...associationQueryView(connection), revision: context.revision };
       return textToolResult('get_element', result, JSON.stringify(result, null, 2));
     }
 
@@ -724,6 +939,7 @@ export class BpmnRequestHandler {
       processRef: element.kind === 'participant' ? element.processRef : undefined,
       position: element.position,
       size: element.size,
+      ...elementGeometryQueryFields(context.document, element.id),
       defaultFlow: element.kind === 'flowNode' ? element.defaultFlow : undefined,
       incoming: incoming.map(c => ({ id: c.id, source: c.source })),
       outgoing: outgoing.map(c => ({
@@ -734,33 +950,216 @@ export class BpmnRequestHandler {
         condition: c.condition,
         isDefault: element.kind === 'flowNode' && element.defaultFlow === c.id
       })),
-      properties: element.properties
+      properties: element.properties,
+      revision: context.revision
     };
 
     return textToolResult('get_element', details, JSON.stringify(details, null, 2));
   }
 
-  private async updateElement(args: ToolArguments<'update_element'>): Promise<CallToolResult> {
-    const { elementId, name, properties, defaultFlow } = args;
+  private async listConnections(
+    args: ToolArguments<'list_connections'>
+  ): Promise<CallToolResult> {
+    const { connectionType, sourceId, targetId, ownerId, scopeId, limit, offset } = args;
     const context = diagramContext.getCurrent();
+    if (context.connections.size > this.resourceLimits.maxListingItems) {
+      throw new Error(
+        `Connection listing rejected: scan limit ${this.resourceLimits.maxListingItems} exceeded`
+      );
+    }
+
+    const edgesByConnection = new Map(Array.from(
+      context.document.diagram.edges.values(),
+      edge => [edge.connectionId, edge]
+    ));
+    const filtered = Array.from(context.connections.values())
+      .filter(connection => (
+        (!connectionType || connection.type === connectionType)
+        && (!sourceId || connection.source === sourceId)
+        && (!targetId || connection.target === targetId)
+        && (!ownerId || connection.ownerId === ownerId)
+        && (!scopeId || connection.scopeId === scopeId)
+      ))
+      .sort((left, right) => compareStableText(left.id, right.id));
+    const connections = filtered
+      .slice(offset, offset + limit)
+      .map(connection => connectionQueryView(
+        context,
+        connection,
+        edgesByConnection.get(connection.id)
+      ));
+    const result = {
+      count: filtered.length,
+      returnedCount: connections.length,
+      offset,
+      limit,
+      hasMore: offset + connections.length < filtered.length,
+      connections,
+      revision: context.revision
+    };
+    return textToolResult('list_connections', result, JSON.stringify(result, null, 2));
+  }
+
+  private async getConnection(
+    args: ToolArguments<'get_connection'>
+  ): Promise<CallToolResult> {
+    const context = diagramContext.getCurrent();
+    const connection = context.connections.get(args.connectionId);
+    if (!connection) throw new Error(`Connection ${args.connectionId} not found`);
+    const edge = Array.from(context.document.diagram.edges.values()).find(
+      candidate => candidate.connectionId === connection.id
+    );
+    const result = {
+      ...connectionQueryView(context, connection, edge),
+      revision: context.revision
+    };
+    return textToolResult('get_connection', result, JSON.stringify(result, null, 2));
+  }
+
+  private async updateElement(args: ToolArguments<'update_element'>): Promise<CallToolResult> {
+    const { elementId, name, properties, defaultFlow, expectedRevision } = args;
+    const context = diagramContext.getCurrent();
+    const beforeRevision = context.revision;
     await this.engine.updateElement(context.id, elementId, {
       name,
       properties,
       ...(Object.prototype.hasOwnProperty.call(args, 'defaultFlow') ? { defaultFlow } : {})
-    });
+    }, expectedRevision);
 
     return textToolResult('update_element', {
       elementId,
-      filename: activeFilename(context)
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
     }, `Updated element ${elementId}`);
   }
 
-  private async deleteElement(args: ToolArguments<'delete_element'>): Promise<CallToolResult> {
-    const { elementId } = args;
+  private async updateConnection(
+    args: ToolArguments<'update_connection'>
+  ): Promise<CallToolResult> {
     const context = diagramContext.getCurrent();
+    const beforeRevision = context.revision;
+    const result = await this.engine.updateConnection(context.id, args.connectionId, args);
+    const structuredResult = {
+      connectionId: args.connectionId,
+      ...result,
+      endpointPolicy: args.endpointPolicy,
+      collisionPolicy: args.collisionPolicy,
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
+    };
+    return textToolResult(
+      'update_connection',
+      structuredResult,
+      JSON.stringify(structuredResult, null, 2)
+    );
+  }
+
+  private async updateElementGeometry(
+    args: ToolArguments<'update_element_geometry'>
+  ): Promise<CallToolResult> {
+    const context = diagramContext.getCurrent();
+    const beforeRevision = context.revision;
+    const result = await this.engine.updateElementGeometry(context.id, args.elementId, args);
+    const structuredResult = {
+      elementId: args.elementId,
+      ...result,
+      dryRun: args.dryRun,
+      applied: !args.dryRun,
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
+    };
+    return textToolResult(
+      'update_element_geometry',
+      structuredResult,
+      JSON.stringify(structuredResult, null, 2)
+    );
+  }
+
+  private async updateConnectionGeometry(
+    args: ToolArguments<'update_connection_geometry'>
+  ): Promise<CallToolResult> {
+    const context = diagramContext.getCurrent();
+    const beforeRevision = context.revision;
+    const result = await this.engine.updateConnectionGeometry(
+      context.id,
+      args.connectionId,
+      args
+    );
+    const structuredResult = {
+      connectionId: args.connectionId,
+      ...result,
+      endpointPolicy: args.endpointPolicy,
+      collisionPolicy: args.collisionPolicy,
+      dryRun: args.dryRun,
+      applied: !args.dryRun,
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
+    };
+    return textToolResult(
+      'update_connection_geometry',
+      structuredResult,
+      JSON.stringify(structuredResult, null, 2)
+    );
+  }
+
+  private async applyGeometryPatch(
+    args: ToolArguments<'apply_geometry_patch'>
+  ): Promise<CallToolResult> {
+    const context = diagramContext.getCurrent();
+    const beforeRevision = context.revision;
+    const result = await this.engine.applyGeometryPatch(context.id, args);
+    const structuredResult = {
+      ...result,
+      summary: summarizeGeometryDiagnostics(result.diagnostics),
+      collisionPolicy: args.collisionPolicy,
+      dryRun: args.dryRun,
+      applied: !args.dryRun,
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
+    };
+    return textToolResult(
+      'apply_geometry_patch',
+      structuredResult,
+      JSON.stringify(structuredResult, null, 2)
+    );
+  }
+
+  private async routeConnection(
+    args: ToolArguments<'route_connection'>
+  ): Promise<CallToolResult> {
+    const context = diagramContext.getCurrent();
+    const beforeRevision = context.revision;
+    const result = await this.engine.routeConnection(context.id, args.connectionId, args);
+    const structuredResult = {
+      ...result,
+      clearance: args.clearance,
+      preserveOtherGeometry: args.preserveOtherGeometry,
+      apply: args.apply,
+      applied: args.apply,
+      filename: activeFilename(context),
+      revision: context.revision,
+      beforeRevision,
+      afterRevision: context.revision
+    };
+    return textToolResult(
+      'route_connection',
+      structuredResult,
+      JSON.stringify(structuredResult, null, 2)
+    );
+  }
+
+  private async deleteElement(args: ToolArguments<'delete_element'>): Promise<CallToolResult> {
+    const { elementId, expectedRevision } = args;
+    const context = diagramContext.getCurrent();
+    const beforeRevision = context.revision;
     const connection = context.connections.get(elementId);
     if (connection) {
-      await this.engine.deleteElement(context.id, elementId);
+      await this.engine.deleteElement(context.id, elementId, expectedRevision);
       const connectionKind = connection.type === 'bpmn:SequenceFlow'
         ? 'sequence flow'
         : connection.type === 'bpmn:MessageFlow'
@@ -772,16 +1171,22 @@ export class BpmnRequestHandler {
         elementId,
         deletedKind: 'connection',
         removedConnectionCount: 0,
-        filename: activeFilename(context)
+        filename: activeFilename(context),
+        beforeRevision,
+        afterRevision: context.revision
       }, `Deleted ${connectionKind} ${elementId}`);
     }
-    const removedConnectionCount = await this.engine.deleteElement(context.id, elementId);
+    const removedConnectionCount = await this.engine.deleteElement(
+      context.id, elementId, expectedRevision
+    );
 
     return textToolResult('delete_element', {
       elementId,
       deletedKind: 'element',
       removedConnectionCount,
-      filename: activeFilename(context)
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
     }, `Deleted element ${elementId} and ${removedConnectionCount} associated connections`);
   }
 
@@ -822,6 +1227,72 @@ export class BpmnRequestHandler {
     }, content);
   }
 
+  private async saveSvg(args: ToolArguments<'save_svg'>): Promise<CallToolResult> {
+    assertSafeFilename(args.filename, ['.svg']);
+    const context = diagramContext.getCurrent();
+    const xml = await this.engine.exportXml(context.id, true);
+    const svg = await this.svgRenderer.render(xml);
+    return this.saveRenderedArtifact(
+      context,
+      args.filename,
+      'svg',
+      svg,
+      args.overwrite
+    );
+  }
+
+  private async savePng(args: ToolArguments<'save_png'>): Promise<CallToolResult> {
+    assertSafeFilename(args.filename, ['.png']);
+    const context = diagramContext.getCurrent();
+    const xml = await this.engine.exportXml(context.id, true);
+    const png = await this.svgRenderer.renderPng(xml);
+    return this.saveRenderedArtifact(
+      context,
+      args.filename,
+      'png',
+      png,
+      args.overwrite
+    );
+  }
+
+  private async saveRenderedArtifact(
+    context: ProcessContext,
+    filename: string,
+    format: 'svg' | 'png',
+    content: string | Buffer,
+    overwrite: boolean
+  ): Promise<CallToolResult> {
+    const byteLength = typeof content === 'string'
+      ? Buffer.byteLength(content, 'utf8')
+      : content.byteLength;
+    const result = await this.engine.saveRenderedArtifact(
+      content,
+      filename,
+      format,
+      overwrite,
+      this.resourceLimits.maxArtifactBytes
+    );
+    if (!result.success) {
+      throw new Error(result.error || 'Unable to save rendered artifact');
+    }
+
+    return format === 'svg'
+      ? textToolResult('save_svg', {
+        processId: context.id,
+        filename,
+        format: 'svg',
+        mimeType: 'image/svg+xml',
+        byteLength
+      }, `Saved rendered SVG artifact as ${filename}`)
+      : textToolResult('save_png', {
+        processId: context.id,
+        filename,
+        format: 'png',
+        mimeType: 'image/png',
+        byteLength
+      }, `Saved rendered PNG artifact as ${filename}`);
+  }
+
   private async validate(args: ToolArguments<'validate'>): Promise<CallToolResult> {
     const context = diagramContext.getCurrent();
     const level = (args.level || 'full') as ValidationLevel;
@@ -835,15 +1306,49 @@ export class BpmnRequestHandler {
     return textToolResult('validate', structuredResult, JSON.stringify(result, null, 2));
   }
 
-  private async autoLayout(args: ToolArguments<'auto_layout'>): Promise<CallToolResult> {
-    const { algorithm = 'horizontal' } = args;
+  private async analyzeGeometry(
+    args: ToolArguments<'analyze_geometry'>
+  ): Promise<CallToolResult> {
     const context = diagramContext.getCurrent();
+    const xml = await this.engine.exportXml(context.id, true);
+    const report = await validateBpmnGeometry(xml, {
+      ...args,
+      maxShapes: this.resourceLimits.maxLayoutElements,
+      maxEdges: this.resourceLimits.maxLayoutConnections,
+      maxDiagnostics: this.resourceLimits.maxListingItems
+    });
+    const structuredResult = {
+      valid: report.valid,
+      diagnostics: report.diagnostics,
+      summary: report.summary,
+      scope: {
+        elementIds: [...args.elementIds].sort(compareStableText),
+        connectionIds: [...args.connectionIds].sort(compareStableText),
+        clearance: args.clearance,
+        tolerance: args.tolerance,
+        requireOrthogonal: args.requireOrthogonal
+      },
+      geometry: report.geometry,
+      filename: activeFilename(context),
+      revision: context.revision
+    };
+    return textToolResult(
+      'analyze_geometry',
+      structuredResult,
+      JSON.stringify(structuredResult, null, 2)
+    );
+  }
+
+  private async autoLayout(args: ToolArguments<'auto_layout'>): Promise<CallToolResult> {
+    const { algorithm = 'horizontal', expectedRevision } = args;
+    const context = diagramContext.getCurrent();
+    const beforeRevision = context.revision;
     
     const elementCount = context.elements.size;
     const connectionCount = context.connections.size;
     
     // Apply auto-layout
-    const layout = await this.engine.applyAutoLayout(context.id);
+    const layout = await this.engine.applyAutoLayout(context.id, expectedRevision);
     const warningText = layout.warnings.length === 0
       ? ''
       : `\n\nWarnings:\n${layout.warnings.map(formatBpmnLayoutDiagnostic).join('\n')}`;
@@ -853,7 +1358,9 @@ export class BpmnRequestHandler {
       elementCount,
       connectionCount,
       warnings: layout.warnings,
-      filename: activeFilename(context)
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
     }, `Applied ${algorithm} auto-layout to current diagram\n\nRepositioned ${elementCount} elements and ${connectionCount} connections.${warningText}`);
   }
 
@@ -908,6 +1415,29 @@ export class BpmnRequestHandler {
     return textToolResult('get_diagrams_path', { path },
       `BPMN diagrams are saved to: ${path}\n\nYou can set a custom path using the environment variable: MCP_BPMN_DIAGRAMS_PATH`);
   }
+
+  private async getWorkspace(): Promise<CallToolResult> {
+    const info = this.workspace.getInfo();
+    return textToolResult('get_workspace', info, JSON.stringify(info, null, 2));
+  }
+
+  private async selectWorkspace(
+    args: ToolArguments<'select_workspace'>
+  ): Promise<CallToolResult> {
+    const workspace = this.workspace.resolveSelection(args.path);
+    const changed = workspace !== this.workspace.path;
+    if (changed) {
+      if (diagramContext.hasCurrent()) {
+        await this.engine.releaseProcess(diagramContext.getCurrent());
+        diagramContext.clear();
+      }
+      this.engine.selectDiagramsPath(workspace);
+    }
+
+    const selection = this.workspace.activateSelection(workspace);
+    const result = { ...selection.info, changed };
+    return textToolResult('select_workspace', result, JSON.stringify(result, null, 2));
+  }
 }
 
 function toolResult<Name extends ToolName>(
@@ -942,6 +1472,18 @@ function compareStableText(left: string, right: string): number {
   return 0;
 }
 
+function summarizeGeometryDiagnostics(diagnostics: GeometryDiagnostic[]) {
+  const byCode: Record<string, number> = {};
+  let errors = 0;
+  let warnings = 0;
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.severity === 'error') errors += 1;
+    else warnings += 1;
+    byCode[diagnostic.code] = (byCode[diagnostic.code] ?? 0) + 1;
+  }
+  return { total: diagnostics.length, errors, warnings, byCode };
+}
+
 function laneQueryView(lane: BpmnLane): ElementQueryView {
   return {
     ...lane,
@@ -950,6 +1492,21 @@ function laneQueryView(lane: BpmnLane): ElementQueryView {
     ownerId: lane.processId,
     scopeId: lane.processId,
     properties: { flowNodeRefs: lane.flowNodeRefs }
+  };
+}
+
+function elementGeometryQueryFields(
+  document: BpmnDocument,
+  elementId: string
+): Pick<ElementQueryView, 'shapeId' | 'bounds' | 'labelBounds'> {
+  const shape = Array.from(document.diagram.shapes.values()).find(
+    candidate => candidate.elementId === elementId
+  );
+  if (!shape) return {};
+  return {
+    shapeId: shape.id,
+    bounds: { ...shape.bounds },
+    ...(shape.labelBounds ? { labelBounds: { ...shape.labelBounds } } : {})
   };
 }
 
@@ -964,6 +1521,47 @@ function associationQueryView(connection: BpmnDocumentConnection): AssociationQu
     targetId: connection.target,
     associationDirection: connection.associationDirection ?? 'None',
     waypoints: connection.waypoints.map(point => ({ ...point }))
+  };
+}
+
+function connectionQueryView(
+  context: ProcessContext,
+  connection: BpmnDocumentConnection,
+  edge: BpmnEdgeModel | undefined
+): ConnectionQueryView {
+  const source = context.elements.get(connection.source);
+  const defaultOwnerId = connection.type === 'bpmn:SequenceFlow'
+    && source?.kind === 'flowNode'
+    && source.defaultFlow === connection.id
+    ? source.id
+    : undefined;
+  const waypoints = (edge?.waypoints ?? connection.waypoints).map(point => ({ ...point }));
+  const labelBounds = edge?.labelBounds ? { ...edge.labelBounds } : undefined;
+  const geometryRevision = edge
+    ? connectionGeometryRevision(connection.id, edge)
+    : connectionGeometryRevision(connection.id, {
+      id: null,
+      waypoints,
+      labelBounds
+    });
+
+  return {
+    id: connection.id,
+    type: connection.type,
+    ownerId: connection.ownerId,
+    scopeId: connection.scopeId,
+    sourceId: connection.source,
+    targetId: connection.target,
+    label: connection.label,
+    condition: connection.condition ? { ...connection.condition } : undefined,
+    isDefault: defaultOwnerId !== undefined,
+    defaultOwnerId,
+    associationDirection: connection.associationDirection,
+    waypoints,
+    edgeId: edge?.id,
+    labelBounds,
+    geometryRevision,
+    semanticRevision: connectionSemanticState(context.document, connection).semanticRevision
   };
 }
 

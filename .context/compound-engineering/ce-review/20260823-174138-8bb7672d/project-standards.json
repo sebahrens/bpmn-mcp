@@ -1,0 +1,25 @@
+{
+  "reviewer": "project-standards",
+  "findings": [
+    {
+      "title": "Rollback copies omit non-interactive force flag",
+      "severity": "P3",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 341,
+      "why_it_matters": "The installer performs these copies during transaction snapshot and rollback. Omitting the repository-required force flag can allow an interactive `cp` configuration to pause an unattended install or rollback for confirmation, which is exactly the hang the project standard is intended to prevent.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add `-f` while preserving metadata at both sites, for example `cp -fp \"$source_path\" \"$snapshot_path\"` and `cp -fp \"$ROLLBACK_DIR/$snapshot_name\" \"$destination\"`, then rerun the installer test.",
+      "confidence": 0.94,
+      "evidence": [
+        "AGENTS.md:26-41, Non-Interactive Shell Commands: `ALWAYS use non-interactive flags with file operations` and `cp -f source dest`; the stated reason is that `cp`, `mv`, and `rm` may be aliased to interactive mode and hang waiting for confirmation.",
+        "scripts/install-agent-integrations.sh:341 invokes `cp -p \"$source_path\" \"$snapshot_path\"` without `-f` while snapshotting client configuration.",
+        "scripts/install-agent-integrations.sh:366 invokes `cp -p \"$ROLLBACK_DIR/$snapshot_name\" \"$destination\"` without `-f` while restoring client configuration."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": []
+}

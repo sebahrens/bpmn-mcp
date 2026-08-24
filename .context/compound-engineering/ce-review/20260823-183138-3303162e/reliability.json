@@ -1,0 +1,68 @@
+{
+  "reviewer": "reliability",
+  "findings": [
+    {
+      "title": "Rollback overwrites on unreadable client state",
+      "severity": "P1",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 621,
+      "why_it_matters": "A failed or transiently unreadable Codex/Claude query is treated as if the registration were absent. If the transaction replaced an existing registration, rollback then adds the snapshotted value without proving that no third party now owns the name, so it can overwrite a concurrent client-config mutation precisely on the error path meant to preserve it.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Make the inspection helpers distinguish a confirmed missing registration from an unreadable/invalid CLI or config result. Only restore a prior registration after a confirmed missing state; otherwise warn, leave the current registration untouched, and report rollback as incomplete. Apply the same rule to the Claude branch at line 639.",
+      "confidence": 0.93,
+      "evidence": [
+        "rollback_codex_registration falls through from a failed `codex mcp get` at lines 621-632 to `restore_codex_json` when the original state was non-missing (lines 633-634).",
+        "rollback_claude_registration similarly falls through when `claude_user_registration_json` fails, then invokes `claude mcp add-json` for a prior registration (lines 639-650).",
+        "Neither failure path establishes that the registration is actually missing, unlike the successful JSON-equality guard used to preserve a changed registration."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Interrupted cross-device snapshot can destroy originals",
+      "severity": "P1",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 518,
+      "why_it_matters": "Rollback snapshots live under TMPDIR while the paths being snapshotted live under PREFIX or agent homes. If those are different filesystems, `mv` degrades to copy-and-delete. A termination during that copy can leave the source intact and a partial snapshot present; cleanup then deletes the intact destination at lines 534-535 and moves the partial snapshot back, losing the prior app or forced-overwritten third-party skill.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Place rollback snapshots in a uniquely named directory under INSTALL_ROOT (therefore on the same filesystem as APP_DIR and STATE_FILE), and use per-skill adjacent rollback directories for skill paths if their homes can be on another filesystem. Alternatively, make restore refuse to replace an existing destination unless the snapshot move completed atomically and is verified complete.",
+      "confidence": 0.87,
+      "evidence": [
+        "ROLLBACK_DIR is created as `$TEMP_DIR/rollback` (line 670), while TEMP_DIR is created under `${TMPDIR:-/tmp}` (lines 681-683).",
+        "snapshot_moved_path records `.present` before `mv` (lines 516-523), so an interruption during a cross-device copy leaves rollback believing there is a restorable snapshot.",
+        "restore_moved_path unconditionally removes any destination before moving that snapshot back (lines 529-538)."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Cleanup failure leaves the transaction lock held",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 92,
+      "why_it_matters": "With `set -e`, a failed TEMP_DIR or staged-skill removal exits cleanup before `release_transaction_lock` runs. The surviving directory lock blocks every later installer attempt for that PREFIX until a user manually removes it, turning a cleanup I/O error into a permanent availability failure.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Make best-effort cleanup commands non-fatal (`rm -rf ... || warn ...`) and always call release_transaction_lock before exiting; likewise make failures while removing the lock owner non-fatal so rmdir is still attempted.",
+      "confidence": 0.85,
+      "evidence": [
+        "The script enables `set -e` at line 3.",
+        "cleanup executes rm -rf on TEMP_DIR and STAGED_SKILL_DIR without an error guard before release_transaction_lock (lines 91-98).",
+        "The lock is a persistent directory and the contention path explicitly requires manual stale-lock removal (lines 375-389)."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The mkdir lock deliberately has no automatic stale-PID recovery. Manual recovery is safer than PID reuse, but a SIGKILL or host crash leaves installation unavailable until the user follows the supplied stale-lock procedure.",
+    "Per-PREFIX locking does not serialize client configuration writes made by installers with different PREFIX values. The late revalidation narrows the race, but it cannot make the read-then-remove replacement atomic against an external client writer."
+  ],
+  "testing_gaps": [
+    "No deterministic test makes `codex mcp get` fail or makes Claude's registration JSON unreadable during rollback after a prior registration was replaced; both should assert that a third-party registration is preserved.",
+    "No test places TMPDIR on a different filesystem and signals the installer while a large snapshot is in progress; it should verify that the original app and forced-overwritten skill are not removed.",
+    "No test forces TEMP_DIR or staged-skill cleanup to fail and then verifies that the PREFIX lock is released."
+  ]
+}

@@ -21,13 +21,15 @@ Use the tools exposed by the `mcp-bpmn` server. Refer to tools by their semantic
 ## Operate on the diagram
 
 1. Establish context with `current`, `new_bpmn`, `new_from_mermaid`, `open_bpmn`, or `open_mermaid_file`. If a diagram may already be current, inspect it before switching unless the request clearly authorizes the replacement.
-2. For an existing diagram, inspect with `list_elements` and `get_element` before editing. Follow pagination until `hasMore` is false when the complete model matters.
+2. For an existing diagram, inspect elements with `list_elements` and `get_element`, and inspect relationships with `list_connections` and `get_connection`, before editing. Follow pagination until `hasMore` is false when the complete model matters.
 3. Create owners before their contents: collaboration, pools, then pool-owned elements. Create all required elements before relationships. Retain every returned `processId`, `elementId`, `laneId`, `connectionId`, `associationId`, and generated filename; never invent or reconstruct server IDs.
 4. In collaborations, pass the returned pool `processId` as `ownerId` and normally `scopeId` for its flow nodes. Connect nodes within one scope as sequence flow and across participants as message flow. Let server validation reject illegal endpoints rather than forcing an approximation.
 5. Add lanes only after their flow nodes exist. Add sequence flows, message flows, conditions/defaults, and associations only after both endpoints exist.
-6. Run `validate` at meaningful semantic checkpoints, including after the main control-flow skeleton and after substantial edits. Resolve errors before continuing; report warnings that require user judgment.
-7. For creation or edit deliverables, apply `auto_layout` near the end, after semantic construction, unless the user asks to preserve manual geometry. It replaces coordinates and autosaves. Run `validate` again at `full` level after layout. Do not mutate a review-only request.
-8. Use `export` in the requested `xml` or `svg` format. Report the active BPMN filename returned by the tools, the export format, validation result, and any warnings. For SVG, return or identify the embedded resource/URI; do not claim that a separate SVG file was saved.
+6. Before changing a connection, call `get_connection`, then pass its `semanticRevision` as `expectedSemanticRevision` to `update_connection`. Endpoint changes must name `sourceId` and/or `targetId` and explicitly set `endpointPolicy` to `snap-to-boundary`; do not infer or hand-edit endpoint geometry. On a revision conflict, refresh with `get_connection`, reassess the current state, and retry only if the requested change is still valid.
+7. For a local connection obstruction, call `route_connection` in its default proposal-only mode with the current `geometryRevision`. Inspect its diagnostics and score before passing the returned patch directly to `apply_geometry_patch`; use `apply: true` only when immediate atomic selection is intended. Do not hand-invent waypoints before trying the router.
+8. Run `validate` at meaningful semantic checkpoints, including after the main control-flow skeleton and after substantial edits. Resolve errors before continuing; report warnings that require user judgment.
+9. For creation or edit deliverables, apply `auto_layout` near the end, after semantic construction, unless the user asks to preserve manual geometry. It replaces coordinates and autosaves. Run `validate` again at `full` level after layout. Do not mutate a review-only request.
+10. Use `export` in the requested `xml` or `svg` format when the result should be returned inline. Use `save_svg` or `save_png` only when the user requests a separate managed artifact filename; set `overwrite: true` only with explicit replacement intent. Report the active BPMN filename, export or artifact format, validation result, and any warnings.
 
 ## Preserve intent and fidelity
 

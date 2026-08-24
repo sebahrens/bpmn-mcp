@@ -1,0 +1,64 @@
+{
+  "reviewer": "cli-readiness",
+  "findings": [
+    {
+      "title": "WSL lifecycle is not fail-fast",
+      "severity": "P1",
+      "file": "docs/testing/wsl2-installer-smoke.md",
+      "line": 131,
+      "why_it_matters": "The release-lifecycle commands are presented as sequential shell input without `set -e` or explicit status chaining. In a normal interactive WSL shell, a failed install, update, or plugin validator does not stop later commands; the final checksum test can still succeed, allowing a prerelease operator or automation wrapper to treat a failed exact-artifact gate as successful.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Turn the lifecycle block into a checked script beginning with `set -eu` (or join every required command with `&&`), add a cleanup trap, and document that the script's exit status is the gate result.",
+      "confidence": 0.98,
+      "evidence": [
+        "docs/testing/wsl2-installer-smoke.md:131-140 invokes install, doctor, update, both plugin validators, uninstall, and checksum verification as independent commands with no fail-fast shell option or status aggregation.",
+        "Because the last checksum comparison is independent of the preceding lifecycle commands, it can return zero after an earlier `run_smoke` command returned nonzero."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Registration health is only visually confirmed",
+      "severity": "P2",
+      "file": "docs/testing/wsl2-installer-smoke.md",
+      "line": 132,
+      "why_it_matters": "`doctor` reports missing or conflicting registrations as prose but does not fail for those states, and the WSL procedure asks the operator to confirm the output manually. A noninteractive prerelease run can therefore pass without proving that both clients registered the supplied artifact-backed server.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Capture `doctor` output and assert both exact healthy states, for example with `grep -Fx 'Codex MCP registration: owned'` and `grep -Fx 'Claude MCP registration: owned'`, after install and again after update.",
+      "confidence": 0.96,
+      "evidence": [
+        "docs/testing/wsl2-installer-smoke.md:132 runs doctor without checking its content, while line 143 delegates confirmation of both registrations to a person.",
+        "scripts/install-agent-integrations.sh:1220-1228 prints registration states, and run_doctor completes after reporting them rather than returning nonzero for `missing` or `conflict`."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Missing artifact emits raw Node exception",
+      "severity": "P2",
+      "file": "scripts/release-artifact.mjs",
+      "line": 20,
+      "why_it_matters": "When MCP_BPMN_PACKAGE_TARBALL names a missing file, the shared package and plugin validation entrypoints expose an uncaught `lstatSync` ENOENT stack trace instead of the input-specific error used for directories and symlinks. Agents must infer whether the path, permissions, or validator failed, adding retries during prerelease automation.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Catch `lstatSync` failures and emit the same concise MCP_BPMN_PACKAGE_TARBALL correction message used for non-files; add a missing-path test that asserts the stable message and nonzero exit without a stack trace.",
+      "confidence": 0.99,
+      "evidence": [
+        "scripts/release-artifact.mjs:20 calls `lstatSync(requestedPath)` outside error handling; only the subsequent type check at lines 21-23 produces the documented environment-input message.",
+        "Running `MCP_BPMN_PACKAGE_TARBALL=/definitely/missing/mcp-bpmn.tgz ... node scripts/package-smoke.mjs` exits 1 with a `node:fs` ENOENT stack trace rooted at release-artifact.mjs:20."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The genuine WSL2 procedure could not be executed on this macOS host; command-path and client behavior remain operationally unverified here."
+  ],
+  "testing_gaps": [
+    "No automated check proves the documented WSL lifecycle aborts on the first failed install/update/plugin command.",
+    "No WSL gate assertion converts Codex and Claude doctor registration states into a machine-checkable failure.",
+    "The release-artifact helper lacks a missing-path error-contract test."
+  ]
+}

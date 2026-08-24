@@ -1,0 +1,44 @@
+{
+  "reviewer": "reliability",
+  "findings": [
+    {
+      "title": "Digest-only configuration silently repacks source",
+      "severity": "P2",
+      "file": "scripts/release-artifact.mjs",
+      "line": 12,
+      "why_it_matters": "If MCP_BPMN_PACKAGE_SHA256 is set but MCP_BPMN_PACKAGE_TARBALL is missing or expands to an empty value, all three JavaScript release checks treat the candidate as unspecified and run their own npm pack flow. The gate can therefore report success without exercising the immutable artifact identified by the supplied digest, violating its fail-closed release invariant.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Reject environments where exactly one of MCP_BPMN_PACKAGE_TARBALL and MCP_BPMN_PACKAGE_SHA256 is non-empty before returning undefined; add a digest-only rejection test.",
+      "confidence": 0.98,
+      "evidence": [
+        "scripts/release-artifact.mjs:11-12 returns undefined solely from the absence of MCP_BPMN_PACKAGE_TARBALL and never checks whether MCP_BPMN_PACKAGE_SHA256 was supplied.",
+        "scripts/package-smoke.mjs:455-479, scripts/validate-codex-plugin.mjs:276-282, and scripts/validate-claude-plugin.mjs:191-197 all interpret undefined as permission to create a fresh tarball."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Installer ignores a candidate digest without tarball",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 794,
+      "why_it_matters": "A prerelease invocation that preserves the expected digest but loses or empties the tarball variable falls through to npm pack and installs a newly produced artifact. The installer can then pass while validating a different candidate from the package and plugin gates, undermining rollback and release evidence tied to the original checksum.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Before selecting either branch, fail when MCP_BPMN_PACKAGE_SHA256 is non-empty and MCP_BPMN_PACKAGE_TARBALL is empty; extend the installer harness with this asymmetric environment case.",
+      "confidence": 0.97,
+      "evidence": [
+        "scripts/install-agent-integrations.sh:794 selects supplied-artifact mode only from MCP_BPMN_PACKAGE_TARBALL; lines 816-836 run npm pack otherwise regardless of MCP_BPMN_PACKAGE_SHA256.",
+        "tests/install-agent-integrations.test.sh:450-492 covers missing paths, symlinks, and wrong digests only when MCP_BPMN_PACKAGE_TARBALL is also set; it has no digest-only fail-closed assertion."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "No test asserts that snapshotReleaseArtifact rejects MCP_BPMN_PACKAGE_SHA256 when MCP_BPMN_PACKAGE_TARBALL is absent or empty.",
+    "The installer harness does not verify that digest-only candidate configuration fails before npm pack is invoked."
+  ]
+}

@@ -1,4 +1,5 @@
 import { promises as fs } from 'fs';
+import { createHash } from 'node:crypto';
 import { extname, join } from 'path';
 import { isDeepStrictEqual } from 'util';
 import { config, TOOL_INPUT_LIMITS } from '../config/index.js';
@@ -17,12 +18,31 @@ import {
   EventDefinitionType,
   BpmnLane,
   BpmnMultiInstanceLoopCharacteristics,
+  BpmnEdgeModel,
+  BpmnShapeModel,
+  ConnectionGeometryState,
+  ConnectionGeometryUpdate,
+  ConnectionRouteUpdate,
+  ConnectionSemanticState,
+  ConnectionSemanticUpdate,
   ElementDefinition,
-  ProcessContext
+  ElementGeometryState,
+  ElementGeometryUpdate,
+  GeometryPatchConnectionResult,
+  GeometryPatchElementResult,
+  GeometryPatchUpdate,
+  Position,
+  ProcessContext,
+  Size
 } from '../types/index.js';
 import { IdGenerator } from '../utils/IdGenerator.js';
 import { assertBpmnId } from '../utils/BpmnId.js';
-import { BpmnFileTooLargeError, FileManager } from '../utils/FileManager.js';
+import {
+  BpmnFileTooLargeError,
+  FileManager,
+  type RenderedArtifactFormat,
+  type SaveResult
+} from '../utils/FileManager.js';
 import {
   assertValidMessageFlowEndpoints,
   BpmnDocumentSerializer,
@@ -41,12 +61,213 @@ import {
 import { BpmnDocumentLayoutAdapter } from './layout/adapters/BpmnDocumentLayoutAdapter.js';
 import { applyCollaborationLayoutPolicy } from './layout/CollaborationLayoutPolicy.js';
 import {
+  ConnectionRouter,
+  type ConnectionRouteCandidate,
+  type ConnectionRouteScoreBreakdown
+} from './layout/ConnectionRouter.js';
+import {
   assertLayoutComplexity,
   BpmnAutoLayoutV2Adapter,
   type BpmnLayoutAdapter,
   type BpmnLayoutResult
 } from './layout/BpmnLayoutAdapter.js';
 import type { LayoutDirection, LayoutModel } from './layout/LayoutModel.js';
+import {
+  type GeometryDiagnostic,
+  validateBpmnGeometry
+} from './BpmnGeometry.js';
+
+export class DocumentRevisionConflictError extends Error {
+  readonly code = 'revision_conflict';
+
+  constructor(
+    readonly filename: string,
+    readonly expectedRevision: string | undefined,
+    readonly actualRevision: string | undefined,
+    readonly reason: 'revision_mismatch' | 'external_change' | 'target_exists'
+  ) {
+    super(`Document revision conflict for ${filename}`);
+    this.name = 'DocumentRevisionConflictError';
+  }
+}
+
+export class ElementGeometryConflictError extends Error {
+  readonly code = 'geometry_conflict';
+
+  constructor(
+    readonly elementId: string,
+    readonly expectedBounds: Position & Size,
+    readonly actualBounds: Position & Size
+  ) {
+    super(`Element geometry conflict for ${elementId}`);
+    this.name = 'ElementGeometryConflictError';
+  }
+}
+
+export class ConnectionGeometryConflictError extends Error {
+  readonly code = 'geometry_conflict';
+
+  constructor(
+    readonly connectionId: string,
+    readonly reason: 'waypoints_mismatch' | 'geometry_revision_mismatch',
+    readonly actualWaypoints: Position[],
+    readonly actualGeometryRevision: string,
+    readonly expectedWaypoints?: Position[],
+    readonly expectedGeometryRevision?: string
+  ) {
+    super(`Connection geometry conflict for ${connectionId}`);
+    this.name = 'ConnectionGeometryConflictError';
+  }
+}
+
+export class ConnectionSemanticConflictError extends Error {
+  readonly code = 'semantic_conflict';
+
+  constructor(
+    readonly connectionId: string,
+    readonly expectedSemanticRevision: string,
+    readonly actualSemanticRevision: string
+  ) {
+    super(`Connection semantic conflict for ${connectionId}`);
+    this.name = 'ConnectionSemanticConflictError';
+  }
+}
+
+export class GeometryPatchConflictError extends Error {
+  readonly code = 'geometry_conflict';
+
+  constructor(
+    readonly objectType: 'element' | 'connection',
+    readonly objectId: string,
+    readonly field: 'labelBounds',
+    readonly expectedValue: (Position & Size) | null,
+    readonly actualValue: (Position & Size) | null
+  ) {
+    super(`Geometry patch conflict for ${objectType} ${objectId} ${field}`);
+    this.name = 'GeometryPatchConflictError';
+  }
+}
+
+export interface RankedConnectionRouteDiagnostic {
+  rank: number;
+  waypoints: Position[];
+  labelBounds: (Position & Size) | null;
+  scoreBreakdown: ConnectionRouteScoreBreakdown;
+  diagnostics: GeometryDiagnostic[];
+}
+
+export class ConnectionRoutingFailureError extends Error {
+  readonly code = 'routing_failed';
+
+  constructor(
+    readonly connectionId: string,
+    readonly rankedDiagnostics: RankedConnectionRouteDiagnostic[]
+  ) {
+    super(`No collision-free orthogonal route found for ${connectionId}`);
+    this.name = 'ConnectionRoutingFailureError';
+  }
+}
+
+export interface ElementGeometryMutationResult {
+  before: ElementGeometryState;
+  after: ElementGeometryState;
+  diagnostics: GeometryDiagnostic[];
+}
+
+export interface ConnectionGeometryMutationResult {
+  before: ConnectionGeometryState;
+  after: ConnectionGeometryState;
+  diagnostics: GeometryDiagnostic[];
+  introducedDiagnostics: GeometryDiagnostic[];
+}
+
+export interface ConnectionSemanticMutationResult {
+  before: ConnectionSemanticState;
+  after: ConnectionSemanticState;
+  diagnostics: GeometryDiagnostic[];
+  introducedDiagnostics: GeometryDiagnostic[];
+}
+
+export interface GeometryPatchMutationResult {
+  elements: GeometryPatchElementResult[];
+  connections: GeometryPatchConnectionResult[];
+  diagnostics: GeometryDiagnostic[];
+  introducedDiagnostics: GeometryDiagnostic[];
+}
+
+export interface ConnectionRouteMutationResult {
+  connectionId: string;
+  proposedWaypoints: Position[];
+  proposedLabelBounds: (Position & Size) | null;
+  geometryRevision: string;
+  scoreBreakdown: ConnectionRouteScoreBreakdown;
+  diagnostics: GeometryDiagnostic[];
+  introducedDiagnostics: GeometryDiagnostic[];
+  rankedDiagnostics: RankedConnectionRouteDiagnostic[];
+  geometryPatch: {
+    elementUpdates: GeometryPatchUpdate['elementUpdates'];
+    connectionUpdates: Array<{
+      connectionId: string;
+      waypoints: Position[];
+      labelBounds?: Position & Size;
+      expectedGeometryRevision: string;
+      endpointPolicy: 'exact';
+    }>;
+    expectedRevision: string;
+    collisionPolicy: 'reject-new';
+    dryRun: false;
+  };
+}
+
+export function connectionGeometryRevision(
+  connectionId: string,
+  edge: {
+    id: string | null;
+    waypoints: Position[];
+    labelBounds?: Position & Size;
+  }
+): string {
+  const digest = createHash('sha256').update(JSON.stringify({
+    connectionId,
+    edgeId: edge.id,
+    waypoints: edge.waypoints,
+    labelBounds: edge.labelBounds ?? null
+  })).digest('hex');
+  return `sha256:${digest}`;
+}
+
+export function connectionSemanticState(
+  document: BpmnDocument,
+  connection: BpmnDocumentConnection
+): ConnectionSemanticState {
+  const source = document.elements.get(connection.source);
+  const defaultOwnerId = connection.type === 'bpmn:SequenceFlow'
+    && source?.kind === 'flowNode'
+    && source.defaultFlow === connection.id
+    ? source.id
+    : undefined;
+  const value = {
+    connectionId: connection.id,
+    type: connection.type,
+    ownerId: connection.ownerId,
+    scopeId: connection.scopeId,
+    sourceId: connection.source,
+    targetId: connection.target,
+    label: connection.label,
+    condition: connection.condition ? { ...connection.condition } : undefined,
+    isDefault: defaultOwnerId !== undefined,
+    defaultOwnerId,
+    associationDirection: connection.associationDirection
+  };
+  const semanticRevision = `sha256:${createHash('sha256').update(JSON.stringify({
+    ...value,
+    label: value.label ?? null,
+    condition: value.condition ?? null,
+    defaultOwnerId: value.defaultOwnerId ?? null,
+    associationDirection: value.associationDirection ?? null
+  })).digest('hex')}`;
+  return { ...value, semanticRevision };
+}
 
 /**
  * Stateful BPMN engine backed by one typed document model and bpmn-moddle.
@@ -55,9 +276,9 @@ import type { LayoutDirection, LayoutModel } from './layout/LayoutModel.js';
  */
 export class SimpleBpmnEngine {
   private readonly processes = new Map<string, ProcessContext>();
-  private readonly diagramsPath: string;
+  private diagramsPath: string;
   private readonly serializer = new BpmnDocumentSerializer();
-  private readonly fileManager: FileManager;
+  private fileManager: FileManager;
   private readonly importLimits: BpmnImportLimits;
   private readonly layoutAdapter: BpmnLayoutAdapter;
   private readonly resourceLimits: ResourceLimits;
@@ -85,6 +306,7 @@ export class SimpleBpmnEngine {
       throw new Error('Invalid BPMN import limits');
     }
     if (!Number.isSafeInteger(this.resourceLimits.maxMermaidBytes)
+      || !Number.isSafeInteger(this.resourceLimits.maxArtifactBytes)
       || !Number.isSafeInteger(this.resourceLimits.maxLayoutElements)
       || !Number.isSafeInteger(this.resourceLimits.maxLayoutConnections)
       || !Number.isSafeInteger(this.resourceLimits.maxLayoutBytes)
@@ -116,7 +338,11 @@ export class SimpleBpmnEngine {
     return context;
   }
 
-  async createElement(processId: string, definition: ElementDefinition): Promise<BpmnDocumentElement> {
+  async createElement(
+    processId: string,
+    definition: ElementDefinition,
+    expectedRevision?: string
+  ): Promise<BpmnDocumentElement> {
     const context = this.getProcess(processId);
     return this.commitMutation(context, working => {
       if (!isBpmnElementType(definition.type)) {
@@ -236,7 +462,7 @@ export class SimpleBpmnEngine {
         this.fitExpandedFlowContainers(working, element.scopeId);
       }
       return element;
-    });
+    }, undefined, true, false, expectedRevision);
   }
 
   async addDataObject(
@@ -248,6 +474,7 @@ export class SimpleBpmnEngine {
       itemSubjectRef?: string;
       ownerId?: string;
       scopeId?: string;
+      expectedRevision?: string;
     } = {}
   ): Promise<{ dataObject: BpmnDataObject; reference: BpmnDocumentElement }> {
     const context = this.getProcess(processId);
@@ -303,7 +530,7 @@ export class SimpleBpmnEngine {
       }
       if (scopeId !== ownerId) this.fitExpandedFlowContainers(working, scopeId);
       return { dataObject, reference };
-    });
+    }, undefined, true, false, options.expectedRevision);
   }
 
   async addTextAnnotation(
@@ -314,6 +541,7 @@ export class SimpleBpmnEngine {
       position?: BpmnDocumentElement['position'];
       size?: BpmnDocumentElement['size'];
       associatedElementId?: string;
+      expectedRevision?: string;
     } = {}
   ): Promise<{
     annotation: BpmnDocumentElement;
@@ -406,7 +634,7 @@ export class SimpleBpmnEngine {
       }
 
       return { annotation, association };
-    });
+    }, undefined, true, false, options.expectedRevision);
   }
 
   async connect(
@@ -418,6 +646,9 @@ export class SimpleBpmnEngine {
     options: BpmnConnectOptions = {}
   ): Promise<BpmnDocumentConnection> {
     const context = this.getProcess(processId);
+    const expectedRevision = typeof typeOrOptions === 'string'
+      ? options.expectedRevision
+      : (typeOrOptions || options).expectedRevision;
     return this.commitMutation(context, working => {
       const type = typeof typeOrOptions === 'string' ? typeOrOptions : undefined;
       const connectionOptions = typeof typeOrOptions === 'string'
@@ -516,7 +747,7 @@ export class SimpleBpmnEngine {
         source.defaultFlowManaged = true;
       }
       return connection;
-    });
+    }, undefined, true, false, expectedRevision);
   }
 
   /** Create a BPMN artifact association. The BPMN direction defaults to None. */
@@ -524,7 +755,8 @@ export class SimpleBpmnEngine {
     processId: string,
     sourceId: string,
     targetId: string,
-    associationDirection: BpmnConnectOptions['associationDirection'] = 'None'
+    associationDirection: BpmnConnectOptions['associationDirection'] = 'None',
+    expectedRevision?: string
   ): Promise<BpmnDocumentConnection> {
     return this.connect(
       processId,
@@ -532,7 +764,7 @@ export class SimpleBpmnEngine {
       targetId,
       undefined,
       'bpmn:Association',
-      { associationDirection }
+      { associationDirection, expectedRevision }
     );
   }
 
@@ -541,7 +773,8 @@ export class SimpleBpmnEngine {
     poolId: string,
     name: string,
     flowNodeIds: string[],
-    position: 'top' | 'bottom' = 'bottom'
+    position: 'top' | 'bottom' = 'bottom',
+    expectedRevision?: string
   ): Promise<BpmnLane> {
     const context = this.getProcess(processId);
     return this.commitMutation(context, working => {
@@ -618,13 +851,14 @@ export class SimpleBpmnEngine {
       else laneSet.laneIds.push(lane.id);
       this.layoutPoolLanes(working, participant.id);
       return lane;
-    });
+    }, undefined, true, false, expectedRevision);
   }
 
   async updateElement(
     processId: string,
     elementId: string,
-    update: BpmnElementUpdate
+    update: BpmnElementUpdate,
+    expectedRevision?: string
   ): Promise<BpmnDocumentElement | BpmnLane> {
     const context = this.getProcess(processId);
     return this.commitMutation(context, working => {
@@ -721,10 +955,748 @@ export class SimpleBpmnEngine {
         this.fitExpandedFlowContainers(working, workingElement.id);
       }
       return workingElement;
-    });
+    }, undefined, true, false, expectedRevision);
   }
 
-  async deleteElement(processId: string, elementId: string): Promise<number> {
+  async updateElementGeometry(
+    processId: string,
+    elementId: string,
+    update: ElementGeometryUpdate
+  ): Promise<ElementGeometryMutationResult> {
+    this.assertGeometryBounds(update.bounds, 'bounds');
+    if (update.labelBounds) this.assertGeometryBounds(update.labelBounds, 'labelBounds');
+    if (update.expectedBounds) this.assertGeometryBounds(update.expectedBounds, 'expectedBounds');
+
+    const context = this.getProcess(processId);
+    return this.commitMutation(context, async working => {
+      const shape = this.shapeForElement(working.document, elementId);
+      const modelElement = working.elements.get(elementId);
+      const modelLane = working.document.lanes.get(elementId);
+      if (!shape || (!modelElement && !modelLane)) {
+        throw new Error(`Rendered element ${elementId} not found`);
+      }
+
+      const before = this.elementGeometryState(elementId, shape);
+      if (update.expectedBounds && !this.geometryBoundsEqual(update.expectedBounds, before.bounds)) {
+        throw new ElementGeometryConflictError(
+          elementId,
+          { ...update.expectedBounds },
+          { ...before.bounds }
+        );
+      }
+
+      const boundsChanged = !this.geometryBoundsEqual(before.bounds, update.bounds);
+      const incident = Array.from(working.connections.values()).filter(
+        connection => connection.source === elementId || connection.target === elementId
+      );
+      if (boundsChanged && incident.length > 0) {
+        if (!update.incidentConnectionPolicy) {
+          throw new Error(
+            `Element ${elementId} has ${incident.length} incident connection(s); `
+            + 'incidentConnectionPolicy is required when changing its bounds'
+          );
+        }
+        if (update.incidentConnectionPolicy === 'reject') {
+          throw new Error(
+            `Element ${elementId} has ${incident.length} incident connection(s); `
+            + 'use snap-endpoints or an atomic geometry patch'
+          );
+        }
+      }
+
+      const beforeXml = await this.serializer.serialize(this.cloneDocument(working.document), true);
+      shape.bounds = { ...update.bounds };
+      if (Object.prototype.hasOwnProperty.call(update, 'labelBounds')) {
+        shape.labelBounds = update.labelBounds ? { ...update.labelBounds } : undefined;
+        shape.labelBoundsCleared = update.labelBounds === null;
+      }
+      const target = modelElement ?? modelLane!;
+      target.position = { x: update.bounds.x, y: update.bounds.y };
+      target.size = { width: update.bounds.width, height: update.bounds.height };
+
+      if (boundsChanged && update.incidentConnectionPolicy === 'snap-endpoints') {
+        for (const connection of incident) {
+          if (!Array.from(working.document.diagram.edges.values()).some(
+            edge => edge.connectionId === connection.id
+          )) {
+            throw new Error(`Incident connection ${connection.id} has no rendered BPMNEdge`);
+          }
+          this.snapIncidentConnection(working.document, connection, elementId, update.bounds);
+        }
+      }
+
+      const afterXml = await this.serializer.serialize(this.cloneDocument(working.document), true);
+      const validationOptions = {
+        elementIds: [elementId],
+        maxShapes: this.resourceLimits.maxLayoutElements,
+        maxEdges: this.resourceLimits.maxLayoutConnections,
+        maxDiagnostics: this.resourceLimits.maxListingItems
+      };
+      const [beforeReport, afterReport] = await Promise.all([
+        validateBpmnGeometry(beforeXml, validationOptions),
+        validateBpmnGeometry(afterXml, validationOptions)
+      ]);
+      this.assertSafeElementGeometry(
+        elementId,
+        beforeReport.diagnostics,
+        afterReport.diagnostics,
+        update.collisionPolicy
+      );
+
+      return {
+        before,
+        after: this.elementGeometryState(elementId, shape),
+        diagnostics: afterReport.diagnostics
+      };
+    }, undefined, true, false, update.expectedRevision, update.dryRun);
+  }
+
+  async updateConnectionGeometry(
+    processId: string,
+    connectionId: string,
+    update: ConnectionGeometryUpdate
+  ): Promise<ConnectionGeometryMutationResult> {
+    this.assertBpmnIdentifier(connectionId, 'connectionId');
+    this.assertGeometryWaypoints(update.waypoints, 'waypoints');
+    if (update.expectedWaypoints) {
+      this.assertGeometryWaypoints(update.expectedWaypoints, 'expectedWaypoints');
+    }
+    if (update.labelBounds) this.assertGeometryBounds(update.labelBounds, 'labelBounds');
+
+    const context = this.getProcess(processId);
+    return this.commitMutation(context, async working => {
+      const connection = working.connections.get(connectionId);
+      if (!connection) throw new Error(`Connection ${connectionId} not found`);
+      const edge = this.edgeForConnection(working.document, connectionId);
+      if (!edge) throw new Error(`Rendered connection ${connectionId} has no BPMNEdge`);
+
+      const before = this.connectionGeometryState(connectionId, edge);
+      if (update.expectedWaypoints
+        && !this.geometryWaypointsEqual(update.expectedWaypoints, before.waypoints)) {
+        throw new ConnectionGeometryConflictError(
+          connectionId,
+          'waypoints_mismatch',
+          before.waypoints.map(point => ({ ...point })),
+          before.geometryRevision,
+          update.expectedWaypoints.map(point => ({ ...point })),
+          update.expectedGeometryRevision
+        );
+      }
+      if (update.expectedGeometryRevision
+        && update.expectedGeometryRevision !== before.geometryRevision) {
+        throw new ConnectionGeometryConflictError(
+          connectionId,
+          'geometry_revision_mismatch',
+          before.waypoints.map(point => ({ ...point })),
+          before.geometryRevision,
+          update.expectedWaypoints?.map(point => ({ ...point })),
+          update.expectedGeometryRevision
+        );
+      }
+
+      const beforeXml = await this.serializer.serialize(this.cloneDocument(working.document), true);
+      const waypoints = update.waypoints.map(point => ({ ...point }));
+      if (update.endpointPolicy === 'snap-to-boundary') {
+        const sourceShape = this.shapeForElement(working.document, connection.source);
+        const targetShape = this.shapeForElement(working.document, connection.target);
+        if (!sourceShape || !targetShape) {
+          throw new Error(
+            `Connection ${connectionId} requires rendered source and target BPMNShapes`
+          );
+        }
+        waypoints[0] = this.pointOnBounds(sourceShape.bounds, waypoints[1]);
+        waypoints[waypoints.length - 1] = this.pointOnBounds(
+          targetShape.bounds,
+          waypoints[waypoints.length - 2]
+        );
+      }
+
+      connection.waypoints = waypoints.map(point => ({ ...point }));
+      edge.waypoints = waypoints.map(point => ({ ...point }));
+      if (Object.prototype.hasOwnProperty.call(update, 'labelBounds')) {
+        edge.labelBounds = update.labelBounds ? { ...update.labelBounds } : undefined;
+        edge.labelBoundsCleared = update.labelBounds === null;
+      }
+
+      const afterXml = await this.serializer.serialize(this.cloneDocument(working.document), true);
+      const validationOptions = {
+        connectionIds: [connectionId],
+        maxShapes: this.resourceLimits.maxLayoutElements,
+        maxEdges: this.resourceLimits.maxLayoutConnections,
+        maxDiagnostics: this.resourceLimits.maxListingItems
+      };
+      const [beforeReport, afterReport] = await Promise.all([
+        validateBpmnGeometry(beforeXml, validationOptions),
+        validateBpmnGeometry(afterXml, validationOptions)
+      ]);
+      const introducedDiagnostics = this.assertSafeConnectionGeometry(
+        connectionId,
+        beforeReport.diagnostics,
+        afterReport.diagnostics,
+        update.collisionPolicy
+      );
+
+      return {
+        before,
+        after: this.connectionGeometryState(connectionId, edge),
+        diagnostics: afterReport.diagnostics,
+        introducedDiagnostics
+      };
+    }, undefined, true, false, update.expectedRevision, update.dryRun);
+  }
+
+  async updateConnection(
+    processId: string,
+    connectionId: string,
+    update: ConnectionSemanticUpdate
+  ): Promise<ConnectionSemanticMutationResult> {
+    this.assertBpmnIdentifier(connectionId, 'connectionId');
+    if (update.sourceId) this.assertBpmnIdentifier(update.sourceId, 'sourceId');
+    if (update.targetId) this.assertBpmnIdentifier(update.targetId, 'targetId');
+    if (!update.expectedRevision && !update.expectedSemanticRevision) {
+      throw new Error('update_connection requires expectedRevision or expectedSemanticRevision');
+    }
+
+    const context = this.getProcess(processId);
+    return this.commitMutation(context, async working => {
+      const connection = working.connections.get(connectionId);
+      if (!connection) throw new Error(`Connection ${connectionId} not found`);
+      const before = connectionSemanticState(working.document, connection);
+      if (update.expectedSemanticRevision
+        && update.expectedSemanticRevision !== before.semanticRevision) {
+        throw new ConnectionSemanticConflictError(
+          connectionId,
+          update.expectedSemanticRevision,
+          before.semanticRevision
+        );
+      }
+
+      const sourceId = update.sourceId ?? connection.source;
+      const targetId = update.targetId ?? connection.target;
+      const source = working.elements.get(sourceId);
+      const target = working.elements.get(targetId);
+      if (!source || !target) throw new Error('Source or target element not found');
+      const endpointsChanged = sourceId !== connection.source || targetId !== connection.target;
+      if (endpointsChanged && update.endpointPolicy !== 'snap-to-boundary') {
+        throw new Error('Endpoint changes require endpointPolicy "snap-to-boundary"');
+      }
+
+      let ownerId: string;
+      let scopeId: string;
+      if (connection.type === 'bpmn:SequenceFlow') {
+        if (source.kind !== 'flowNode' || target.kind !== 'flowNode') {
+          throw new Error('Sequence flows can only connect BPMN flow nodes');
+        }
+        if (source.ownerId !== target.ownerId || source.scopeId !== target.scopeId) {
+          throw new Error('Sequence flows cannot cross process or nested-scope boundaries');
+        }
+        ownerId = source.ownerId;
+        scopeId = source.scopeId;
+      } else if (connection.type === 'bpmn:MessageFlow') {
+        if (working.type !== 'collaboration') {
+          throw new Error('Message flows can only belong to collaboration diagrams');
+        }
+        assertValidMessageFlowEndpoints(working.document, working.id, source, target);
+        ownerId = working.id;
+        scopeId = working.id;
+      } else {
+        ({ ownerId, scopeId } = resolveAssociationOwnership(working.document, source, target));
+      }
+
+      if (Object.prototype.hasOwnProperty.call(update, 'associationDirection')
+        && connection.type !== 'bpmn:Association') {
+        throw new Error('associationDirection can only be set for associations');
+      }
+      if (Object.prototype.hasOwnProperty.call(update, 'condition')
+        && connection.type !== 'bpmn:SequenceFlow') {
+        throw new Error('Conditions can only be set on sequence flows');
+      }
+      if (Object.prototype.hasOwnProperty.call(update, 'isDefault')
+        && connection.type !== 'bpmn:SequenceFlow') {
+        throw new Error('Only sequence flows can be default flows');
+      }
+
+      let condition = connection.condition ? { ...connection.condition } : undefined;
+      if (Object.prototype.hasOwnProperty.call(update, 'condition')) {
+        if (update.condition === null) {
+          condition = undefined;
+        } else {
+          const body = update.condition?.body;
+          if (typeof body !== 'string' || body.trim().length === 0) {
+            throw new Error('Condition expression must be a non-empty string');
+          }
+          const language = update.condition?.language;
+          if (language !== undefined && language !== null && language.trim().length === 0) {
+            throw new Error('Condition language must be a non-empty string or null');
+          }
+          condition = {
+            body,
+            type: condition?.type || 'bpmn:FormalExpression',
+            ...(language === null ? {} : { language: language ?? condition?.language }),
+            ...(condition?.evaluatesToTypeRef
+              ? { evaluatesToTypeRef: condition.evaluatesToTypeRef }
+              : {})
+          };
+        }
+      }
+      if (condition && !supportsConditionalOutgoingFlow(source)) {
+        throw new Error(`Element ${source.id} cannot own a conditional sequence flow`);
+      }
+
+      const shouldBeDefault = update.isDefault ?? before.isDefault;
+      if (shouldBeDefault && connection.type !== 'bpmn:SequenceFlow') {
+        throw new Error('Only sequence flows can be default flows');
+      }
+      if (shouldBeDefault && !supportsConditionalOutgoingFlow(source)) {
+        throw new Error(`Element ${source.id} cannot own a default sequence flow`);
+      }
+      if (shouldBeDefault && condition) {
+        throw new Error('A default sequence flow cannot have a condition');
+      }
+      if (shouldBeDefault && source.kind === 'flowNode'
+        && source.defaultFlow && source.defaultFlow !== connection.id) {
+        throw new Error(`Element ${source.id} already owns default flow ${source.defaultFlow}`);
+      }
+
+      const beforeXml = await this.serializer.serialize(this.cloneDocument(working.document), true);
+      const previousSource = working.elements.get(connection.source);
+      if (previousSource?.kind === 'flowNode' && previousSource.defaultFlow === connection.id
+        && (!shouldBeDefault || previousSource.id !== source.id)) {
+        previousSource.defaultFlow = undefined;
+        previousSource.defaultFlowManaged = true;
+      }
+      if (shouldBeDefault && source.kind === 'flowNode') {
+        source.defaultFlow = connection.id;
+        source.defaultFlowManaged = true;
+      }
+
+      connection.source = sourceId;
+      connection.target = targetId;
+      connection.ownerId = ownerId;
+      connection.scopeId = scopeId;
+      connection.condition = condition;
+      if (Object.prototype.hasOwnProperty.call(update, 'label')) {
+        connection.label = update.label === null ? undefined : update.label;
+      }
+      if (connection.type === 'bpmn:Association'
+        && update.associationDirection !== undefined) {
+        connection.associationDirection = update.associationDirection;
+      }
+
+      if (endpointsChanged) {
+        const edge = this.edgeForConnection(working.document, connection.id);
+        const sourceShape = this.shapeForElement(working.document, source.id);
+        const targetShape = this.shapeForElement(working.document, target.id);
+        if (!edge || !sourceShape || !targetShape || edge.waypoints.length < 2) {
+          throw new Error(
+            `Connection ${connection.id} requires rendered edge and endpoint BPMNShapes for rewiring`
+          );
+        }
+        const waypoints = edge.waypoints.map(point => ({ ...point }));
+        waypoints[0] = this.pointOnBounds(sourceShape.bounds, waypoints[1]);
+        waypoints[waypoints.length - 1] = this.pointOnBounds(
+          targetShape.bounds,
+          waypoints[waypoints.length - 2]
+        );
+        edge.waypoints = waypoints.map(point => ({ ...point }));
+        connection.waypoints = waypoints.map(point => ({ ...point }));
+      }
+
+      const afterXml = await this.serializer.serialize(this.cloneDocument(working.document), true);
+      const validationOptions = {
+        connectionIds: [connectionId],
+        maxShapes: this.resourceLimits.maxLayoutElements,
+        maxEdges: this.resourceLimits.maxLayoutConnections,
+        maxDiagnostics: this.resourceLimits.maxListingItems
+      };
+      const [beforeReport, afterReport] = await Promise.all([
+        validateBpmnGeometry(beforeXml, validationOptions),
+        validateBpmnGeometry(afterXml, validationOptions)
+      ]);
+      const introducedDiagnostics = this.assertSafeConnectionGeometry(
+        connectionId,
+        beforeReport.diagnostics,
+        afterReport.diagnostics,
+        update.collisionPolicy,
+        !endpointsChanged
+      );
+      return {
+        before,
+        after: connectionSemanticState(working.document, connection),
+        diagnostics: afterReport.diagnostics,
+        introducedDiagnostics
+      };
+    }, undefined, true, false, update.expectedRevision);
+  }
+
+  async applyGeometryPatch(
+    processId: string,
+    patch: GeometryPatchUpdate
+  ): Promise<GeometryPatchMutationResult> {
+    const updateCount = patch.elementUpdates.length + patch.connectionUpdates.length;
+    if (updateCount < 1 || updateCount > 256) {
+      throw new Error('Geometry patch must contain between 1 and 256 object updates');
+    }
+
+    const elementIds = new Set<string>();
+    for (const update of patch.elementUpdates) {
+      this.assertBpmnIdentifier(update.elementId, 'elementId');
+      if (elementIds.has(update.elementId)) {
+        throw new Error(`Geometry patch contains duplicate element ${update.elementId}`);
+      }
+      elementIds.add(update.elementId);
+      if (!Object.prototype.hasOwnProperty.call(update, 'bounds')
+        && !Object.prototype.hasOwnProperty.call(update, 'labelBounds')) {
+        throw new Error(`Geometry patch element ${update.elementId} has no update fields`);
+      }
+      if (update.bounds) this.assertGeometryBounds(update.bounds, 'bounds');
+      if (update.labelBounds) this.assertGeometryBounds(update.labelBounds, 'labelBounds');
+      if (update.expectedBounds) this.assertGeometryBounds(update.expectedBounds, 'expectedBounds');
+      if (update.expectedLabelBounds) {
+        this.assertGeometryBounds(update.expectedLabelBounds, 'expectedLabelBounds');
+      }
+      if (!patch.expectedRevision && !update.expectedBounds) {
+        throw new Error(
+          `Geometry patch element ${update.elementId} requires expectedBounds when expectedRevision is omitted`
+        );
+      }
+      if (!patch.expectedRevision
+        && Object.prototype.hasOwnProperty.call(update, 'labelBounds')
+        && !Object.prototype.hasOwnProperty.call(update, 'expectedLabelBounds')) {
+        throw new Error(
+          `Geometry patch element ${update.elementId} requires expectedLabelBounds when changing its label without expectedRevision`
+        );
+      }
+    }
+
+    const connectionIds = new Set<string>();
+    for (const update of patch.connectionUpdates) {
+      this.assertBpmnIdentifier(update.connectionId, 'connectionId');
+      if (connectionIds.has(update.connectionId)) {
+        throw new Error(`Geometry patch contains duplicate connection ${update.connectionId}`);
+      }
+      connectionIds.add(update.connectionId);
+      if (!Object.prototype.hasOwnProperty.call(update, 'waypoints')
+        && !Object.prototype.hasOwnProperty.call(update, 'labelBounds')) {
+        throw new Error(`Geometry patch connection ${update.connectionId} has no update fields`);
+      }
+      if (update.waypoints) this.assertGeometryWaypoints(update.waypoints, 'waypoints');
+      if (update.expectedWaypoints) {
+        this.assertGeometryWaypoints(update.expectedWaypoints, 'expectedWaypoints');
+      }
+      if (update.labelBounds) this.assertGeometryBounds(update.labelBounds, 'labelBounds');
+      if (!patch.expectedRevision && !update.expectedGeometryRevision) {
+        throw new Error(
+          `Geometry patch connection ${update.connectionId} requires expectedGeometryRevision when expectedRevision is omitted`
+        );
+      }
+    }
+
+    const context = this.getProcess(processId);
+    return this.commitMutation(context, async working => {
+      const elementTargets = patch.elementUpdates.map(update => {
+        const shape = this.shapeForElement(working.document, update.elementId);
+        const modelElement = working.elements.get(update.elementId);
+        const modelLane = working.document.lanes.get(update.elementId);
+        if (!shape || (!modelElement && !modelLane)) {
+          throw new Error(`Rendered element ${update.elementId} not found`);
+        }
+        const before = this.elementGeometryState(update.elementId, shape);
+        if (update.expectedBounds
+          && !this.geometryBoundsEqual(update.expectedBounds, before.bounds)) {
+          throw new ElementGeometryConflictError(
+            update.elementId,
+            { ...update.expectedBounds },
+            { ...before.bounds }
+          );
+        }
+        if (Object.prototype.hasOwnProperty.call(update, 'expectedLabelBounds')
+          && !this.optionalGeometryBoundsEqual(update.expectedLabelBounds, before.labelBounds)) {
+          throw new GeometryPatchConflictError(
+            'element',
+            update.elementId,
+            'labelBounds',
+            update.expectedLabelBounds ?? null,
+            before.labelBounds ?? null
+          );
+        }
+        return { update, shape, target: modelElement ?? modelLane!, before };
+      });
+
+      const connectionTargets = patch.connectionUpdates.map(update => {
+        const connection = working.connections.get(update.connectionId);
+        if (!connection) throw new Error(`Connection ${update.connectionId} not found`);
+        const edge = this.edgeForConnection(working.document, update.connectionId);
+        if (!edge) {
+          throw new Error(`Rendered connection ${update.connectionId} has no BPMNEdge`);
+        }
+        const before = this.connectionGeometryState(update.connectionId, edge);
+        if (update.expectedWaypoints
+          && !this.geometryWaypointsEqual(update.expectedWaypoints, before.waypoints)) {
+          throw new ConnectionGeometryConflictError(
+            update.connectionId,
+            'waypoints_mismatch',
+            before.waypoints.map(point => ({ ...point })),
+            before.geometryRevision,
+            update.expectedWaypoints.map(point => ({ ...point })),
+            update.expectedGeometryRevision
+          );
+        }
+        if (update.expectedGeometryRevision
+          && update.expectedGeometryRevision !== before.geometryRevision) {
+          throw new ConnectionGeometryConflictError(
+            update.connectionId,
+            'geometry_revision_mismatch',
+            before.waypoints.map(point => ({ ...point })),
+            before.geometryRevision,
+            update.expectedWaypoints?.map(point => ({ ...point })),
+            update.expectedGeometryRevision
+          );
+        }
+        return { update, connection, edge, before };
+      });
+
+      const beforeXml = await this.serializer.serialize(this.cloneDocument(working.document), true);
+
+      for (const { update, shape, target } of elementTargets) {
+        if (update.bounds) {
+          shape.bounds = { ...update.bounds };
+          target.position = { x: update.bounds.x, y: update.bounds.y };
+          target.size = { width: update.bounds.width, height: update.bounds.height };
+        }
+        if (Object.prototype.hasOwnProperty.call(update, 'labelBounds')) {
+          shape.labelBounds = update.labelBounds ? { ...update.labelBounds } : undefined;
+          shape.labelBoundsCleared = update.labelBounds === null;
+        }
+      }
+
+      for (const { update, connection, edge } of connectionTargets) {
+        if (update.waypoints) {
+          const waypoints = update.waypoints.map(point => ({ ...point }));
+          if (update.endpointPolicy === 'snap-to-boundary') {
+            const sourceShape = this.shapeForElement(working.document, connection.source);
+            const targetShape = this.shapeForElement(working.document, connection.target);
+            if (!sourceShape || !targetShape) {
+              throw new Error(
+                `Connection ${update.connectionId} requires rendered source and target BPMNShapes`
+              );
+            }
+            waypoints[0] = this.pointOnBounds(sourceShape.bounds, waypoints[1]);
+            waypoints[waypoints.length - 1] = this.pointOnBounds(
+              targetShape.bounds,
+              waypoints[waypoints.length - 2]
+            );
+          }
+          connection.waypoints = waypoints.map(point => ({ ...point }));
+          edge.waypoints = waypoints.map(point => ({ ...point }));
+        }
+        if (Object.prototype.hasOwnProperty.call(update, 'labelBounds')) {
+          edge.labelBounds = update.labelBounds ? { ...update.labelBounds } : undefined;
+          edge.labelBoundsCleared = update.labelBounds === null;
+        }
+      }
+
+      const afterXml = await this.serializer.serialize(this.cloneDocument(working.document), true);
+      const validationOptions = {
+        maxShapes: this.resourceLimits.maxLayoutElements,
+        maxEdges: this.resourceLimits.maxLayoutConnections,
+        maxDiagnostics: this.resourceLimits.maxListingItems
+      };
+      const [beforeReport, afterReport] = await Promise.all([
+        validateBpmnGeometry(beforeXml, validationOptions),
+        validateBpmnGeometry(afterXml, validationOptions)
+      ]);
+      const introducedDiagnostics = this.assertSafeGeometryPatch(
+        beforeReport.diagnostics,
+        afterReport.diagnostics,
+        patch.collisionPolicy
+      );
+
+      return {
+        elements: elementTargets.map(({ update, shape, before }) => ({
+          elementId: update.elementId,
+          before,
+          after: this.elementGeometryState(update.elementId, shape)
+        })),
+        connections: connectionTargets.map(({ update, edge, before }) => ({
+          connectionId: update.connectionId,
+          before,
+          after: this.connectionGeometryState(update.connectionId, edge),
+          endpointPolicy: update.endpointPolicy
+        })),
+        diagnostics: afterReport.diagnostics,
+        introducedDiagnostics
+      };
+    }, undefined, true, false, patch.expectedRevision, patch.dryRun);
+  }
+
+  async routeConnection(
+    processId: string,
+    connectionId: string,
+    update: ConnectionRouteUpdate
+  ): Promise<ConnectionRouteMutationResult> {
+    this.assertBpmnIdentifier(connectionId, 'connectionId');
+    for (const elementId of update.avoidElementIds) {
+      this.assertBpmnIdentifier(elementId, 'avoidElementIds');
+    }
+    for (const avoidedConnectionId of update.avoidConnectionIds) {
+      this.assertBpmnIdentifier(avoidedConnectionId, 'avoidConnectionIds');
+    }
+    if (!Number.isFinite(update.clearance) || update.clearance < 0) {
+      throw new Error('Connection routing clearance must be a non-negative finite number');
+    }
+    if (update.preserveOtherGeometry !== true) {
+      throw new Error('route_connection requires preserveOtherGeometry to be true');
+    }
+
+    const context = this.getProcess(processId);
+    return this.commitMutation(context, async working => {
+      const connection = working.connections.get(connectionId);
+      if (!connection) throw new Error(`Connection ${connectionId} not found`);
+      const edge = this.edgeForConnection(working.document, connectionId);
+      if (!edge) throw new Error(`Rendered connection ${connectionId} has no BPMNEdge`);
+      const before = this.connectionGeometryState(connectionId, edge);
+      if (update.expectedGeometryRevision
+        && update.expectedGeometryRevision !== before.geometryRevision) {
+        throw new ConnectionGeometryConflictError(
+          connectionId,
+          'geometry_revision_mismatch',
+          before.waypoints.map(point => ({ ...point })),
+          before.geometryRevision,
+          undefined,
+          update.expectedGeometryRevision
+        );
+      }
+
+      const beforeXml = await this.serializer.serialize(this.cloneDocument(working.document), true);
+      const validationOptions = {
+        connectionIds: [connectionId],
+        clearance: update.clearance,
+        requireOrthogonal: true,
+        maxShapes: this.resourceLimits.maxLayoutElements,
+        maxEdges: this.resourceLimits.maxLayoutConnections,
+        maxDiagnostics: this.resourceLimits.maxListingItems
+      };
+      const beforeReport = await validateBpmnGeometry(beforeXml, validationOptions);
+      const router = new ConnectionRouter();
+      const candidates = router.route(working.document, connectionId, {
+        avoidElementIds: update.avoidElementIds,
+        avoidConnectionIds: update.avoidConnectionIds,
+        clearance: update.clearance,
+        maxCoordinate: TOOL_INPUT_LIMITS.coordinate.max
+      });
+      const originalWaypoints = edge.waypoints.map(point => ({ ...point }));
+      const originalLabelBounds = edge.labelBounds ? { ...edge.labelBounds } : undefined;
+      const originalLabelBoundsCleared = edge.labelBoundsCleared;
+      const rankedDiagnostics: RankedConnectionRouteDiagnostic[] = [];
+      const requestedAvoidIds = new Set([
+        ...update.avoidElementIds,
+        ...update.avoidConnectionIds
+      ]);
+      let selected: {
+        candidate: ConnectionRouteCandidate;
+        diagnostics: GeometryDiagnostic[];
+        introducedDiagnostics: GeometryDiagnostic[];
+      } | undefined;
+
+      for (const [index, candidate] of candidates.entries()) {
+        let diagnostics = candidate.diagnostics;
+        let introducedDiagnostics = candidate.diagnostics;
+        let terminalDiagnosticFailure = false;
+        if (candidate.diagnostics.length === 0) {
+          connection.waypoints = candidate.waypoints.map(point => ({ ...point }));
+          edge.waypoints = candidate.waypoints.map(point => ({ ...point }));
+          if (candidate.labelBounds) {
+            edge.labelBounds = { ...candidate.labelBounds };
+            edge.labelBoundsCleared = false;
+          }
+          const candidateXml = await this.serializer.serialize(
+            this.cloneDocument(working.document),
+            true
+          );
+          const report = await validateBpmnGeometry(candidateXml, validationOptions);
+          diagnostics = report.diagnostics;
+          introducedDiagnostics = this.introducedGeometryDiagnostics(
+            beforeReport.diagnostics,
+            report.diagnostics
+          );
+          terminalDiagnosticFailure = report.diagnostics.some(item =>
+            item.code === 'DIAGNOSTICS_TRUNCATED'
+              || item.code === 'RESOURCE_LIMIT_EXCEEDED');
+          const requestedAvoidFailure = report.diagnostics.some(item =>
+            item.ids.includes(connectionId)
+              && item.ids.some(id => requestedAvoidIds.has(id))
+              && [
+                'EDGE_SHAPE_COLLISION',
+                'EDGE_EDGE_CROSSING',
+                'LABEL_OVERLAP',
+                'MINIMUM_CLEARANCE'
+              ].includes(item.code));
+          const rejected = terminalDiagnosticFailure
+            || requestedAvoidFailure
+            || introducedDiagnostics.some(item => item.severity === 'error'
+            || item.code === 'MINIMUM_CLEARANCE'
+            || item.code === 'NON_ORTHOGONAL_ROUTE'
+            || item.code === 'DIAGNOSTICS_TRUNCATED'
+            || item.code === 'RESOURCE_LIMIT_EXCEEDED');
+          if (!rejected) {
+            selected = { candidate, diagnostics, introducedDiagnostics };
+          }
+        }
+        rankedDiagnostics.push({
+          rank: index + 1,
+          waypoints: candidate.waypoints.map(point => ({ ...point })),
+          labelBounds: candidate.labelBounds ? { ...candidate.labelBounds } : null,
+          scoreBreakdown: { ...candidate.score },
+          diagnostics
+        });
+        if (selected || terminalDiagnosticFailure) break;
+      }
+
+      if (!selected) {
+        connection.waypoints = originalWaypoints.map(point => ({ ...point }));
+        edge.waypoints = originalWaypoints.map(point => ({ ...point }));
+        edge.labelBounds = originalLabelBounds ? { ...originalLabelBounds } : undefined;
+        edge.labelBoundsCleared = originalLabelBoundsCleared;
+        throw new ConnectionRoutingFailureError(
+          connectionId,
+          rankedDiagnostics.slice(0, Math.min(10, this.resourceLimits.maxListingItems))
+        );
+      }
+
+      const proposed = this.connectionGeometryState(connectionId, edge);
+      const connectionUpdate = {
+        connectionId,
+        waypoints: proposed.waypoints.map(point => ({ ...point })),
+        ...(proposed.labelBounds ? { labelBounds: { ...proposed.labelBounds } } : {}),
+        expectedGeometryRevision: before.geometryRevision,
+        endpointPolicy: 'exact' as const
+      };
+      return {
+        connectionId,
+        proposedWaypoints: proposed.waypoints.map(point => ({ ...point })),
+        proposedLabelBounds: proposed.labelBounds ? { ...proposed.labelBounds } : null,
+        geometryRevision: proposed.geometryRevision,
+        scoreBreakdown: { ...selected.candidate.score },
+        diagnostics: selected.diagnostics,
+        introducedDiagnostics: selected.introducedDiagnostics,
+        rankedDiagnostics,
+        geometryPatch: {
+          elementUpdates: [],
+          connectionUpdates: [connectionUpdate],
+          expectedRevision: working.revision,
+          collisionPolicy: 'reject-new',
+          dryRun: false
+        }
+      };
+    }, undefined, true, false, undefined, !update.apply);
+  }
+
+  async deleteElement(
+    processId: string,
+    elementId: string,
+    expectedRevision?: string
+  ): Promise<number> {
     const context = this.getProcess(processId);
     return this.commitMutation(context, working => {
       const connection = working.connections.get(elementId);
@@ -843,10 +1815,14 @@ export class SimpleBpmnEngine {
         }
       }
       return connectionsToDelete.length;
-    });
+    }, undefined, true, false, expectedRevision);
   }
 
-  async deleteAssociation(processId: string, associationId: string): Promise<void> {
+  async deleteAssociation(
+    processId: string,
+    associationId: string,
+    expectedRevision?: string
+  ): Promise<void> {
     const context = this.getProcess(processId);
     await this.commitMutation(context, working => {
       const connection = working.connections.get(associationId);
@@ -854,7 +1830,7 @@ export class SimpleBpmnEngine {
         throw new Error(`Association ${associationId} not found`);
       }
       working.connections.delete(associationId);
-    });
+    }, undefined, true, false, expectedRevision);
   }
 
   async exportXml(processId: string, formatted = true): Promise<string> {
@@ -867,13 +1843,13 @@ export class SimpleBpmnEngine {
     });
   }
 
-  async save(processId: string): Promise<string> {
+  async save(processId: string, expectedRevision?: string): Promise<string> {
     const context = this.getProcess(processId);
-    await this.commitMutation(context, () => undefined);
+    await this.commitMutation(context, () => undefined, undefined, true, false, expectedRevision);
     return context.filename!;
   }
 
-  async saveAs(processId: string, filename: string): Promise<string> {
+  async saveAs(processId: string, filename: string, expectedRevision?: string): Promise<string> {
     const context = this.getProcess(processId);
     const normalizedFilename = extname(filename) === ''
       && !filename.toLowerCase().endsWith('.bpmn')
@@ -885,7 +1861,9 @@ export class SimpleBpmnEngine {
         working.filename = normalizedFilename;
       },
       normalizedFilename,
-      false
+      false,
+      false,
+      expectedRevision
     );
     return normalizedFilename;
   }
@@ -896,6 +1874,10 @@ export class SimpleBpmnEngine {
       throw new Error(`Process ${processId} has no active filename`);
     }
     return context.filename;
+  }
+
+  getRevision(processId: string): string {
+    return this.getProcess(processId).revision;
   }
 
   async importXml(
@@ -1033,6 +2015,9 @@ export class SimpleBpmnEngine {
       throw this.safeImportError(error);
     }
     context.filename = filename;
+    context.persistedXml = xml;
+    context.mutationVersion = 0;
+    context.revision = this.revisionFor(xml, 0);
     this.processes.set(context.id, context);
     return context;
   }
@@ -1052,6 +2037,22 @@ export class SimpleBpmnEngine {
 
   async readMermaidFile(filename: string, maxBytes: number): Promise<string> {
     return this.fileManager.readMermaidFile(filename, maxBytes);
+  }
+
+  async saveRenderedArtifact(
+    content: string | Buffer,
+    filename: string,
+    format: RenderedArtifactFormat,
+    overwrite: boolean,
+    maxBytes: number
+  ): Promise<SaveResult> {
+    return this.fileManager.saveRenderedArtifact(
+      content,
+      filename,
+      format,
+      overwrite,
+      maxBytes
+    );
   }
 
   async deleteDiagram(filename: string): Promise<void> {
@@ -1076,7 +2077,15 @@ export class SimpleBpmnEngine {
     return this.diagramsPath;
   }
 
-  async applyAutoLayout(processId: string): Promise<BpmnLayoutResult> {
+  selectDiagramsPath(diagramsPath: string): void {
+    if (this.processLocks.size > 0 || this.processes.size > 0) {
+      throw new Error('Close the active diagram before selecting another workspace');
+    }
+    this.diagramsPath = diagramsPath;
+    this.fileManager = new FileManager(diagramsPath);
+  }
+
+  async applyAutoLayout(processId: string, expectedRevision?: string): Promise<BpmnLayoutResult> {
     const snapshot = await this.withProcessLock(processId, async () => {
       const context = this.getProcess(processId);
       const xml = await this.serializer.serialize(this.cloneDocument(context.document), true);
@@ -1102,11 +2111,11 @@ export class SimpleBpmnEngine {
       await this.commitMutation(context, working => {
         const requested = this.cloneDocument(working.document);
         applyCollaborationLayoutPolicy(requested, working.document);
-      });
+      }, undefined, true, false, expectedRevision);
       return { xml: context.xml!, warnings: [] };
     }
     const result = await this.layoutAdapter.layout(snapshot.xml);
-    await this.applyLayoutXml(processId, result.xml, snapshot.document);
+    await this.applyLayoutXml(processId, result.xml, snapshot.document, expectedRevision);
     return result;
   }
 
@@ -1117,12 +2126,16 @@ export class SimpleBpmnEngine {
     return BpmnDocumentLayoutAdapter.fromContext(this.getProcess(processId), direction);
   }
 
-  async applyLayoutModel(processId: string, layout: LayoutModel): Promise<void> {
+  async applyLayoutModel(
+    processId: string,
+    layout: LayoutModel,
+    expectedRevision?: string
+  ): Promise<void> {
     const context = this.getProcess(processId);
     await this.commitMutation(context, working => {
       BpmnDocumentLayoutAdapter.applyToContext(layout, working);
       this.repositionBoundaryEvents(working);
-    });
+    }, undefined, true, false, expectedRevision);
   }
 
   /**
@@ -1133,7 +2146,8 @@ export class SimpleBpmnEngine {
   async applyLayoutXml(
     processId: string,
     xml: string,
-    requestedLayout?: BpmnDocument
+    requestedLayout?: BpmnDocument,
+    expectedRevision?: string
   ): Promise<void> {
     if (typeof xml !== 'string') {
       throw new Error('Layout XML must be text');
@@ -1158,7 +2172,7 @@ export class SimpleBpmnEngine {
       working.document = laidOut.document;
       working.elements = laidOut.document.elements;
       working.connections = laidOut.document.connections;
-    });
+    }, undefined, true, false, expectedRevision);
   }
 
   clear(): void {
@@ -1176,7 +2190,9 @@ export class SimpleBpmnEngine {
     mutation: (working: ProcessContext) => T | Promise<T>,
     filename?: string,
     overwrite = true,
-    allowUnregistered = false
+    allowUnregistered = false,
+    expectedRevision?: string,
+    dryRun = false
   ): Promise<T> {
     return this.withProcessLock(context.id, async () => {
       if (!allowUnregistered && this.processes.get(context.id) !== context) {
@@ -1185,6 +2201,46 @@ export class SimpleBpmnEngine {
       const targetFilename = filename || context.filename;
       if (!targetFilename) {
         throw new Error(`Process ${context.id} has no active filename`);
+      }
+      let expectedContent: string | null = null;
+      if (overwrite) {
+        if (context.persistedXml === undefined || context.filename !== targetFilename) {
+          throw new Error(`Process ${context.id} has no persistence baseline for ${targetFilename}`);
+        }
+        expectedContent = context.persistedXml;
+      }
+      if (expectedRevision !== undefined && expectedRevision !== context.revision) {
+        if (!overwrite) {
+          throw new DocumentRevisionConflictError(
+            targetFilename,
+            expectedRevision,
+            context.revision || undefined,
+            'revision_mismatch'
+          );
+        }
+        const disk = await this.readDiskRevision(targetFilename, context.mutationVersion);
+        if (disk.revision !== expectedRevision || disk.content === undefined) {
+          throw new DocumentRevisionConflictError(
+            targetFilename,
+            expectedRevision,
+            disk.revision ?? (context.revision || undefined),
+            'revision_mismatch'
+          );
+        }
+        // Supplying the revision reported for the current disk bytes explicitly
+        // acknowledges that version and rebases this one commit onto it.
+        expectedContent = disk.content;
+      }
+      if (overwrite && expectedContent === context.persistedXml) {
+        const disk = await this.readDiskRevision(targetFilename, context.mutationVersion);
+        if (disk.content !== expectedContent) {
+          throw new DocumentRevisionConflictError(
+            targetFilename,
+            expectedRevision ?? (context.revision || undefined),
+            disk.revision,
+            'external_change'
+          );
+        }
       }
       const workingDocument = this.cloneDocument(context.document);
       const working: ProcessContext = {
@@ -1197,25 +2253,60 @@ export class SimpleBpmnEngine {
         elements: workingDocument.elements,
         connections: workingDocument.connections,
         xml: context.xml,
+        persistedXml: context.persistedXml,
+        mutationVersion: context.mutationVersion,
+        revision: context.revision,
       };
 
       const value = await mutation(working);
       const xml = await this.serializer.serialize(working.document);
+      if (dryRun) return value;
       const saveResult = await this.fileManager.saveBpmnFile(xml, {
         filename: targetFilename,
-        overwrite
+        overwrite,
+        ...(overwrite ? { expectedContent } : {})
       });
       if (!saveResult.success) {
+        if (saveResult.conflict) {
+          const disk = await this.readDiskRevision(targetFilename, context.mutationVersion);
+          throw new DocumentRevisionConflictError(
+            targetFilename,
+            expectedRevision ?? (context.revision || undefined),
+            disk.revision,
+            overwrite ? 'external_change' : 'target_exists'
+          );
+        }
         throw new Error(saveResult.error || 'Unable to save BPMN file');
       }
+      const nextVersion = context.mutationVersion + 1;
       context.document = working.document;
       context.extensionProfile = working.document.extensionProfile;
       context.elements = working.elements;
       context.connections = working.connections;
       context.xml = xml;
       context.filename = working.filename;
+      context.persistedXml = xml;
+      context.mutationVersion = nextVersion;
+      context.revision = this.revisionFor(xml, nextVersion);
       return value;
     });
+  }
+
+  private revisionFor(content: string, mutationVersion: number): string {
+    const digest = createHash('sha256').update(content, 'utf8').digest('hex');
+    return `sha256:${digest}:v${mutationVersion}`;
+  }
+
+  private async readDiskRevision(
+    filename: string,
+    mutationVersion: number
+  ): Promise<{ content?: string; revision?: string }> {
+    try {
+      const content = await this.fileManager.readBpmnFile(filename, this.importLimits.maxBytes);
+      return { content, revision: this.revisionFor(content, mutationVersion) };
+    } catch {
+      return {};
+    }
   }
 
   private async withProcessLock<T>(processId: string, operation: () => Promise<T>): Promise<T> {
@@ -1246,6 +2337,295 @@ export class SimpleBpmnEngine {
       ? operation()
       : this.withProcessLock(uniqueIds[index], () => acquire(index + 1));
     return acquire(0);
+  }
+
+  private shapeForElement(document: BpmnDocument, elementId: string): BpmnShapeModel | undefined {
+    const matches = Array.from(document.diagram.shapes.values()).filter(
+      shape => shape.elementId === elementId
+    );
+    if (matches.length > 1) {
+      throw new Error(`Rendered element ${elementId} has multiple BPMNShapes`);
+    }
+    return matches[0];
+  }
+
+  private edgeForConnection(
+    document: BpmnDocument,
+    connectionId: string
+  ): BpmnEdgeModel | undefined {
+    const matches = Array.from(document.diagram.edges.values()).filter(
+      edge => edge.connectionId === connectionId
+    );
+    if (matches.length > 1) {
+      throw new Error(`Rendered connection ${connectionId} has multiple BPMNEdges`);
+    }
+    return matches[0];
+  }
+
+  private elementGeometryState(
+    elementId: string,
+    shape: BpmnShapeModel
+  ): ElementGeometryState {
+    return {
+      elementId,
+      shapeId: shape.id,
+      bounds: { ...shape.bounds },
+      ...(shape.labelBounds ? { labelBounds: { ...shape.labelBounds } } : {})
+    };
+  }
+
+  private connectionGeometryState(
+    connectionId: string,
+    edge: BpmnEdgeModel
+  ): ConnectionGeometryState {
+    return {
+      connectionId,
+      edgeId: edge.id,
+      waypoints: edge.waypoints.map(point => ({ ...point })),
+      ...(edge.labelBounds ? { labelBounds: { ...edge.labelBounds } } : {}),
+      geometryRevision: connectionGeometryRevision(connectionId, edge)
+    };
+  }
+
+  private assertGeometryBounds(bounds: Position & Size, field: string): void {
+    const values = [bounds.x, bounds.y, bounds.width, bounds.height];
+    if (!values.every(Number.isFinite)
+      || bounds.x < TOOL_INPUT_LIMITS.coordinate.min
+      || bounds.y < TOOL_INPUT_LIMITS.coordinate.min
+      || bounds.x > TOOL_INPUT_LIMITS.coordinate.max
+      || bounds.y > TOOL_INPUT_LIMITS.coordinate.max
+      || bounds.width < TOOL_INPUT_LIMITS.dimension.min
+      || bounds.height < TOOL_INPUT_LIMITS.dimension.min
+      || bounds.width > TOOL_INPUT_LIMITS.dimension.max
+      || bounds.height > TOOL_INPUT_LIMITS.dimension.max) {
+      throw new Error(`${field} must contain bounded finite coordinates and positive dimensions`);
+    }
+  }
+
+  private assertGeometryWaypoints(waypoints: Position[], field: string): void {
+    if (waypoints.length < 2 || waypoints.length > 256) {
+      throw new Error(`${field} must contain between 2 and 256 waypoints`);
+    }
+    if (!waypoints.every(point => Number.isFinite(point.x)
+      && Number.isFinite(point.y)
+      && point.x >= TOOL_INPUT_LIMITS.coordinate.min
+      && point.y >= TOOL_INPUT_LIMITS.coordinate.min
+      && point.x <= TOOL_INPUT_LIMITS.coordinate.max
+      && point.y <= TOOL_INPUT_LIMITS.coordinate.max)) {
+      throw new Error(`${field} must contain bounded finite coordinates`);
+    }
+  }
+
+  private geometryBoundsEqual(left: Position & Size, right: Position & Size): boolean {
+    return left.x === right.x
+      && left.y === right.y
+      && left.width === right.width
+      && left.height === right.height;
+  }
+
+  private optionalGeometryBoundsEqual(
+    expected: (Position & Size) | null | undefined,
+    actual: (Position & Size) | undefined
+  ): boolean {
+    if (expected == null || actual === undefined) {
+      return expected == null && actual === undefined;
+    }
+    return this.geometryBoundsEqual(expected, actual);
+  }
+
+  private geometryWaypointsEqual(left: Position[], right: Position[]): boolean {
+    return left.length === right.length
+      && left.every((point, index) => point.x === right[index].x && point.y === right[index].y);
+  }
+
+  private snapIncidentConnection(
+    document: BpmnDocument,
+    connection: BpmnDocumentConnection,
+    elementId: string,
+    bounds: Position & Size
+  ): void {
+    const source = document.elements.get(connection.source);
+    const target = document.elements.get(connection.target);
+    if (!source || !target) {
+      throw new Error(`Connection ${connection.id} references a missing source or target`);
+    }
+    const waypoints = connection.waypoints.length >= 2
+      ? connection.waypoints.map(point => ({ ...point }))
+      : calculateConnectionWaypoints(source, target);
+    if (connection.source === elementId) {
+      waypoints[0] = this.pointOnBounds(bounds, waypoints[1]);
+    }
+    if (connection.target === elementId) {
+      waypoints[waypoints.length - 1] = this.pointOnBounds(
+        bounds,
+        waypoints[waypoints.length - 2]
+      );
+    }
+    connection.waypoints = waypoints;
+    const edge = Array.from(document.diagram.edges.values()).find(
+      candidate => candidate.connectionId === connection.id
+    );
+    if (edge) edge.waypoints = waypoints.map(point => ({ ...point }));
+  }
+
+  private pointOnBounds(bounds: Position & Size, toward: Position): Position {
+    const center = {
+      x: bounds.x + bounds.width / 2,
+      y: bounds.y + bounds.height / 2
+    };
+    const deltaX = toward.x - center.x;
+    const deltaY = toward.y - center.y;
+    if (deltaX === 0 && deltaY === 0) {
+      return { x: bounds.x + bounds.width, y: center.y };
+    }
+    const horizontalScale = deltaX === 0
+      ? Number.POSITIVE_INFINITY
+      : (bounds.width / 2) / Math.abs(deltaX);
+    const verticalScale = deltaY === 0
+      ? Number.POSITIVE_INFINITY
+      : (bounds.height / 2) / Math.abs(deltaY);
+    const scale = Math.min(horizontalScale, verticalScale);
+    return {
+      x: center.x + deltaX * scale,
+      y: center.y + deltaY * scale
+    };
+  }
+
+  private assertSafeElementGeometry(
+    elementId: string,
+    before: GeometryDiagnostic[],
+    after: GeometryDiagnostic[],
+    collisionPolicy: ElementGeometryUpdate['collisionPolicy']
+  ): void {
+    const invariantCodes = new Set([
+      'NON_FINITE_GEOMETRY',
+      'INVALID_BOUNDS',
+      'CONTAINMENT_FAILURE',
+      'ENDPOINT_GAP'
+    ]);
+    const invariantFailure = after.find(
+      item => item.code === 'RESOURCE_LIMIT_EXCEEDED'
+        || (invariantCodes.has(item.code) && item.ids.includes(elementId))
+    );
+    if (invariantFailure) {
+      throw new Error(`Unsafe geometry for ${elementId}: ${invariantFailure.message}`);
+    }
+
+    if (collisionPolicy === 'allow') return;
+    const collisionCodes = new Set([
+      'SHAPE_OVERLAP',
+      'LABEL_OVERLAP',
+      'EDGE_SHAPE_COLLISION',
+      'EDGE_EDGE_CROSSING',
+      'MINIMUM_CLEARANCE'
+    ]);
+    const key = (item: GeometryDiagnostic): string => `${item.code}\0${item.ids.join('\0')}`;
+    const existing = new Set(before.filter(item => collisionCodes.has(item.code)).map(key));
+    const introduced = after.find(
+      item => collisionCodes.has(item.code) && !existing.has(key(item))
+    );
+    if (introduced) {
+      throw new Error(`Geometry collision rejected for ${elementId}: ${introduced.message}`);
+    }
+  }
+
+  private assertSafeConnectionGeometry(
+    connectionId: string,
+    before: GeometryDiagnostic[],
+    after: GeometryDiagnostic[],
+    collisionPolicy: ConnectionGeometryUpdate['collisionPolicy'],
+    allowExistingMissingDi = false
+  ): GeometryDiagnostic[] {
+    const introduced = this.introducedGeometryDiagnostics(before, after);
+    const key = (item: GeometryDiagnostic): string =>
+      `${item.code}\0${item.severity}\0${item.ids.join('\0')}`;
+    const existing = new Set(before.map(key));
+    const invariantCodes = new Set([
+      'INVALID_XML',
+      'MISSING_DI',
+      'MISSING_EDGE',
+      'NON_FINITE_GEOMETRY',
+      'INSUFFICIENT_WAYPOINTS',
+      'ENDPOINT_GAP',
+      'UNKNOWN_CONNECTION_ID'
+    ]);
+    const resourceFailure = after.find(item =>
+      item.code === 'RESOURCE_LIMIT_EXCEEDED' || item.code === 'DIAGNOSTICS_TRUNCATED'
+    );
+    if (resourceFailure) {
+      throw new Error(
+        `Connection geometry resource limit exceeded for ${connectionId}: ${resourceFailure.message}`
+      );
+    }
+    const invariantFailure = after.find(item => invariantCodes.has(item.code)
+      && (item.ids.length === 0 || item.ids.includes(connectionId))
+      && !(allowExistingMissingDi
+        && item.code === 'MISSING_DI'
+        && existing.has(key(item))));
+    if (invariantFailure) {
+      throw new Error(`Unsafe geometry for ${connectionId}: ${invariantFailure.message}`);
+    }
+
+    if (collisionPolicy === 'reject-new') {
+      const introducedError = introduced.find(item => item.severity === 'error');
+      if (introducedError) {
+        throw new Error(
+          `Geometry collision rejected for ${connectionId}: ${introducedError.message}`
+        );
+      }
+    }
+    return introduced;
+  }
+
+  private introducedGeometryDiagnostics(
+    before: GeometryDiagnostic[],
+    after: GeometryDiagnostic[]
+  ): GeometryDiagnostic[] {
+    const key = (item: GeometryDiagnostic): string =>
+      `${item.code}\0${item.severity}\0${item.ids.join('\0')}`;
+    const existing = new Set(before.map(key));
+    return after.filter(item => !existing.has(key(item)));
+  }
+
+  private assertSafeGeometryPatch(
+    before: GeometryDiagnostic[],
+    after: GeometryDiagnostic[],
+    collisionPolicy: GeometryPatchUpdate['collisionPolicy']
+  ): GeometryDiagnostic[] {
+    const key = (item: GeometryDiagnostic): string =>
+      `${item.code}\0${item.severity}\0${item.ids.join('\0')}`;
+    const existing = new Set(before.map(key));
+    const introduced = after.filter(item => !existing.has(key(item)));
+    const invariantCodes = new Set([
+      'INVALID_XML',
+      'MISSING_DI',
+      'MISSING_SHAPE',
+      'MISSING_EDGE',
+      'NON_FINITE_GEOMETRY',
+      'INVALID_BOUNDS',
+      'INSUFFICIENT_WAYPOINTS',
+      'ENDPOINT_GAP',
+      'CONTAINMENT_FAILURE',
+      'UNKNOWN_ELEMENT_ID',
+      'UNKNOWN_CONNECTION_ID'
+    ]);
+    const resourceFailure = after.find(item =>
+      item.code === 'RESOURCE_LIMIT_EXCEEDED' || item.code === 'DIAGNOSTICS_TRUNCATED'
+    );
+    if (resourceFailure) {
+      throw new Error(`Geometry patch resource limit exceeded: ${resourceFailure.message}`);
+    }
+    const invariantFailure = introduced.find(item => invariantCodes.has(item.code));
+    if (invariantFailure) {
+      throw new Error(`Unsafe geometry patch: ${invariantFailure.message}`);
+    }
+    if (collisionPolicy === 'reject-new') {
+      const introducedError = introduced.find(item => item.severity === 'error');
+      if (introducedError) {
+        throw new Error(`Geometry patch rejected: ${introducedError.message}`);
+      }
+    }
+    return introduced;
   }
 
   private deleteLaneHierarchy(document: BpmnDocument, laneId: string): void {

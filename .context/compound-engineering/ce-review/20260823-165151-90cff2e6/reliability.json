@@ -1,0 +1,1 @@
+{"reviewer":"reliability","findings":[],"residual_risks":["A client CLI failure after an owned registration is removed can require rerunning the idempotent installer."],"testing_gaps":[]}

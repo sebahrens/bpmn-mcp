@@ -5,6 +5,7 @@ import BpmnModdle from 'bpmn-moddle';
 import { SimpleBpmnEngine } from '../../../src/core/SimpleBpmnEngine.js';
 import { BpmnValidator } from '../../../src/core/BpmnValidator.js';
 import { BpmnRequestHandler } from '../../../src/server/handlers.js';
+import { DEFAULT_RESOURCE_LIMITS } from '../../../src/config/index.js';
 import { diagramContext } from '../../../src/core/DiagramContext.js';
 import { IdGenerator } from '../../../src/utils/IdGenerator.js';
 import {
@@ -1621,6 +1622,50 @@ describe('SimpleBpmnEngine schema-aware document model', () => {
     expect(findSemantic(definitions, second.id)).toBeUndefined();
   });
 
+  it('rejects truncated update_connection diagnostics and rolls back memory and disk', async () => {
+    const constrainedEngine = new SimpleBpmnEngine(directory, undefined, undefined, {
+      ...DEFAULT_RESOURCE_LIMITS,
+      maxListingItems: 1
+    });
+    const context = await constrainedEngine.createProcess('Bounded connection diagnostics');
+    const source = await constrainedEngine.createElement(context.id, {
+      type: 'bpmn:Task',
+      position: { x: 100, y: 100 }
+    });
+    const target = await constrainedEngine.createElement(context.id, {
+      type: 'bpmn:Task',
+      position: { x: 400, y: 100 }
+    });
+    await constrainedEngine.createElement(context.id, {
+      type: 'bpmn:Task',
+      position: { x: 400, y: 100 }
+    });
+    await constrainedEngine.createElement(context.id, {
+      type: 'bpmn:Task',
+      position: { x: 400, y: 100 }
+    });
+    const connection = await constrainedEngine.connect(context.id, source.id, target.id);
+    const beforeXml = await constrainedEngine.exportXml(context.id);
+    const beforeCachedXml = context.xml;
+    const beforeRevision = context.revision;
+    const beforeConnection = structuredClone(context.connections.get(connection.id));
+    const beforeDisk = await fs.readFile(join(directory, context.filename!), 'utf8');
+
+    await expect(constrainedEngine.updateConnection(context.id, connection.id, {
+      label: 'Rejected label',
+      expectedRevision: beforeRevision,
+      collisionPolicy: 'allow'
+    })).rejects.toThrow(
+      `Connection geometry resource limit exceeded for ${connection.id}`
+    );
+
+    expect(context.connections.get(connection.id)).toEqual(beforeConnection);
+    expect(await constrainedEngine.exportXml(context.id)).toBe(beforeXml);
+    expect(context.xml).toBe(beforeCachedXml);
+    expect(context.revision).toBe(beforeRevision);
+    expect(await fs.readFile(join(directory, context.filename!), 'utf8')).toBe(beforeDisk);
+  });
+
   it.each([
     { caseName: 'sequence flow', type: 'bpmn:SequenceFlow' as const },
     { caseName: 'message flow', type: 'bpmn:MessageFlow' as const },
@@ -1678,7 +1723,7 @@ describe('SimpleBpmnEngine schema-aware document model', () => {
     diagramContext.setCurrent(context, context.name);
     const deleted = await handler.handleRequest('delete_element', { elementId: connection.id });
 
-    expect(deleted).toEqual({
+    expect(deleted).toMatchObject({
       content: [{
         type: 'text',
         text: `Deleted ${testCase.caseName.replace('conditional ', '').replace('default ', '')} ${connection.id}`

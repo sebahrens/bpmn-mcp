@@ -1,0 +1,88 @@
+{
+  "reviewer": "security",
+  "findings": [
+    {
+      "title": "Diagram paths may overlap removable skill trees",
+      "severity": "P1",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 582,
+      "why_it_matters": "A valid absolute diagrams path can be the Codex or Claude skill directory, or a descendant of it. Installation accepts that path, but uninstall recursively removes every installer-owned skill before preserving diagrams, so diagram files stored there are deleted without PURGE_DIAGRAMS or confirmation.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Extend the managed-path validation to reject DIAGRAMS_DIR when it equals or descends from CODEX_SKILL_DIR or CLAUDE_SKILL_DIR, not only APP_DIR. Add install/uninstall tests for both clients with diagrams equal to and nested under their skill destination.",
+      "confidence": 0.98,
+      "evidence": [
+        "Lines 574-584 validate only whether DIAGRAMS_DIR is lexically within APP_DIR; neither client skill destination is checked.",
+        "Lines 643-644 call remove_owned_skill for both clients on every uninstall, and lines 533-538 recursively delete an installer-owned destination.",
+        "The preservation/purge decision occurs only at lines 660-664, after the skill trees have already been removed."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Symlink aliases bypass diagram deletion boundaries",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 567,
+      "why_it_matters": "All diagram safety decisions compare unresolved path strings. A diagrams path reached through a symlinked ancestor can resolve inside APP_DIR while appearing lexically outside it, so a normal uninstall deletes the diagrams with the app. The same technique can make a confirmed purge resolve beneath HOME, PROJECT_ROOT, or INSTALL_ROOT while bypassing the exact-string denylist, allowing rm -rf to delete unrelated files through the ancestor symlink.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Resolve the nearest existing ancestor of every managed and purge path to a physical path, append only validated missing components, and perform all containment/denylist checks on that normalized result immediately before mutation. If portable canonicalization cannot be guaranteed, reject paths containing symlinked components for install and purge.",
+      "confidence": 0.94,
+      "evidence": [
+        "Lines 567-571 implement diagrams_within_app with a shell string-prefix case and never resolve symlinked path components.",
+        "Lines 560-564 reject only literal values such as HOME, PROJECT_ROOT, and INSTALL_ROOT; an alias like /tmp/home-link/Documents is not rejected when /tmp/home-link resolves to HOME.",
+        "Lines 587-592 pass the original unresolved purge path directly to rm -rf, which traverses symlinked ancestor directories even though it does not follow a final-component symlink."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Skill symlinks bypass the no-force conflict guard",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 301,
+      "why_it_matters": "A dangling third-party skill symlink is false under -e, so install silently stages and replaces it even without --force. A regular third-party skill whose ownership marker is itself a symlink can also be classified as installer-owned because skill_is_owned follows the marker, allowing the entire directory to be replaced or removed without explicit consent.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Treat either -e or -L on each skill destination as an existing conflict, and make skill_is_owned require both the destination directory and its ownership marker to be non-symlinks before reading the marker. Add cases for dangling destination symlinks and symlinked marker files.",
+      "confidence": 0.97,
+      "evidence": [
+        "Lines 301-303 and 312-314 enter the conflict check only when -e succeeds; a dangling symbolic link is therefore skipped.",
+        "Lines 183-186 use -f and sed on the ownership marker without a -L rejection, so the marker may be resolved through a symbolic link.",
+        "Lines 480-481 move the existing destination into rollback and replace it; after commit, cleanup deletes the old symlink or directory snapshot."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Rollback overwrites post-snapshot client configuration",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 366,
+      "why_it_matters": "Rollback restores complete Codex and Claude configuration snapshots rather than only the MCP registration changed by this installer. Any unrelated setting written by the user, another client process, or a client migration after the snapshot is silently overwritten when a later install step fails, violating the promised preservation of unrelated configuration.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Rollback through each client's supported MCP registration interface using the captured prior registration, or add a client-compatible transaction/locking mechanism and detect intervening writes before replacing a full file. Do not blindly copy an old whole-file snapshot over a changed live config.",
+      "confidence": 0.89,
+      "evidence": [
+        "Lines 390-395 snapshot each complete client configuration before any registration changes.",
+        "Lines 360-369 restore or remove the entire destination without checking whether it changed after the snapshot.",
+        "Lines 376-377 restore both full files after any downstream failure, while the test's unrelated settings are stored in separate files rather than in the snapshotted config files."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Client configuration is copied into TMPDIR during rollback preparation. mktemp normally creates a private directory, but confidentiality on non-POSIX filesystems such as a user-selected WSL mounted-Windows TMPDIR was not established.",
+    "Filesystem checks and mutations are separate operations, so paths can still be swapped between validation and rm/mv/cp. Exploitability depends on an unsupported privilege boundary or concurrent local mutation and was not raised as a standalone finding."
+  ],
+  "testing_gaps": [
+    "No test places the diagrams directory at or below either client skill destination and then proves uninstall preserves it.",
+    "No test uses symlinked ancestors to exercise APP_DIR containment or protected purge-target checks.",
+    "No test covers a dangling skill destination symlink or a symlinked ownership marker during non-force install/uninstall.",
+    "The rollback fixture keeps unrelated configuration in sibling files; it does not simulate an unrelated write inside config.toml or .claude.json between snapshot and rollback.",
+    "Path coverage proves spaces remain one argument but does not include newline or shell-metacharacter path components; the reviewed client calls are quoted, so this remains a coverage gap rather than a confirmed injection finding."
+  ]
+}

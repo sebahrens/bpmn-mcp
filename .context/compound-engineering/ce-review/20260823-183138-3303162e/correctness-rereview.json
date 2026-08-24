@@ -1,0 +1,50 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "Legacy HTTP snapshots are falsely accepted",
+      "severity": "P1",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 605,
+      "why_it_matters": "The exact-round-trip gate declares a registration with `transport.type === \"http\"` restorable, but restore uses `codex mcp add --url`, whose current CLI creates a streamable HTTP registration. On a later failure, the installer has already removed the original, recreates it with a different transport type, then fails its equality check and leaves the user with altered client state and an incomplete rollback.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Reject `http` snapshots unless Codex exposes an add mode that preserves that exact type, and add a legacy-HTTP fixture that proves forced replacement is refused before any mutation.",
+      "confidence": 0.9,
+      "evidence": [
+        "codex_snapshot_is_cli_restorable accepts both `streamable_http` and `http` at line 605.",
+        "restore_codex_json converts either accepted type to the same `codex mcp add --url` invocation at lines 647-649.",
+        "The current `codex mcp add --help` identifies `--url` as a streamable HTTP server, while restore_codex_json's equality check at lines 657-658 requires the original type to round-trip unchanged."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Missing other CLI bypasses path coherence",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 444,
+      "why_it_matters": "A targeted diagrams-path change still succeeds when the unselected client binary and skill are absent even if its old installer-created registration remains persisted. When that client becomes available again it keeps pointing to the old diagram directory, contradicting the coherence guarantee.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Inspect the unselected client's persisted registration without requiring its executable where possible, or conservatively refuse the path change when the other client cannot be checked; cover the missing-CLI/absent-skill/retained-registration case.",
+      "confidence": 0.87,
+      "evidence": [
+        "For a Codex-targeted change, the only registration check is inside `command -v claude` at lines 444-449; when Claude is absent and its skill is absent, `other_owned` remains zero and line 468 permits the change.",
+        "The Claude registration is stored in CLAUDE_USER_CONFIG_FILE and survives removal or temporary absence of the CLI binary.",
+        "The Claude-targeted/Codex-unavailable case repeats the same bypass at lines 458-463."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The deleted-registration resurrection fix now distinguishes a confirmed missing registration from an unreadable state and preserves a deletion made after a successful add; the supplied deterministic Codex test covers that path.",
+    "Post-add verification records a successful add before reading it and rechecks the desired registration before commit, so a transient read failure or late replacement enters rollback rather than silently committing it.",
+    "Registration compare/remove operations are still inherently TOCTOU with independent client-config writers after the final read and before the remove command."
+  ],
+  "testing_gaps": [
+    "No fixture covers a legacy Codex `transport.type: http` snapshot, despite it being accepted by the restorable-snapshot predicate.",
+    "No targeted path-change test combines a missing unselected CLI, an absent unselected skill, and a retained unselected registration."
+  ]
+}

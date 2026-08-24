@@ -10,8 +10,10 @@ release. It does not require authenticated Codex or Claude accounts.
 
    ```sh
    export MCP_BPMN_PACKAGE_TARBALL=/tmp/mcp-bpmn-server-0.2.0.tgz
+   export MCP_BPMN_PACKAGE_SHA256='<SHA-256 copied from the macOS gate evidence>'
    test -f "$MCP_BPMN_PACKAGE_TARBALL"
-   export MCP_BPMN_PACKAGE_SHA256=$(sha256sum "$MCP_BPMN_PACKAGE_TARBALL" | awk '{print $1}')
+   test "$(sha256sum "$MCP_BPMN_PACKAGE_TARBALL" | awk '{print $1}')" = \
+     "$MCP_BPMN_PACKAGE_SHA256"
    printf '%s  %s\n' "$MCP_BPMN_PACKAGE_SHA256" "$MCP_BPMN_PACKAGE_TARBALL"
    ```
 
@@ -101,6 +103,7 @@ release. It does not require authenticated Codex or Claude accounts.
    against the supplied candidate and require both client workflows to pass:
 
    ```sh
+   set -eu
    for command_name in node npm codex claude; do
      command_path=$(command -v "$command_name") || {
        printf 'missing required WSL2 smoke command: %s\n' "$command_name" >&2
@@ -129,8 +132,14 @@ release. It does not require authenticated Codex or Claude accounts.
        "$@"
    }
    run_smoke ./scripts/install-agent-integrations.sh install all
-   run_smoke ./scripts/install-agent-integrations.sh doctor
+   doctor_output=$(run_smoke ./scripts/install-agent-integrations.sh doctor)
+   printf '%s\n' "$doctor_output"
+   printf '%s\n' "$doctor_output" | grep -F 'Codex MCP registration: owned'
+   printf '%s\n' "$doctor_output" | grep -F 'Claude MCP registration: owned'
    run_smoke ./scripts/install-agent-integrations.sh update all
+   doctor_output=$(run_smoke ./scripts/install-agent-integrations.sh doctor)
+   printf '%s\n' "$doctor_output" | grep -F 'Codex MCP registration: owned'
+   printf '%s\n' "$doctor_output" | grep -F 'Claude MCP registration: owned'
    run_smoke npm run test:codex-plugin
    run_smoke npm run test:claude-plugin
    run_smoke ./scripts/install-agent-integrations.sh uninstall

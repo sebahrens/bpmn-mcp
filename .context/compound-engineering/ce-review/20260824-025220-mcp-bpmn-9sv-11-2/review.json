@@ -1,0 +1,55 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "README.md",
+    "skills/bpmn-modeler/SKILL.md",
+    "skills/bpmn-modeler/references/capabilities.md",
+    "src/types/index.ts",
+    "src/core/SimpleBpmnEngine.ts",
+    "src/core/layout/ConnectionRouter.ts",
+    "src/core/layout/CollaborationLayoutPolicy.ts",
+    "src/server/handlers.ts",
+    "src/server/tools.ts",
+    "tests/contracts/engine-contract.test.ts",
+    "tests/contracts/tool-annotations.test.ts",
+    "tests/e2e/server.test.ts",
+    "tests/integration/handlers.test.ts",
+    "tests/security/request-validation.test.ts",
+    "tests/security/resource-exhaustion.test.ts",
+    "tests/unit/core/CollaborationAutoLayout.test.ts"
+  ],
+  "intent": "Implement proposal-first, optionally atomic local connection routing with explicit avoidance constraints for mcp-bpmn-9sv.11.2.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "security",
+    "api-contract",
+    "reliability",
+    "performance",
+    "adversarial"
+  ],
+  "applied_fixes": [
+    "Generate endpoint-side candidates before obstacle corridors so the bounded candidate budget always covers every endpoint orientation.",
+    "Return finite label bounds and a geometry patch that can be passed directly to apply_geometry_patch.",
+    "Fail closed on geometry-oracle resource or truncation diagnostics and on explicitly requested avoid-shape or avoid-connection contacts.",
+    "Reject source or target shapes in avoidShapeIds as an impossible constraint without mutating state.",
+    "Keep participant bounds available for label placement while allowing message-flow routes to cross their containing pools.",
+    "Preserve collinear reversals during route compaction and require endpoint segments to move outward from their source and target shapes."
+  ],
+  "findings": [],
+  "residual_actionable_work": [],
+  "advisory": [
+    "No docs/solutions directory with applicable institutional learnings exists.",
+    "Unrelated dirty worktree changes were excluded from the review scope and preserved."
+  ],
+  "validation": {
+    "full_gate": "npm run test:all passed: 802 source tests, 17 compiled e2e tests, 3 renderer tests, and installer lifecycle smoke.",
+    "focused_layout": "Collaboration layout unit and candidate-corpus tests passed, including the message-flow fixture.",
+    "acceptance": "Focused handler, request-validation, contract, e2e, and resource-exhaustion tests cover dry-run, atomic apply/rollback, avoidance, preservation, structured results, fixture types, and ranked failure diagnostics."
+  },
+  "verdict": "Ready to merge"
+}

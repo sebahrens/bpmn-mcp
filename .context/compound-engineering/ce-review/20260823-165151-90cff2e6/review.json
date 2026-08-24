@@ -1,0 +1,19 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "Makefile",
+    "scripts/install-agent-integrations.sh",
+    "tests/install-agent-integrations.test.sh",
+    "package.json"
+  ],
+  "intent": "Implement the selected bead's safe user-local macOS and WSL/Linux installer for Codex CLI and Claude Code.",
+  "applied_fixes": [
+    "Reject diagrams paths nested under installer-owned program files and preserve legacy unsafe layouts on uninstall.",
+    "Persist and compare the configured diagrams path when determining registration ownership.",
+    "Reject symlinked ownership/program state and make signal cleanup terminate reliably.",
+    "Keep Make targets thin and avoid interpolating user-provided paths into shell syntax.",
+    "Make doctor tolerate client version-report failures while still diagnosing the installation."
+  ],
+  "findings": [],
+  "verdict": "Ready to merge after required verification"
+}

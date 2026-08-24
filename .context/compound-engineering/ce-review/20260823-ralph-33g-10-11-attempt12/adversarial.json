@@ -1,0 +1,67 @@
+{
+  "reviewer": "adversarial",
+  "findings": [
+    {
+      "title": "Race swaps artifact into an unbounded copy",
+      "severity": "P2",
+      "file": "scripts/release-artifact.mjs",
+      "line": 20,
+      "why_it_matters": "A concurrent replacement can turn release verification into disk exhaustion before the SHA-256 guard runs, taking down the release gate or consuming the host temporary filesystem.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Open the candidate once without following a final symlink, fstat that descriptor, and copy/hash bytes from that same descriptor; do not re-resolve and reopen the pathname between validation and copying.",
+      "confidence": 0.84,
+      "evidence": [
+        "Trigger: MCP_BPMN_PACKAGE_TARBALL initially names a small regular file, so lstatSync(requestedPath) at line 20 passes.",
+        "Race: another process renames that file and replaces the pathname with a symlink to a very large file or an unbounded device before realpathSync at line 25; the later realpath and copyFileSync reopen the changed pathname rather than the object that was checked.",
+        "Cascade: copyFileSync at line 27 consumes time and temporary-disk capacity before readFileSync and the digest comparison at lines 30-35 can reject the bytes. Filling the shared temporary filesystem can also disrupt neighboring release checks before this validator reports a digest mismatch."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "WSL symlink hides Windows tools until installation",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 175,
+      "why_it_matters": "The installer can accept Windows Node/npm behind a Linux-looking symlink or wrapper, then run npm against Linux prefixes with Windows path and executable semantics, producing a broken installation or failing after staging has begun.",
+      "autofix_class": "manual",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Attest the runtime rather than only the command string: require Node to report process.platform === 'linux', resolve symlink chains for both commands, and add a real-WSL smoke for symlinked/wrapped Windows executables and non-default drive mount roots.",
+      "confidence": 0.9,
+      "evidence": [
+        "Trigger: /usr/local/bin/node and /usr/local/bin/npm are symlinks or wrapper scripts that ultimately invoke /mnt/c/Program Files/nodejs tools.",
+        "Execution: command -v at lines 172-173 returns the Linux-looking wrapper names; windows_binary_in_wsl only matches the unresolved string against /mnt/<drive> or an .exe suffix at lines 161-165, so both guards at lines 175-178 pass.",
+        "Outcome: node -p can still report a supported version, after which npm install at lines 843-847 receives WSL paths through a Windows runtime. The focused test and WSL instructions cover only direct /mnt/c paths, so this composition is not rejected."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Wrong WSL candidate authenticates its own checksum",
+      "severity": "P1",
+      "file": "docs/testing/wsl2-installer-smoke.md",
+      "line": 14,
+      "why_it_matters": "The documented cross-platform release gate can pass a different tarball from the macOS candidate while claiming to validate the exact same artifact, defeating the purpose of the supplied-artifact SHA handoff.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Carry the independently recorded macOS gate digest into WSL as the expected value, then compare sha256sum of the copied tarball to that value before exporting it; never derive the expected digest from the file under test.",
+      "confidence": 0.98,
+      "evidence": [
+        "Trigger: the operator accidentally copies candidate B into /tmp while macOS validated candidate A.",
+        "Execution: line 14 computes MCP_BPMN_PACKAGE_SHA256 directly from candidate B, and run_smoke passes that self-derived value to the installer and both plugin validators at lines 127-135.",
+        "Outcome: every helper correctly proves that B matches B. The final check at lines 139-140 repeats the same circular comparison, so the entire WSL lifecycle passes without any executable comparison to macOS digest A; line 19 only asks for a manual match."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "requestAppServer resolves immediately after sending SIGTERM and does not wait for the Codex app-server child to close before the next call starts; if Codex retains shared CODEX_HOME locks during shutdown, the nominally sequential plugin/read and mcpServerStatus/list calls can overlap and flake. The external lock behavior was not confirmed strongly enough to promote this to a finding."
+  ],
+  "testing_gaps": [
+    "The artifact helper tests final symlinks and digest mismatches but do not race pathname replacement between lstat, realpath, and copy.",
+    "The WSL harness covers only direct /mnt/c command paths, not symlinked or wrapped Windows executables or a configured non-default WSL automount root.",
+    "The WSL procedure has no independently supplied expected digest fixture that would fail when a different but internally valid tarball is copied."
+  ]
+}

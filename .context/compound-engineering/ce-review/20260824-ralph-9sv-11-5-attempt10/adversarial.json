@@ -1,0 +1,30 @@
+{
+  "reviewer": "adversarial",
+  "findings": [
+    {
+      "title": "Capped diagnostics bypass rewire collision rejection",
+      "severity": "P1",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 1260,
+      "why_it_matters": "The default reject-new geometry policy can persist a newly unsafe route when diagnostic collection reaches its configured cap. A destructive endpoint rewire is then accepted even though the tool promises to reject newly introduced collision errors, leaving a BPMN file whose retained DI route crosses shapes or edges.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Treat DIAGNOSTICS_TRUNCATED as a fatal resource/invariant result in assertSafeConnectionGeometry, matching assertSafeGeometryPatch, and add a capped-diagnostics rewire regression test.",
+      "confidence": 0.91,
+      "evidence": [
+        "Trigger: configure maxListingItems to 1, start with the selected connection already producing one collision diagnostic, then rewire an endpoint with collisionPolicy reject-new so its snapped retained route collides with a second shape.",
+        "Both before and after validation calls cap diagnostics at maxListingItems (src/core/SimpleBpmnEngine.ts:1250-1259). BoundedGeometryDiagnostics keeps at most that many selected diagnostics, omits later selected collisions once the cap is full, and appends DIAGNOSTICS_TRUNCATED (src/core/BpmnGeometry.ts:167-193).",
+        "The after report can therefore retain only the pre-existing collision plus DIAGNOSTICS_TRUNCATED; introducedDiagnostics finds no new retained error, and assertSafeConnectionGeometry only rejects RESOURCE_LIMIT_EXCEEDED, not DIAGNOSTICS_TRUNCATED (src/core/SimpleBpmnEngine.ts:2303-2331). The mutation then reaches commitMutation persistence.",
+        "The batch geometry-patch guard already fails closed for either RESOURCE_LIMIT_EXCEEDED or DIAGNOSTICS_TRUNCATED (src/core/SimpleBpmnEngine.ts:2356-2360), demonstrating that truncation is intended to make diagnostics unsafe to rely on."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The same capped-diagnostics fail-open path is shared by update_connection_geometry; this review intentionally scopes the finding to update_connection rewires."
+  ],
+  "testing_gaps": [
+    "No update_connection test sets a tiny maxListingItems cap, preserves one selected pre-existing geometry diagnostic, then introduces another during endpoint snapping to prove reject-new fails closed."
+  ]
+}

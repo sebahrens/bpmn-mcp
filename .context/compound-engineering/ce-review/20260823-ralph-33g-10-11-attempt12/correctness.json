@@ -1,0 +1,31 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "Verified artifact can change before use",
+      "severity": "P2",
+      "file": "scripts/package-smoke.mjs",
+      "line": 23,
+      "why_it_matters": "All four consumers hash the caller-owned tarball path and later reopen that path for installation or extraction. If the file is replaced or modified after hashing, the bytes actually exercised can differ from MCP_BPMN_PACKAGE_SHA256; the Codex validator can even install one version of the path and extract a later version. This defeats the intended checksum-identical artifact guarantee under a check-to-use race.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Copy the supplied artifact into each consumer's private temporary directory first, hash that private copy, and use only the verified private copy for every subsequent npm and tar operation. Apply the same pattern in the installer staging directory.",
+      "confidence": 0.9,
+      "evidence": [
+        "scripts/package-smoke.mjs:23-24 hashes suppliedTarball, but lines 469, 477, and 506 later reopen the original path after build and dry-run work.",
+        "scripts/validate-codex-plugin.mjs:287-289 hashes tarballPath, then lines 295-315 separately use that caller-owned path for npm install and tar extraction.",
+        "scripts/validate-claude-plugin.mjs:202-204 hashes tarballPath before tar reopens it at lines 210-215.",
+        "scripts/install-agent-integrations.sh:805-812 hashes tarball_path, then npm reopens the same external path at lines 837-840."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The genuine WSL2 lifecycle remains an opt-in manual gate and was not executed in this review environment."
+  ],
+  "testing_gaps": [
+    "No test mutates or replaces a supplied tarball between digest verification and npm/tar consumption.",
+    "Installer invalid-input coverage still does not explicitly exercise a missing SHA-256 value, directory input, or unreadable regular file."
+  ]
+}

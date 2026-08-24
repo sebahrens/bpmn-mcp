@@ -11,6 +11,13 @@ import {
   type TempHandlerSandbox
 } from '../helpers/tempDiagrams.js';
 
+async function normalizedSemanticXml(xml: string): Promise<string> {
+  const moddle = new BpmnModdle();
+  const parsed = await moddle.fromXML(xml);
+  parsed.rootElement.diagrams = [];
+  return (await moddle.toXML(parsed.rootElement, { format: true })).xml;
+}
+
 describe('BpmnRequestHandler Integration Tests', () => {
   let handler: BpmnRequestHandler;
   let sandbox: TempHandlerSandbox | undefined;
@@ -837,6 +844,787 @@ describe('BpmnRequestHandler Integration Tests', () => {
       expect(afterClear.elementsById.Task_1.default).toBeUndefined();
     });
 
+    it('should query complete semantic and DI views for every connection type', async () => {
+      const filename = 'connection-queries.bpmn';
+      const fixture = await readFile(join(
+        process.cwd(), 'tests/fixtures/import-roundtrip/full-semantics-di.bpmn'
+      ), 'utf8');
+      const withDefault = fixture.replace(
+        '<bpmn:subProcess id="SubProcess_Preserved" name="Nested work">',
+        '<bpmn:subProcess id="SubProcess_Preserved" name="Nested work" default="Flow_To_End">'
+      );
+      await writeFile(join(sandbox!.directory, filename), withDefault, 'utf8');
+      await handler.handleRequest('open_bpmn', { filename });
+
+      const sequencePage = await handler.handleRequest('list_connections', {
+        connectionType: 'bpmn:SequenceFlow',
+        ownerId: 'Process_RoundTrip',
+        scopeId: 'Process_RoundTrip',
+        limit: 2,
+        offset: 2
+      });
+      expect(JSON.parse(sequencePage.content[0].text as string)).toMatchObject({
+        count: 4,
+        returnedCount: 2,
+        offset: 2,
+        limit: 2,
+        hasMore: false,
+        connections: [
+          { id: 'Flow_Task_Gateway', type: 'bpmn:SequenceFlow' },
+          { id: 'Flow_To_End', type: 'bpmn:SequenceFlow' }
+        ],
+        revision: expect.any(String)
+      });
+
+      const conditional = await handler.handleRequest('get_connection', {
+        connectionId: 'Flow_Approved'
+      });
+      const conditionalView = JSON.parse(conditional.content[0].text as string);
+      expect(conditionalView).toEqual({
+        id: 'Flow_Approved',
+        type: 'bpmn:SequenceFlow',
+        ownerId: 'Process_RoundTrip',
+        scopeId: 'Process_RoundTrip',
+        sourceId: 'Gateway_Decision',
+        targetId: 'SubProcess_Preserved',
+        label: 'approved',
+        condition: {
+          body: '${approved = true}',
+          type: 'bpmn:FormalExpression'
+        },
+        isDefault: false,
+        waypoints: [{ x: 430, y: 208 }, { x: 490, y: 208 }],
+        edgeId: 'Flow_Approved_CustomDI',
+        labelBounds: { x: 444, y: 186, width: 62, height: 14 },
+        geometryRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        semanticRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        revision: expect.any(String)
+      });
+
+      const defaultFlow = await handler.handleRequest('get_connection', {
+        connectionId: 'Flow_To_End'
+      });
+      expect(JSON.parse(defaultFlow.content[0].text as string)).toMatchObject({
+        isDefault: true,
+        defaultOwnerId: 'SubProcess_Preserved'
+      });
+
+      const message = await handler.handleRequest('list_connections', {
+        connectionType: 'bpmn:MessageFlow',
+        sourceId: 'Task_Unrelated',
+        targetId: 'Participant_External'
+      });
+      expect(JSON.parse(message.content[0].text as string)).toMatchObject({
+        count: 1,
+        connections: [{
+          id: 'MessageFlow_Notice',
+          type: 'bpmn:MessageFlow',
+          ownerId: 'Collaboration_RoundTrip',
+          scopeId: 'Collaboration_RoundTrip',
+          sourceId: 'Task_Unrelated',
+          targetId: 'Participant_External',
+          label: 'notice',
+          edgeId: 'MessageFlow_Notice_CustomDI'
+        }]
+      });
+
+      const createdAssociation = await handler.handleRequest('add_association', {
+        sourceId: 'DataObjectReference_Request',
+        targetId: 'Task_Unrelated',
+        associationDirection: 'Both'
+      });
+      const associationId = (createdAssociation.structuredContent as any).associationId as string;
+      const association = await handler.handleRequest('get_connection', {
+        connectionId: associationId
+      });
+      expect(JSON.parse(association.content[0].text as string)).toMatchObject({
+        id: associationId,
+        type: 'bpmn:Association',
+        associationDirection: 'Both',
+        sourceId: 'DataObjectReference_Request',
+        targetId: 'Task_Unrelated',
+        edgeId: `${associationId}_di`
+      });
+
+      const edge = diagramContext.getCurrent().document.diagram.edges
+        .get('Flow_Approved_CustomDI')!;
+      const revisionBeforeGeometryEdit = diagramContext.getCurrent().revision;
+      edge.waypoints[1] = { x: 491, y: 208 };
+      const changed = await handler.handleRequest('get_connection', {
+        connectionId: 'Flow_Approved'
+      });
+      expect((changed.structuredContent as any).geometryRevision)
+        .not.toBe(conditionalView.geometryRevision);
+      expect((changed.structuredContent as any).revision).toBe(revisionBeforeGeometryEdit);
+    });
+
+    it('should reject getting an unknown connection without changing query state or disk', async () => {
+      const context = diagramContext.getCurrent();
+      const beforeXml = context.xml;
+      const beforeRevision = context.revision;
+      const beforeFile = await readFile(join(sandbox!.directory, context.filename!), 'utf8');
+
+      const result = await handler.handleRequest('get_connection', {
+        connectionId: 'Flow_Missing'
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe('Error: Connection Flow_Missing not found');
+      expect(context.xml).toBe(beforeXml);
+      expect(context.revision).toBe(beforeRevision);
+      await expect(readFile(join(sandbox!.directory, context.filename!), 'utf8'))
+        .resolves.toBe(beforeFile);
+    });
+
+    it('should update connection semantics without DI but reject endpoint rewiring', async () => {
+      const filename = 'semantic-without-di.bpmn';
+      const fixture = await readFile(join(
+        process.cwd(), 'tests/fixtures/layout/sequential.bpmn'
+      ), 'utf8');
+      await writeFile(join(sandbox!.directory, filename), fixture, 'utf8');
+      await handler.handleRequest('open_bpmn', { filename });
+
+      const before = (await handler.handleRequest('get_connection', {
+        connectionId: 'Flow_Sequential_2'
+      })).structuredContent as any;
+      const updated = await handler.handleRequest('update_connection', {
+        connectionId: 'Flow_Sequential_2',
+        label: 'Reviewed path',
+        expectedSemanticRevision: before.semanticRevision
+      });
+
+      expect(updated.isError).toBeUndefined();
+      expect(updated.structuredContent).toMatchObject({
+        after: { label: 'Reviewed path' },
+        diagnostics: [expect.objectContaining({ code: 'MISSING_DI' })],
+        introducedDiagnostics: []
+      });
+      const context = diagramContext.getCurrent();
+      const beforeRejectedXml = context.xml;
+      const beforeRejectedRevision = context.revision;
+      const beforeRejectedDisk = await readFile(join(sandbox!.directory, filename), 'utf8');
+
+      const rejected = await handler.handleRequest('update_connection', {
+        connectionId: 'Flow_Sequential_2',
+        targetId: 'End_Sequential',
+        endpointPolicy: 'snap-to-boundary',
+        expectedSemanticRevision: (updated.structuredContent as any).after.semanticRevision
+      });
+
+      expect(rejected.isError).toBe(true);
+      expect(rejected.content[0].text).toContain(
+        'requires rendered edge and endpoint BPMNShapes for rewiring'
+      );
+      expect(context.connections.get('Flow_Sequential_2')).toMatchObject({
+        source: 'Task_Review',
+        target: 'Task_Archive',
+        label: 'Reviewed path'
+      });
+      expect(context.xml).toBe(beforeRejectedXml);
+      expect(context.revision).toBe(beforeRejectedRevision);
+      await expect(readFile(join(sandbox!.directory, filename), 'utf8'))
+        .resolves.toBe(beforeRejectedDisk);
+    });
+
+    it('should update sequence-flow semantics atomically, guard stale state, snap rewired endpoints, and reopen', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Semantic connection update' });
+      const sourceResult = await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Source', position: { x: 100, y: 100 }
+      });
+      const firstTargetResult = await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'First target', position: { x: 400, y: 100 }
+      });
+      const secondTargetResult = await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Second target', position: { x: 400, y: 300 }
+      });
+      const sourceId = (sourceResult.structuredContent as any).elementId as string;
+      const firstTargetId = (firstTargetResult.structuredContent as any).elementId as string;
+      const secondTargetId = (secondTargetResult.structuredContent as any).elementId as string;
+      const connected = await handler.handleRequest('connect', {
+        sourceId, targetId: firstTargetId, label: 'Before',
+        condition: '${approved}', conditionLanguage: 'FEEL'
+      });
+      const connectionId = (connected.structuredContent as any).connectionId as string;
+      const context = diagramContext.getCurrent();
+      const filename = context.filename!;
+      const original = (await handler.handleRequest('get_connection', {
+        connectionId
+      })).structuredContent as any;
+      const edge = Array.from(context.document.diagram.edges.values()).find(
+        candidate => candidate.connectionId === connectionId
+      )!;
+      const untouchedEdge = structuredClone(edge);
+
+      const semantic = await handler.handleRequest('update_connection', {
+        connectionId,
+        label: 'After',
+        condition: { body: '${revised}', language: null },
+        expectedSemanticRevision: original.semanticRevision
+      });
+      expect(semantic.isError).toBeUndefined();
+      expect(semantic.structuredContent).toMatchObject({
+        connectionId,
+        before: {
+          connectionId,
+          label: 'Before',
+          condition: { body: '${approved}', language: 'FEEL' },
+          semanticRevision: original.semanticRevision
+        },
+        after: {
+          connectionId,
+          label: 'After',
+          condition: { body: '${revised}' },
+          semanticRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/)
+        },
+        diagnostics: expect.any(Array),
+        introducedDiagnostics: [],
+        collisionPolicy: 'reject-new',
+        filename,
+        beforeRevision: original.revision,
+        afterRevision: expect.any(String)
+      });
+      expect(edge).toEqual(untouchedEdge);
+
+      const afterSemantic = (semantic.structuredContent as any).after;
+      const memoryBeforeDocumentStale = structuredClone(context.connections.get(connectionId));
+      const xmlBeforeDocumentStale = context.xml;
+      const revisionBeforeDocumentStale = context.revision;
+      const diskBeforeDocumentStale = await readFile(join(sandbox!.directory, filename), 'utf8');
+      const documentStale = await handler.handleRequest('update_connection', {
+        connectionId,
+        label: 'Stale document edit',
+        expectedRevision: original.revision
+      });
+      expect(documentStale).toMatchObject({
+        isError: true,
+        structuredContent: {
+          code: 'revision_conflict',
+          conflict: true,
+          reason: 'revision_mismatch',
+          expectedRevision: original.revision,
+          actualRevision: revisionBeforeDocumentStale
+        }
+      });
+      expect(context.connections.get(connectionId)).toEqual(memoryBeforeDocumentStale);
+      expect(context.xml).toBe(xmlBeforeDocumentStale);
+      expect(context.revision).toBe(revisionBeforeDocumentStale);
+      await expect(readFile(join(sandbox!.directory, filename), 'utf8'))
+        .resolves.toBe(diskBeforeDocumentStale);
+
+      const diskBeforeRejected = await readFile(join(sandbox!.directory, filename), 'utf8');
+      const revisionBeforeRejected = context.revision;
+      const stale = await handler.handleRequest('update_connection', {
+        connectionId,
+        label: 'Stale',
+        expectedSemanticRevision: original.semanticRevision
+      });
+      expect(stale).toMatchObject({
+        isError: true,
+        structuredContent: {
+          code: 'semantic_conflict',
+          connectionId,
+          expectedSemanticRevision: original.semanticRevision,
+          actualSemanticRevision: afterSemantic.semanticRevision
+        }
+      });
+      expect(context.revision).toBe(revisionBeforeRejected);
+      await expect(readFile(join(sandbox!.directory, filename), 'utf8'))
+        .resolves.toBe(diskBeforeRejected);
+
+      const rewired = await handler.handleRequest('update_connection', {
+        connectionId,
+        targetId: secondTargetId,
+        endpointPolicy: 'snap-to-boundary',
+        collisionPolicy: 'allow',
+        expectedSemanticRevision: afterSemantic.semanticRevision
+      });
+      expect(rewired.isError).toBeUndefined();
+      expect((rewired.structuredContent as any).after).toMatchObject({
+        connectionId,
+        sourceId,
+        targetId: secondTargetId,
+        label: 'After',
+        condition: { body: '${revised}' }
+      });
+      const rewiredEdge = Array.from(context.document.diagram.edges.values()).find(
+        candidate => candidate.connectionId === connectionId
+      )!;
+      expect(rewiredEdge.waypoints[0]).toEqual(expect.objectContaining({ x: 200 }));
+      expect(rewiredEdge.waypoints.at(-1)).toEqual(expect.objectContaining({ y: 300 }));
+
+      const defaulted = await handler.handleRequest('update_connection', {
+        connectionId,
+        condition: null,
+        isDefault: true,
+        expectedRevision: context.revision
+      });
+      expect(defaulted.isError).toBeUndefined();
+      expect((defaulted.structuredContent as any).after).toMatchObject({
+        connectionId,
+        isDefault: true,
+        defaultOwnerId: sourceId
+      });
+      expect((defaulted.structuredContent as any).after.condition).toBeUndefined();
+
+      const beforeUnsupported = context.xml;
+      const unsupported = await handler.handleRequest('update_connection', {
+        connectionId,
+        associationDirection: 'Both',
+        expectedRevision: context.revision
+      });
+      expect(unsupported.isError).toBe(true);
+      expect(unsupported.content[0].text).toContain(
+        'associationDirection can only be set for associations'
+      );
+      expect(context.xml).toBe(beforeUnsupported);
+
+      await handler.handleRequest('open_bpmn', { filename });
+      const reopened = (await handler.handleRequest('get_connection', {
+        connectionId
+      })).structuredContent as any;
+      expect(reopened).toMatchObject({
+        id: connectionId,
+        sourceId,
+        targetId: secondTargetId,
+        label: 'After',
+        isDefault: true,
+        defaultOwnerId: sourceId
+      });
+      expect(reopened.condition).toBeUndefined();
+      const parsed = await new BpmnModdle().fromXML(diagramContext.getCurrent().xml!);
+      expect(parsed.elementsById[connectionId].sourceRef.id).toBe(sourceId);
+      expect(parsed.elementsById[connectionId].targetRef.id).toBe(secondTargetId);
+      expect(parsed.elementsById[connectionId].conditionExpression).toBeUndefined();
+      expect(parsed.elementsById[sourceId].default.id).toBe(connectionId);
+    });
+
+    it('should reconcile explicit incoming and outgoing references when rewiring both endpoints', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Explicit connection references' });
+      const ids: string[] = [];
+      for (const [name, position] of [
+        ['Old source', { x: 100, y: 100 }],
+        ['Old target', { x: 350, y: 100 }],
+        ['New source', { x: 100, y: 300 }],
+        ['New target', { x: 350, y: 300 }]
+      ] as const) {
+        const created = await handler.handleRequest('add_activity', {
+          activityType: 'task', name, position
+        });
+        ids.push((created.structuredContent as any).elementId as string);
+      }
+      const [oldSourceId, oldTargetId, newSourceId, newTargetId] = ids;
+      const connected = await handler.handleRequest('connect', {
+        sourceId: oldSourceId,
+        targetId: oldTargetId
+      });
+      const connectionId = (connected.structuredContent as any).connectionId as string;
+      const filename = diagramContext.getCurrent().filename!;
+      const parsedSeed = await new BpmnModdle().fromXML(diagramContext.getCurrent().xml!);
+      const semanticFlow = parsedSeed.elementsById[connectionId];
+      parsedSeed.elementsById[oldSourceId].outgoing = [semanticFlow];
+      parsedSeed.elementsById[oldTargetId].incoming = [semanticFlow];
+      const explicitXml = (await new BpmnModdle().toXML(parsedSeed.rootElement, {
+        format: true
+      })).xml;
+      await handler.handleRequest('close', {});
+      await writeFile(join(sandbox!.directory, filename), explicitXml, 'utf8');
+      await handler.handleRequest('open_bpmn', { filename });
+
+      const before = (await handler.handleRequest('get_connection', {
+        connectionId
+      })).structuredContent as any;
+      const rewired = await handler.handleRequest('update_connection', {
+        connectionId,
+        sourceId: newSourceId,
+        targetId: newTargetId,
+        endpointPolicy: 'snap-to-boundary',
+        collisionPolicy: 'allow',
+        expectedSemanticRevision: before.semanticRevision
+      });
+      expect(rewired.isError).toBeUndefined();
+
+      await handler.handleRequest('close', {});
+      await handler.handleRequest('open_bpmn', { filename });
+      const reopened = (await handler.handleRequest('get_connection', {
+        connectionId
+      })).structuredContent as any;
+      expect(reopened).toMatchObject({ sourceId: newSourceId, targetId: newTargetId });
+      const parsed = await new BpmnModdle().fromXML(diagramContext.getCurrent().xml!);
+      expect((parsed.elementsById[oldSourceId].outgoing || []).map((item: any) => item.id))
+        .not.toContain(connectionId);
+      expect((parsed.elementsById[oldTargetId].incoming || []).map((item: any) => item.id))
+        .not.toContain(connectionId);
+      expect((parsed.elementsById[newSourceId].outgoing || []).map((item: any) => item.id))
+        .toContain(connectionId);
+      expect((parsed.elementsById[newTargetId].incoming || []).map((item: any) => item.id))
+        .toContain(connectionId);
+    });
+
+    it('should update message-flow and association semantics and reject invalid endpoint scopes', async () => {
+      const filename = 'connection-semantic-types.bpmn';
+      const fixture = await readFile(join(
+        process.cwd(), 'tests/fixtures/import-roundtrip/full-semantics-di.bpmn'
+      ), 'utf8');
+      await writeFile(join(sandbox!.directory, filename), fixture, 'utf8');
+      await handler.handleRequest('open_bpmn', { filename });
+
+      const messageBefore = (await handler.handleRequest('get_connection', {
+        connectionId: 'MessageFlow_Notice'
+      })).structuredContent as any;
+      const message = await handler.handleRequest('update_connection', {
+        connectionId: 'MessageFlow_Notice',
+        sourceId: 'Participant_Internal',
+        label: 'Rewired notice',
+        endpointPolicy: 'snap-to-boundary',
+        collisionPolicy: 'allow',
+        expectedSemanticRevision: messageBefore.semanticRevision
+      });
+      expect(message.isError).toBeUndefined();
+      expect((message.structuredContent as any).after).toMatchObject({
+        type: 'bpmn:MessageFlow',
+        sourceId: 'Participant_Internal',
+        targetId: 'Participant_External',
+        label: 'Rewired notice'
+      });
+
+      const associationCreated = await handler.handleRequest('add_association', {
+        sourceId: 'DataObjectReference_Request',
+        targetId: 'Task_Unrelated'
+      });
+      const associationId = (associationCreated.structuredContent as any).associationId as string;
+      const associationBefore = (await handler.handleRequest('get_connection', {
+        connectionId: associationId
+      })).structuredContent as any;
+      const association = await handler.handleRequest('update_connection', {
+        connectionId: associationId,
+        label: 'Supporting data',
+        associationDirection: 'Both',
+        expectedSemanticRevision: associationBefore.semanticRevision
+      });
+      expect(association.isError).toBeUndefined();
+      expect((association.structuredContent as any).after).toMatchObject({
+        type: 'bpmn:Association',
+        label: 'Supporting data',
+        associationDirection: 'Both'
+      });
+
+      const context = diagramContext.getCurrent();
+      const beforeRejected = context.xml;
+      const rejected = await handler.handleRequest('update_connection', {
+        connectionId: 'MessageFlow_Notice',
+        targetId: 'Participant_Internal',
+        endpointPolicy: 'snap-to-boundary',
+        expectedRevision: context.revision
+      });
+      expect(rejected.isError).toBe(true);
+      expect(rejected.content[0].text).toContain('must cross participant boundaries');
+      expect(context.xml).toBe(beforeRejected);
+      await expect(readFile(join(sandbox!.directory, filename), 'utf8'))
+        .resolves.toBe(beforeRejected);
+
+      await handler.handleRequest('close', {});
+      await handler.handleRequest('open_bpmn', { filename });
+      const reopenedMessage = (await handler.handleRequest('get_connection', {
+        connectionId: 'MessageFlow_Notice'
+      })).structuredContent as any;
+      const reopenedAssociation = (await handler.handleRequest('get_connection', {
+        connectionId: associationId
+      })).structuredContent as any;
+      expect(reopenedMessage).toMatchObject({
+        type: 'bpmn:MessageFlow',
+        sourceId: 'Participant_Internal',
+        targetId: 'Participant_External',
+        label: 'Rewired notice',
+        ownerId: 'Collaboration_RoundTrip',
+        scopeId: 'Collaboration_RoundTrip'
+      });
+      expect(reopenedAssociation).toMatchObject({
+        type: 'bpmn:Association',
+        associationDirection: 'Both'
+      });
+    });
+
+    it('should move a rewired association from a nested artifact container to the root', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Association container move' });
+      const context = diagramContext.getCurrent();
+      const rootTask = await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Root task', position: { x: 100, y: 100 }
+      });
+      const rootTaskId = (rootTask.structuredContent as any).elementId as string;
+      const rootAnnotation = await handler.handleRequest('add_text_annotation', {
+        text: 'Root note',
+        position: { x: 300, y: 110 },
+        associatedElementId: rootTaskId
+      });
+      const rootAnnotationId = (rootAnnotation.structuredContent as any).annotationId as string;
+      const subprocess = await handler.handleRequest('add_activity', {
+        activityType: 'subProcess', name: 'Nested scope', position: { x: 500, y: 100 }
+      });
+      const subprocessId = (subprocess.structuredContent as any).elementId as string;
+      const nestedTask = await handler.handleRequest('add_activity', {
+        activityType: 'task',
+        name: 'Nested task',
+        ownerId: context.id,
+        scopeId: subprocessId,
+        position: { x: 550, y: 150 }
+      });
+      const nestedTaskId = (nestedTask.structuredContent as any).elementId as string;
+      const nestedAnnotation = await handler.handleRequest('add_text_annotation', {
+        text: 'Nested note',
+        position: { x: 700, y: 160 },
+        associatedElementId: nestedTaskId
+      });
+      const associationId = (nestedAnnotation.structuredContent as any).associationId as string;
+      const before = (await handler.handleRequest('get_connection', {
+        connectionId: associationId
+      })).structuredContent as any;
+      expect(before).toMatchObject({ ownerId: context.id, scopeId: subprocessId });
+
+      const moved = await handler.handleRequest('update_connection', {
+        connectionId: associationId,
+        sourceId: rootAnnotationId,
+        targetId: rootTaskId,
+        endpointPolicy: 'snap-to-boundary',
+        collisionPolicy: 'allow',
+        expectedSemanticRevision: before.semanticRevision
+      });
+      expect(moved.isError).toBeUndefined();
+      expect((moved.structuredContent as any).after).toMatchObject({
+        ownerId: context.id,
+        scopeId: context.id,
+        sourceId: rootAnnotationId,
+        targetId: rootTaskId
+      });
+
+      const filename = context.filename!;
+      await handler.handleRequest('close', {});
+      await handler.handleRequest('open_bpmn', { filename });
+      const reopened = (await handler.handleRequest('get_connection', {
+        connectionId: associationId
+      })).structuredContent as any;
+      expect(reopened).toMatchObject({
+        ownerId: context.id,
+        scopeId: context.id,
+        sourceId: rootAnnotationId,
+        targetId: rootTaskId
+      });
+      const parsed = await new BpmnModdle().fromXML(diagramContext.getCurrent().xml!);
+      const rootProcess = parsed.rootElement.rootElements.find(
+        (item: any) => item.id === context.id
+      );
+      expect(rootProcess.artifacts.map((item: any) => item.id)).toContain(associationId);
+      expect((parsed.elementsById[subprocessId].artifacts || []).map((item: any) => item.id))
+        .not.toContain(associationId);
+    });
+
+    it('should preview, persist, guard, clear, and reopen one imported edge atomically', async () => {
+      const filename = 'connection-geometry.bpmn';
+      const fixture = await readFile(join(
+        process.cwd(), 'tests/fixtures/import-roundtrip/full-semantics-di.bpmn'
+      ), 'utf8');
+      await writeFile(join(sandbox!.directory, filename), fixture, 'utf8');
+      await handler.handleRequest('open_bpmn', { filename });
+
+      const context = diagramContext.getCurrent();
+      const connectionId = 'Flow_Approved';
+      const original = (await handler.handleRequest('get_connection', {
+        connectionId
+      })).structuredContent as any;
+      const originalXml = context.xml;
+      const originalRevision = context.revision;
+      const originalDisk = await readFile(join(sandbox!.directory, filename), 'utf8');
+      const unrelatedEdges = structuredClone(Array.from(context.document.diagram.edges.entries())
+        .filter(([, edge]) => edge.connectionId !== connectionId));
+      const originalSemantic = structuredClone(context.connections.get(connectionId)!);
+      const waypoints = [{ x: 430, y: 208 }, { x: 460, y: 208 }, { x: 490, y: 208 }];
+
+      const preview = await handler.handleRequest('update_connection_geometry', {
+        connectionId,
+        waypoints,
+        expectedWaypoints: original.waypoints,
+        expectedGeometryRevision: original.geometryRevision,
+        expectedRevision: originalRevision,
+        dryRun: true
+      });
+      expect(preview.isError).toBeUndefined();
+      expect(preview.structuredContent).toMatchObject({
+        connectionId,
+        before: {
+          edgeId: 'Flow_Approved_CustomDI',
+          waypoints: original.waypoints,
+          labelBounds: original.labelBounds,
+          geometryRevision: original.geometryRevision
+        },
+        after: {
+          waypoints,
+          labelBounds: original.labelBounds,
+          geometryRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/)
+        },
+        diagnostics: expect.any(Array),
+        introducedDiagnostics: expect.any(Array),
+        endpointPolicy: 'exact',
+        collisionPolicy: 'reject-new',
+        dryRun: true,
+        applied: false,
+        beforeRevision: originalRevision,
+        afterRevision: originalRevision,
+        filename
+      });
+      expect(context.xml).toBe(originalXml);
+      expect(context.revision).toBe(originalRevision);
+      await expect(readFile(join(sandbox!.directory, filename), 'utf8'))
+        .resolves.toBe(originalDisk);
+
+      const applied = await handler.handleRequest('update_connection_geometry', {
+        connectionId,
+        waypoints,
+        labelBounds: null,
+        expectedGeometryRevision: original.geometryRevision,
+        expectedRevision: originalRevision
+      });
+      expect(applied.isError).toBeUndefined();
+      expect(applied.structuredContent).toMatchObject({
+        after: { waypoints },
+        dryRun: false,
+        applied: true,
+        beforeRevision: originalRevision,
+        afterRevision: expect.any(String)
+      });
+      expect((applied.structuredContent as any).after.labelBounds).toBeUndefined();
+      expect((applied.structuredContent as any).after.geometryRevision)
+        .not.toBe(original.geometryRevision);
+
+      const staleRevision = await handler.handleRequest('update_connection_geometry', {
+        connectionId,
+        waypoints,
+        expectedGeometryRevision: original.geometryRevision
+      });
+      expect(staleRevision).toMatchObject({
+        isError: true,
+        structuredContent: {
+          code: 'geometry_conflict',
+          reason: 'geometry_revision_mismatch',
+          connectionId,
+          actualWaypoints: waypoints
+        }
+      });
+      const staleWaypoints = await handler.handleRequest('update_connection_geometry', {
+        connectionId,
+        waypoints,
+        expectedWaypoints: original.waypoints
+      });
+      expect(staleWaypoints).toMatchObject({
+        isError: true,
+        structuredContent: {
+          code: 'geometry_conflict',
+          reason: 'waypoints_mismatch',
+          connectionId,
+          expectedWaypoints: original.waypoints,
+          actualWaypoints: waypoints
+        }
+      });
+
+      expect(Array.from(context.document.diagram.edges.entries())
+        .filter(([, edge]) => edge.connectionId !== connectionId)).toEqual(unrelatedEdges);
+      expect(context.connections.get(connectionId)).toEqual({
+        ...originalSemantic,
+        waypoints
+      });
+      await handler.handleRequest('open_bpmn', { filename });
+      const reopened = diagramContext.getCurrent();
+      expect(reopened.document.diagram.edges.get('Flow_Approved_CustomDI')).toMatchObject({
+        connectionId,
+        waypoints
+      });
+      expect(reopened.document.diagram.edges.get('Flow_Approved_CustomDI')?.labelBounds)
+        .toBeUndefined();
+      expect(Array.from(reopened.document.diagram.edges.entries())
+        .filter(([, edge]) => edge.connectionId !== connectionId)).toEqual(unrelatedEdges);
+      const exported = await handler.handleRequest('export', { format: 'xml' });
+      const parsed = await new BpmnModdle().fromXML(exported.content[0].text as string);
+      expect(parsed.elementsById.Flow_Approved_CustomDI.waypoint).toEqual(
+        expect.arrayContaining(waypoints.map(point => expect.objectContaining(point)))
+      );
+      expect(parsed.elementsById.Flow_Approved_CustomDI.label).toBeUndefined();
+    });
+
+    it('should enforce exact endpoints, snap both boundaries, and apply collision policies', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Connection geometry policies' });
+      const source = await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Source', position: { x: 100, y: 100 }
+      });
+      const target = await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Target', position: { x: 400, y: 100 }
+      });
+      const sourceId = (source.structuredContent as any).elementId as string;
+      const targetId = (target.structuredContent as any).elementId as string;
+      const connected = await handler.handleRequest('connect', {
+        sourceId, targetId
+      });
+      const connectionId = (connected.structuredContent as any).connectionId as string;
+
+      const exactGap = await handler.handleRequest('update_connection_geometry', {
+        connectionId,
+        waypoints: [{ x: 150, y: 140 }, { x: 450, y: 140 }],
+        endpointPolicy: 'exact',
+        collisionPolicy: 'allow'
+      });
+      expect(exactGap.isError).toBe(true);
+      expect(exactGap.content[0].text).toContain('Unsafe geometry');
+
+      const snapped = await handler.handleRequest('update_connection_geometry', {
+        connectionId,
+        waypoints: [{ x: 150, y: 140 }, { x: 450, y: 140 }],
+        endpointPolicy: 'snap-to-boundary'
+      });
+      expect(snapped.isError).toBeUndefined();
+      expect((snapped.structuredContent as any).after.waypoints).toEqual([
+        { x: 200, y: 140 },
+        { x: 400, y: 140 }
+      ]);
+
+      await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Blocker', position: { x: 250, y: 300 }
+      });
+      const crossing = [
+        { x: 200, y: 140 },
+        { x: 200, y: 340 },
+        { x: 500, y: 340 },
+        { x: 500, y: 140 },
+        { x: 400, y: 140 }
+      ];
+      const rejected = await handler.handleRequest('update_connection_geometry', {
+        connectionId,
+        waypoints: crossing
+      });
+      expect(rejected.isError).toBe(true);
+      expect(rejected.content[0].text).toContain('Geometry collision rejected');
+
+      const warned = await handler.handleRequest('update_connection_geometry', {
+        connectionId,
+        waypoints: crossing,
+        collisionPolicy: 'warn',
+        dryRun: true
+      });
+      expect(warned.isError).toBeUndefined();
+      expect((warned.structuredContent as any).introducedDiagnostics).toEqual(
+        expect.arrayContaining([expect.objectContaining({
+          code: 'EDGE_SHAPE_COLLISION', severity: 'error'
+        })])
+      );
+      expect(diagramContext.getCurrent().connections.get(connectionId)?.waypoints)
+        .toEqual([{ x: 200, y: 140 }, { x: 400, y: 140 }]);
+
+      const allowed = await handler.handleRequest('update_connection_geometry', {
+        connectionId,
+        waypoints: crossing,
+        collisionPolicy: 'allow'
+      });
+      expect(allowed.isError).toBeUndefined();
+      expect(diagramContext.getCurrent().connections.get(connectionId)?.waypoints)
+        .toEqual(crossing);
+    });
+
     it('should reject non-boolean default-flow input without creating a flow', async () => {
       const result = await handler.handleRequest('connect', {
         sourceId: 'Task_1',
@@ -1058,8 +1846,27 @@ describe('BpmnRequestHandler Integration Tests', () => {
         count: 3,
         returnedCount: 3,
         offset: 0,
-        hasMore: false
+        hasMore: false,
+        revision: expect.any(String),
+        elements: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'Task_1',
+            shapeId: 'Task_1_di',
+            bounds: { x: 150, y: 200, width: 100, height: 80 }
+          })
+        ])
       });
+      for (const element of listing.elements) {
+        expect(element).toMatchObject({
+          shapeId: expect.any(String),
+          bounds: {
+            x: expect.any(Number),
+            y: expect.any(Number),
+            width: expect.any(Number),
+            height: expect.any(Number)
+          }
+        });
+      }
     });
 
     it('should return element identity, type, and name', async () => {
@@ -1070,7 +1877,10 @@ describe('BpmnRequestHandler Integration Tests', () => {
       expect(details).toMatchObject({
         id: 'Task_1',
         type: 'bpmn:Task',
-        name: 'Task'
+        name: 'Task',
+        shapeId: 'Task_1_di',
+        bounds: { x: 150, y: 200, width: 100, height: 80 },
+        revision: expect.any(String)
       });
     });
 
@@ -1111,6 +1921,758 @@ describe('BpmnRequestHandler Integration Tests', () => {
       expect(parsed.elementsById.Task_1.name).toBe('Updated Task');
     });
 
+    it('should preview and atomically persist shape and label geometry', async () => {
+      const context = diagramContext.getCurrent();
+      const filename = context.filename!;
+      const beforeRevision = context.revision;
+      const beforeXml = context.xml;
+      const beforeFile = await readFile(join(sandbox!.directory, filename), 'utf8');
+      const startShapeBefore = structuredClone(
+        Array.from(context.document.diagram.shapes.values()).find(
+          shape => shape.elementId === 'StartEvent_1'
+        )
+      );
+      const requestedBounds = { x: 500, y: 350, width: 140, height: 90 };
+      const labelBounds = { x: 520, y: 450, width: 80, height: 20 };
+
+      const preview = await handler.handleRequest('update_element_geometry', {
+        elementId: 'Task_1',
+        bounds: requestedBounds,
+        labelBounds,
+        expectedBounds: { x: 150, y: 200, width: 100, height: 80 },
+        expectedRevision: beforeRevision,
+        collisionPolicy: 'allow',
+        dryRun: true
+      });
+
+      expect(preview.isError).toBeUndefined();
+      expect(preview.structuredContent).toMatchObject({
+        elementId: 'Task_1',
+        before: {
+          shapeId: 'Task_1_di',
+          bounds: { x: 150, y: 200, width: 100, height: 80 }
+        },
+        after: { shapeId: 'Task_1_di', bounds: requestedBounds, labelBounds },
+        diagnostics: expect.any(Array),
+        dryRun: true,
+        applied: false,
+        beforeRevision,
+        afterRevision: beforeRevision
+      });
+      expect(context.revision).toBe(beforeRevision);
+      expect(context.xml).toBe(beforeXml);
+      await expect(readFile(join(sandbox!.directory, filename), 'utf8')).resolves.toBe(beforeFile);
+
+      const applied = await handler.handleRequest('update_element_geometry', {
+        elementId: 'Task_1',
+        bounds: requestedBounds,
+        labelBounds,
+        expectedBounds: { x: 150, y: 200, width: 100, height: 80 },
+        expectedRevision: beforeRevision,
+        collisionPolicy: 'allow'
+      });
+
+      expect(applied.isError).toBeUndefined();
+      expect(applied.structuredContent).toMatchObject({
+        after: { bounds: requestedBounds, labelBounds },
+        dryRun: false,
+        applied: true,
+        beforeRevision,
+        afterRevision: expect.not.stringMatching(beforeRevision)
+      });
+      expect(context.elements.get('Task_1')).toMatchObject({
+        name: 'Task',
+        position: { x: 500, y: 350 },
+        size: { width: 140, height: 90 }
+      });
+      expect(Array.from(context.document.diagram.shapes.values()).find(
+        shape => shape.elementId === 'StartEvent_1'
+      )).toEqual(startShapeBefore);
+      const parsed = await new BpmnModdle().fromXML(context.xml!);
+      expect(parsed.elementsById.Task_1_di.bounds).toMatchObject(requestedBounds);
+      expect(parsed.elementsById.Task_1_di.label.bounds).toMatchObject(labelBounds);
+      expect(parsed.elementsById.Task_1.name).toBe('Task');
+      const labeledQuery = await handler.handleRequest('get_element', { elementId: 'Task_1' });
+      expect(labeledQuery.structuredContent).toMatchObject({
+        shapeId: 'Task_1_di',
+        bounds: requestedBounds,
+        labelBounds,
+        revision: context.revision
+      });
+      await expect(readFile(join(sandbox!.directory, filename), 'utf8'))
+        .resolves.toBe(context.xml);
+
+      const cleared = await handler.handleRequest('update_element_geometry', {
+        elementId: 'Task_1',
+        bounds: requestedBounds,
+        labelBounds: null,
+        expectedRevision: context.revision,
+        collisionPolicy: 'allow'
+      });
+      expect(cleared.isError).toBeUndefined();
+      expect((cleared.structuredContent as any).after.labelBounds).toBeUndefined();
+      const clearedParsed = await new BpmnModdle().fromXML(context.xml!);
+      expect(clearedParsed.elementsById.Task_1_di.label).toBeUndefined();
+      const queried = await handler.handleRequest('get_element', { elementId: 'Task_1' });
+      expect((queried.structuredContent as any).labelBounds).toBeUndefined();
+
+      const stale = await handler.handleRequest('update_element_geometry', {
+        elementId: 'Task_1',
+        bounds: { x: 600, y: 350, width: 140, height: 90 },
+        expectedBounds: { x: 150, y: 200, width: 100, height: 80 },
+        collisionPolicy: 'allow'
+      });
+      expect(stale).toMatchObject({
+        isError: true,
+        structuredContent: {
+          code: 'geometry_conflict',
+          elementId: 'Task_1',
+          actualBounds: requestedBounds
+        }
+      });
+      expect(context.elements.get('Task_1')?.position).toEqual({ x: 500, y: 350 });
+    });
+
+    it('should require an incident-edge policy and snap endpoints atomically', async () => {
+      const connected = await handler.handleRequest('connect', {
+        sourceId: 'StartEvent_1',
+        targetId: 'Task_1'
+      });
+      const connectionId = (connected.structuredContent as any).connectionId as string;
+      const context = diagramContext.getCurrent();
+      const beforeRevision = context.revision;
+      const beforeXml = context.xml;
+      const bounds = { x: 500, y: 300, width: 120, height: 80 };
+
+      const omitted = await handler.handleRequest('update_element_geometry', {
+        elementId: 'Task_1',
+        bounds,
+        collisionPolicy: 'allow'
+      });
+      expect(omitted.isError).toBe(true);
+      expect(omitted.content[0].text).toContain('incidentConnectionPolicy is required');
+      expect(context.xml).toBe(beforeXml);
+      expect(context.revision).toBe(beforeRevision);
+
+      const rejected = await handler.handleRequest('update_element_geometry', {
+        elementId: 'Task_1',
+        bounds,
+        collisionPolicy: 'allow',
+        incidentConnectionPolicy: 'reject'
+      });
+      expect(rejected.isError).toBe(true);
+      expect(rejected.content[0].text).toContain('use snap-endpoints');
+      expect(context.xml).toBe(beforeXml);
+
+      const snapped = await handler.handleRequest('update_element_geometry', {
+        elementId: 'Task_1',
+        bounds,
+        collisionPolicy: 'allow',
+        incidentConnectionPolicy: 'snap-endpoints'
+      });
+      expect(snapped.isError).toBeUndefined();
+      expect((snapped.structuredContent as any).diagnostics).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'ENDPOINT_GAP' })])
+      );
+      const connection = context.connections.get(connectionId)!;
+      const snappedTarget = connection.waypoints[connection.waypoints.length - 1];
+      expect(snappedTarget.x).toBe(500);
+      expect(snappedTarget.y).toBeGreaterThanOrEqual(300);
+      expect(snappedTarget.y).toBeLessThanOrEqual(380);
+      const edge = Array.from(context.document.diagram.edges.values()).find(
+        candidate => candidate.connectionId === connection.id
+      );
+      expect(edge?.waypoints).toEqual(connection.waypoints);
+    });
+
+    it('should reject newly introduced collisions unless explicitly allowed', async () => {
+      const context = diagramContext.getCurrent();
+      const beforeXml = context.xml;
+      const overlapping = { x: 200, y: 200, width: 36, height: 36 };
+
+      const rejected = await handler.handleRequest('update_element_geometry', {
+        elementId: 'StartEvent_1',
+        bounds: overlapping
+      });
+      expect(rejected.isError).toBe(true);
+      expect(rejected.content[0].text).toContain('Geometry collision rejected');
+      expect(context.xml).toBe(beforeXml);
+
+      const allowed = await handler.handleRequest('update_element_geometry', {
+        elementId: 'StartEvent_1',
+        bounds: overlapping,
+        collisionPolicy: 'allow'
+      });
+      expect(allowed.isError).toBeUndefined();
+      expect((allowed.structuredContent as any).diagnostics).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'SHAPE_OVERLAP' })])
+      );
+    });
+
+    it('should reject subprocess, boundary-event, participant, lane, and owner escapes', async () => {
+      await handler.handleRequest('add_activity', {
+        activityType: 'subProcess',
+        name: 'Nested scope',
+        position: { x: 400, y: 400 }
+      });
+      const processId = diagramContext.getCurrent().id;
+      await handler.handleRequest('add_activity', {
+        activityType: 'task',
+        name: 'Nested task',
+        ownerId: processId,
+        scopeId: 'SubProcess_1',
+        position: { x: 450, y: 450 }
+      });
+      await handler.handleRequest('add_event', {
+        eventType: 'boundary',
+        attachTo: 'Task_1',
+        position: { x: 230, y: 220 }
+      });
+
+      for (const [elementId, bounds] of [
+        ['Task_2', { x: 800, y: 800, width: 100, height: 80 }],
+        ['SubProcess_1', { x: 800, y: 800, width: 300, height: 200 }],
+        ['BoundaryEvent_1', { x: 800, y: 800, width: 36, height: 36 }]
+      ] as const) {
+        const before = diagramContext.getCurrent().xml;
+        const result = await handler.handleRequest('update_element_geometry', {
+          elementId,
+          bounds,
+          collisionPolicy: 'allow'
+        });
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain('Unsafe geometry');
+        expect(diagramContext.getCurrent().xml).toBe(before);
+      }
+
+      await handler.handleRequest('new_bpmn', {
+        name: 'Containment collaboration',
+        type: 'collaboration'
+      });
+      const pool = await handler.handleRequest('add_pool', {
+        name: 'Pool',
+        position: { x: 100, y: 100 },
+        size: { width: 600, height: 300 }
+      });
+      const poolId = (pool.structuredContent as any).elementId as string;
+      const ownerId = (pool.structuredContent as any).processId as string;
+      const ownedTask = await handler.handleRequest('add_activity', {
+        activityType: 'task',
+        name: 'Owned task',
+        ownerId,
+        position: { x: 250, y: 180 }
+      });
+      const ownedTaskId = (ownedTask.structuredContent as any).elementId as string;
+      const lane = await handler.handleRequest('add_lane', {
+        poolId,
+        name: 'Lane',
+        flowNodeIds: [ownedTaskId]
+      });
+      const laneId = (lane.structuredContent as any).laneId as string;
+
+      for (const [elementId, bounds] of [
+        [laneId, { x: 900, y: 900, width: 600, height: 300 }],
+        [ownedTaskId, { x: 900, y: 900, width: 100, height: 80 }],
+        [poolId, { x: 900, y: 900, width: 600, height: 300 }]
+      ] as const) {
+        const before = diagramContext.getCurrent().xml;
+        const result = await handler.handleRequest('update_element_geometry', {
+          elementId,
+          bounds,
+          collisionPolicy: 'allow'
+        });
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain('Unsafe geometry');
+        expect(diagramContext.getCurrent().xml).toBe(before);
+      }
+    });
+
+    it('should apply coordinated shape moves and an incident reroute against only the final geometry', async () => {
+      const context = diagramContext.getCurrent();
+      await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Swap left', position: { x: 500, y: 500 }
+      });
+      await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Swap right', position: { x: 750, y: 500 }
+      });
+      const left = (await handler.handleRequest('get_element', {
+        elementId: 'Task_2'
+      })).structuredContent as any;
+      const right = (await handler.handleRequest('get_element', {
+        elementId: 'Task_3'
+      })).structuredContent as any;
+
+      const transientCollision = await handler.handleRequest('update_element_geometry', {
+        elementId: 'Task_2',
+        bounds: right.bounds,
+        expectedRevision: context.revision
+      });
+      expect(transientCollision.isError).toBe(true);
+
+      const swapped = await handler.handleRequest('apply_geometry_patch', {
+        expectedRevision: context.revision,
+        elementUpdates: [
+          { elementId: 'Task_2', bounds: right.bounds },
+          { elementId: 'Task_3', bounds: left.bounds }
+        ]
+      });
+      expect(swapped.isError).toBeUndefined();
+      expect(swapped.structuredContent).toMatchObject({
+        elements: [
+          { elementId: 'Task_2', before: { bounds: left.bounds }, after: { bounds: right.bounds } },
+          { elementId: 'Task_3', before: { bounds: right.bounds }, after: { bounds: left.bounds } }
+        ],
+        connections: [],
+        introducedDiagnostics: [],
+        collisionPolicy: 'reject-new',
+        dryRun: false,
+        applied: true,
+        beforeRevision: expect.any(String),
+        afterRevision: expect.any(String)
+      });
+
+      const connected = await handler.handleRequest('connect', {
+        sourceId: 'StartEvent_1',
+        targetId: 'Task_1'
+      });
+      const connectionId = (connected.structuredContent as any).connectionId as string;
+      const connection = (await handler.handleRequest('get_connection', {
+        connectionId
+      })).structuredContent as any;
+      const task = (await handler.handleRequest('get_element', {
+        elementId: 'Task_1'
+      })).structuredContent as any;
+      const movedTask = { x: 500, y: 200, width: 100, height: 80 };
+      const rerouted = [
+        { x: 118, y: 236 },
+        { x: 118, y: 350 },
+        { x: 550, y: 350 },
+        { x: 550, y: 280 }
+      ];
+
+      const patched = await handler.handleRequest('apply_geometry_patch', {
+        expectedRevision: context.revision,
+        elementUpdates: [{
+          elementId: 'Task_1',
+          bounds: movedTask,
+          labelBounds: { x: 510, y: 290, width: 80, height: 20 }
+        }],
+        connectionUpdates: [{
+          connectionId,
+          waypoints: rerouted,
+          labelBounds: { x: 270, y: 150, width: 80, height: 20 }
+        }]
+      });
+      expect(patched.isError).toBeUndefined();
+      expect(patched.structuredContent).toMatchObject({
+        elements: [{
+          before: { bounds: task.bounds },
+          after: { bounds: movedTask, labelBounds: { x: 510, y: 290, width: 80, height: 20 } }
+        }],
+        connections: [{
+          before: { waypoints: connection.waypoints },
+          after: { waypoints: rerouted, labelBounds: { x: 270, y: 150, width: 80, height: 20 } },
+          endpointPolicy: 'exact'
+        }],
+        summary: {
+          total: expect.any(Number),
+          errors: expect.any(Number),
+          warnings: expect.any(Number),
+          byCode: expect.any(Object)
+        }
+      });
+      expect(context.connections.get(connectionId)?.waypoints).toEqual(rerouted);
+      expect(Array.from(context.document.diagram.edges.values()).find(
+        edge => edge.connectionId === connectionId
+      )?.waypoints).toEqual(rerouted);
+    });
+
+    it('should dry-run and roll back stale, invalid, and failed geometry patches', async () => {
+      const context = diagramContext.getCurrent();
+      const filename = context.filename!;
+      const task = (await handler.handleRequest('get_element', {
+        elementId: 'Task_1'
+      })).structuredContent as any;
+      const proposed = { x: 500, y: 350, width: 140, height: 90 };
+      const beforeXml = context.xml;
+      const beforeRevision = context.revision;
+      const beforeDisk = await readFile(join(sandbox!.directory, filename), 'utf8');
+
+      const preview = await handler.handleRequest('apply_geometry_patch', {
+        elementUpdates: [{
+          elementId: 'Task_1',
+          bounds: proposed,
+          expectedBounds: task.bounds
+        }],
+        dryRun: true,
+        collisionPolicy: 'allow'
+      });
+      expect(preview.isError).toBeUndefined();
+      expect(preview.structuredContent).toMatchObject({
+        elements: [{ before: { bounds: task.bounds }, after: { bounds: proposed } }],
+        dryRun: true,
+        applied: false,
+        beforeRevision,
+        afterRevision: beforeRevision
+      });
+      expect(context.xml).toBe(beforeXml);
+      await expect(readFile(join(sandbox!.directory, filename), 'utf8')).resolves.toBe(beforeDisk);
+
+      const invalid = await handler.handleRequest('apply_geometry_patch', {
+        expectedRevision: beforeRevision,
+        elementUpdates: [{ elementId: 'Task_1', bounds: proposed }],
+        connectionUpdates: [{
+          connectionId: 'Missing_Flow',
+          waypoints: [{ x: 10, y: 10 }, { x: 20, y: 20 }]
+        }]
+      });
+      expect(invalid.isError).toBe(true);
+      expect(context.xml).toBe(beforeXml);
+      expect(context.revision).toBe(beforeRevision);
+
+      const engine = (handler as unknown as {
+        engine: { fileManager: FileManager };
+      }).engine;
+      jest.spyOn(engine.fileManager, 'saveBpmnFile').mockResolvedValueOnce({
+        success: false,
+        error: 'injected geometry patch failure'
+      });
+      const failed = await handler.handleRequest('apply_geometry_patch', {
+        expectedRevision: beforeRevision,
+        elementUpdates: [{ elementId: 'Task_1', bounds: proposed }],
+        collisionPolicy: 'allow'
+      });
+      expect(failed.isError).toBe(true);
+      expect(failed.content[0].text).toContain('injected geometry patch failure');
+      expect(context.xml).toBe(beforeXml);
+      expect(context.revision).toBe(beforeRevision);
+      await expect(readFile(join(sandbox!.directory, filename), 'utf8')).resolves.toBe(beforeDisk);
+
+      const applied = await handler.handleRequest('apply_geometry_patch', {
+        expectedRevision: beforeRevision,
+        elementUpdates: [{ elementId: 'Task_1', bounds: proposed }],
+        collisionPolicy: 'allow'
+      });
+      expect(applied.isError).toBeUndefined();
+      const appliedXml = context.xml;
+      const appliedRevision = context.revision;
+      const appliedDisk = await readFile(join(sandbox!.directory, filename), 'utf8');
+      const stale = await handler.handleRequest('apply_geometry_patch', {
+        expectedRevision: beforeRevision,
+        elementUpdates: [{ elementId: 'Task_1', bounds: task.bounds }],
+        collisionPolicy: 'allow'
+      });
+      expect(stale).toMatchObject({
+        isError: true,
+        structuredContent: { code: 'revision_conflict', conflict: true }
+      });
+      expect(context.xml).toBe(appliedXml);
+      expect(context.revision).toBe(appliedRevision);
+      await expect(readFile(join(sandbox!.directory, filename), 'utf8')).resolves.toBe(appliedDisk);
+    });
+
+    it('should propose a directly applicable local route and preserve unrelated geometry', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Local routing proposal' });
+      const source = (await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Source', position: { x: 100, y: 200 }
+      })).structuredContent as any;
+      const obstacle = (await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Obstacle', position: { x: 300, y: 180 }
+      })).structuredContent as any;
+      const target = (await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Target', position: { x: 550, y: 200 }
+      })).structuredContent as any;
+      const connected = (await handler.handleRequest('connect', {
+        sourceId: source.elementId,
+        targetId: target.elementId,
+        label: 'Routed flow'
+      })).structuredContent as any;
+      const context = diagramContext.getCurrent();
+      const beforeXml = context.xml;
+      const beforeRevision = context.revision;
+      const beforeDisk = await readFile(join(sandbox!.directory, context.filename!), 'utf8');
+      const beforeShapes = structuredClone(Array.from(context.document.diagram.shapes.entries()));
+      const beforeEdges = structuredClone(Array.from(context.document.diagram.edges.entries()));
+
+      const proposal = await handler.handleRequest('route_connection', {
+        connectionId: connected.connectionId,
+        avoidElementIds: [obstacle.elementId]
+      });
+
+      expect(proposal.isError).toBeUndefined();
+      expect(proposal.structuredContent).toMatchObject({
+        connectionId: connected.connectionId,
+        proposedWaypoints: expect.any(Array),
+        proposedLabelBounds: expect.any(Object),
+        geometryRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        scoreBreakdown: {
+          shapeCollisions: 0,
+          labelCollisions: 0,
+          clearanceFailures: 0,
+          connectionCrossings: 0,
+          bends: expect.any(Number),
+          length: expect.any(Number),
+          total: expect.any(Number)
+        },
+        diagnostics: expect.any(Array),
+        introducedDiagnostics: [],
+        geometryPatch: {
+          expectedRevision: beforeRevision,
+          elementUpdates: [],
+          connectionUpdates: [{
+            connectionId: connected.connectionId,
+            waypoints: expect.any(Array),
+            expectedGeometryRevision: expect.any(String),
+            endpointPolicy: 'exact'
+          }],
+          collisionPolicy: 'reject-new',
+          dryRun: false
+        },
+        clearance: 20,
+        preserveOtherGeometry: true,
+        apply: false,
+        applied: false,
+        revision: beforeRevision,
+        beforeRevision,
+        afterRevision: beforeRevision
+      });
+      expect((proposal.structuredContent as any).proposedWaypoints)
+        .toEqual((proposal.structuredContent as any).geometryPatch.connectionUpdates[0].waypoints);
+      expect(context.xml).toBe(beforeXml);
+      expect(context.revision).toBe(beforeRevision);
+      await expect(readFile(join(sandbox!.directory, context.filename!), 'utf8'))
+        .resolves.toBe(beforeDisk);
+
+      const applied = await handler.handleRequest(
+        'apply_geometry_patch',
+        (proposal.structuredContent as any).geometryPatch
+      );
+      expect(applied.isError).toBeUndefined();
+      expect(context.revision).not.toBe(beforeRevision);
+      expect(Array.from(context.document.diagram.shapes.entries())).toEqual(beforeShapes);
+      const afterEdges = Array.from(context.document.diagram.edges.entries());
+      expect(afterEdges.filter(([, edge]) => edge.connectionId !== connected.connectionId))
+        .toEqual(beforeEdges.filter(([, edge]) => edge.connectionId !== connected.connectionId));
+      expect(context.connections.get(connected.connectionId)?.waypoints)
+        .toEqual((proposal.structuredContent as any).proposedWaypoints);
+    });
+
+    it('should route sequence, message, and data-object connections and fail without mutation', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Routing connection types' });
+      const source = (await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Source', position: { x: 100, y: 100 }
+      })).structuredContent as any;
+      const target = (await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Target', position: { x: 500, y: 100 }
+      })).structuredContent as any;
+      const blocker = (await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Blocker', position: { x: 300, y: 100 }
+      })).structuredContent as any;
+      const data = (await handler.handleRequest('add_data_object', {
+        name: 'Payload', position: { x: 500, y: 350 }
+      })).structuredContent as any;
+      const sequence = (await handler.handleRequest('connect', {
+        sourceId: source.elementId, targetId: target.elementId
+      })).structuredContent as any;
+      const parallelSequence = (await handler.handleRequest('connect', {
+        sourceId: source.elementId, targetId: target.elementId
+      })).structuredContent as any;
+      const association = (await handler.handleRequest('add_association', {
+        sourceId: target.elementId, targetId: data.referenceId
+      })).structuredContent as any;
+
+      for (const [connectionId, args] of [
+        [sequence.connectionId, {
+          avoidElementIds: [blocker.elementId],
+          avoidConnectionIds: [parallelSequence.connectionId]
+        }],
+        [association.associationId, { avoidConnectionIds: [sequence.connectionId] }]
+      ] as const) {
+        const result = await handler.handleRequest('route_connection', { connectionId, ...args });
+        expect(result.isError).toBeUndefined();
+        expect(result.structuredContent).toMatchObject({
+          connectionId,
+          scoreBreakdown: {
+            shapeCollisions: 0,
+            labelCollisions: 0,
+            clearanceFailures: 0,
+            connectionCrossings: 0
+          },
+          introducedDiagnostics: []
+        });
+        expect((result.structuredContent as any).diagnostics).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({
+            ids: expect.arrayContaining([connectionId, ...(args.avoidConnectionIds ?? [])])
+          })])
+        );
+      }
+
+      const impossibleAvoid = await handler.handleRequest('route_connection', {
+        connectionId: sequence.connectionId,
+        avoidElementIds: [source.elementId]
+      });
+      expect(impossibleAvoid.isError).toBe(true);
+      expect(impossibleAvoid.content[0].text).toContain('cannot avoid its endpoint');
+
+      await handler.handleRequest('new_bpmn', {
+        name: 'Message routing', type: 'collaboration'
+      });
+      const upperPool = (await handler.handleRequest('add_pool', {
+        name: 'Upper', position: { x: 50, y: 50 }, size: { width: 700, height: 250 }
+      })).structuredContent as any;
+      const lowerPool = (await handler.handleRequest('add_pool', {
+        name: 'Lower', position: { x: 50, y: 450 }, size: { width: 700, height: 250 }
+      })).structuredContent as any;
+      const sender = (await handler.handleRequest('add_activity', {
+        activityType: 'sendTask', name: 'Send', ownerId: upperPool.processId,
+        position: { x: 300, y: 140 }
+      })).structuredContent as any;
+      const receiver = (await handler.handleRequest('add_activity', {
+        activityType: 'receiveTask', name: 'Receive', ownerId: lowerPool.processId,
+        position: { x: 500, y: 540 }
+      })).structuredContent as any;
+      const message = (await handler.handleRequest('connect', {
+        sourceId: sender.elementId, targetId: receiver.elementId, label: 'Payload'
+      })).structuredContent as any;
+      const messageDetails = (await handler.handleRequest('get_connection', {
+        connectionId: message.connectionId
+      })).structuredContent as any;
+      const messageResult = await handler.handleRequest('route_connection', {
+        connectionId: message.connectionId,
+        expectedGeometryRevision: messageDetails.geometryRevision,
+        apply: true
+      });
+      expect(messageResult.isError).toBeUndefined();
+      expect(messageResult.structuredContent).toMatchObject({
+        connectionId: message.connectionId,
+        applied: true,
+        apply: true,
+        introducedDiagnostics: []
+      });
+      const afterApplyXml = diagramContext.getCurrent().xml;
+      const afterApplyRevision = diagramContext.getCurrent().revision;
+      const stale = await handler.handleRequest('route_connection', {
+        connectionId: message.connectionId,
+        expectedGeometryRevision: messageDetails.geometryRevision
+      });
+      expect(stale).toMatchObject({
+        isError: true,
+        structuredContent: {
+          code: 'geometry_conflict',
+          reason: 'geometry_revision_mismatch',
+          connectionId: message.connectionId
+        }
+      });
+      expect(diagramContext.getCurrent().xml).toBe(afterApplyXml);
+      expect(diagramContext.getCurrent().revision).toBe(afterApplyRevision);
+
+      const routingEngine = (handler as unknown as {
+        engine: { fileManager: FileManager };
+      }).engine;
+      jest.spyOn(routingEngine.fileManager, 'saveBpmnFile').mockResolvedValueOnce({
+        success: false,
+        error: 'injected route persistence failure'
+      });
+      const failedApply = await handler.handleRequest('route_connection', {
+        connectionId: message.connectionId,
+        apply: true
+      });
+      expect(failedApply.isError).toBe(true);
+      expect(failedApply.content[0].text).toContain('injected route persistence failure');
+      expect(diagramContext.getCurrent().xml).toBe(afterApplyXml);
+      expect(diagramContext.getCurrent().revision).toBe(afterApplyRevision);
+      await handler.handleRequest('add_text_annotation', {
+        text: 'Routing barrier', position: { x: 400, y: 350 }
+      });
+
+      const beforeFailureXml = diagramContext.getCurrent().xml;
+      const beforeFailureRevision = diagramContext.getCurrent().revision;
+      const failure = await handler.handleRequest('route_connection', {
+        connectionId: message.connectionId,
+        avoidElementIds: ['TextAnnotation_1'],
+        clearance: 1_000_000
+      });
+      expect(failure).toMatchObject({
+        isError: true,
+        structuredContent: {
+          code: 'routing_failed',
+          connectionId: message.connectionId,
+          mutated: false,
+          rankedDiagnostics: expect.arrayContaining([
+            expect.objectContaining({
+              rank: expect.any(Number),
+              scoreBreakdown: expect.any(Object),
+              diagnostics: expect.any(Array)
+            })
+          ])
+        }
+      });
+      expect(diagramContext.getCurrent().xml).toBe(beforeFailureXml);
+      expect(diagramContext.getCurrent().revision).toBe(beforeFailureRevision);
+    });
+
+    it('should preserve all semantics and untouched imported DI through a geometry patch', async () => {
+      const filename = 'geometry-patch-preservation.bpmn';
+      const fixture = await readFile(join(
+        process.cwd(), 'tests/fixtures/import-roundtrip/full-semantics-di.bpmn'
+      ), 'utf8');
+      await writeFile(join(sandbox!.directory, filename), fixture, 'utf8');
+      await handler.handleRequest('open_bpmn', { filename });
+      const context = diagramContext.getCurrent();
+      const semanticBefore = await normalizedSemanticXml(context.xml!);
+      const untouchedShapes = structuredClone(Array.from(
+        context.document.diagram.shapes.entries()
+      ).filter(([, shape]) => shape.elementId !== 'DataObjectReference_Request'));
+      const untouchedEdges = structuredClone(Array.from(
+        context.document.diagram.edges.entries()
+      ).filter(([, edge]) => edge.connectionId !== 'Flow_Approved'));
+      const dataObject = (await handler.handleRequest('get_element', {
+        elementId: 'DataObjectReference_Request'
+      })).structuredContent as any;
+      const flow = (await handler.handleRequest('get_connection', {
+        connectionId: 'Flow_Approved'
+      })).structuredContent as any;
+      const movedBounds = { ...dataObject.bounds, x: dataObject.bounds.x + 20 };
+      const movedLabel = { ...flow.labelBounds, y: flow.labelBounds.y - 20 };
+
+      const result = await handler.handleRequest('apply_geometry_patch', {
+        expectedRevision: context.revision,
+        elementUpdates: [{
+          elementId: 'DataObjectReference_Request',
+          bounds: movedBounds
+        }],
+        connectionUpdates: [{
+          connectionId: 'Flow_Approved',
+          labelBounds: movedLabel
+        }],
+        collisionPolicy: 'allow'
+      });
+      expect(result.isError).toBeUndefined();
+      expect(await normalizedSemanticXml(context.xml!)).toBe(semanticBefore);
+      expect(Array.from(context.document.diagram.shapes.entries()).filter(
+        ([, shape]) => shape.elementId !== 'DataObjectReference_Request'
+      )).toEqual(untouchedShapes);
+      expect(Array.from(context.document.diagram.edges.entries()).filter(
+        ([, edge]) => edge.connectionId !== 'Flow_Approved'
+      )).toEqual(untouchedEdges);
+
+      await handler.handleRequest('open_bpmn', { filename });
+      const reopened = diagramContext.getCurrent();
+      expect(await normalizedSemanticXml(reopened.xml!)).toBe(semanticBefore);
+      expect(Array.from(reopened.document.diagram.shapes.entries()).filter(
+        ([, shape]) => shape.elementId !== 'DataObjectReference_Request'
+      )).toEqual(untouchedShapes);
+      expect(Array.from(reopened.document.diagram.edges.entries()).filter(
+        ([, edge]) => edge.connectionId !== 'Flow_Approved'
+      )).toEqual(untouchedEdges);
+      expect(Array.from(reopened.document.diagram.shapes.values()).find(
+        shape => shape.elementId === 'DataObjectReference_Request'
+      )?.bounds).toEqual(movedBounds);
+      expect(Array.from(reopened.document.diagram.edges.values()).find(
+        edge => edge.connectionId === 'Flow_Approved'
+      )?.labelBounds).toEqual(movedLabel);
+    });
+
     it('should reject updating a non-existent element without changing state or disk', async () => {
       const before = await snapshotQueryState();
 
@@ -1129,11 +2691,13 @@ describe('BpmnRequestHandler Integration Tests', () => {
         elementId: 'Task_1',
         name: 'Still writable'
       });
-      expect(valid).toEqual({
+      expect(valid).toMatchObject({
         content: [{ type: 'text', text: 'Updated element Task_1' }],
         structuredContent: {
           elementId: 'Task_1',
-          filename: diagramContext.getCurrent().filename
+          filename: diagramContext.getCurrent().filename,
+          beforeRevision: expect.any(String),
+          afterRevision: expect.any(String)
         }
       });
       expect(diagramContext.getCurrent().elements.get('Task_1')?.name).toBe('Still writable');
@@ -1174,7 +2738,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
       await expectQueryStateUnchanged(before);
 
       const valid = await handler.handleRequest('delete_element', { elementId: 'Task_1' });
-      expect(valid).toEqual({
+      expect(valid).toMatchObject({
         content: [{
           type: 'text',
           text: 'Deleted element Task_1 and 0 associated connections'
@@ -1183,7 +2747,9 @@ describe('BpmnRequestHandler Integration Tests', () => {
           elementId: 'Task_1',
           deletedKind: 'element',
           removedConnectionCount: 0,
-          filename: diagramContext.getCurrent().filename
+          filename: diagramContext.getCurrent().filename,
+          beforeRevision: expect.any(String),
+          afterRevision: expect.any(String)
         }
       });
       expect(diagramContext.getCurrent().elements.has('Task_1')).toBe(false);

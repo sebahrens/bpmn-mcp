@@ -1,0 +1,9 @@
+{
+  "reviewer": "correctness",
+  "findings": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "The interruption fault-injection exercises rollback payload recovery for active-app, but not the same helper's installer-state, codex-skill, or claude-skill snapshot names.",
+    "The staged-skill cleanup test injects failure during the skill copy; marker-write and final-move failure cleanup remain unexercised."
+  ]
+}

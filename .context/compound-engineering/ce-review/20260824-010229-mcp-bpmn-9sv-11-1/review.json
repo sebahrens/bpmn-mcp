@@ -1,0 +1,46 @@
+{
+  "mode": "autofix",
+  "scope": "mcp-bpmn-9sv.11.1 selected hunks only",
+  "intent": "Add strict read-only list_connections and get_connection MCP queries with stable filters and pagination, complete supported semantic and DI fields, document revision, and connection-bound geometry revision tokens without changing existing element query contracts.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings-researcher",
+    "api-contract",
+    "security",
+    "performance",
+    "adversarial",
+    "kieran-typescript",
+    "code-simplicity"
+  ],
+  "findings": [],
+  "appliedFixes": [
+    "Bound each geometry revision digest to its connection ID so tokens cannot be replayed across connections without BPMNEdges.",
+    "Exercised get_connection in the read-only no-persistence contract.",
+    "Covered unknown connection lookup without memory, revision, or disk changes."
+  ],
+  "residualActionableWork": [],
+  "advisory": [],
+  "learnings": {
+    "searched": "docs/solutions for MCP, schema, connection, pagination, server, and handler patterns",
+    "matches": []
+  },
+  "agentNative": {
+    "verdict": "PASS",
+    "notes": "Both query primitives are advertised through tools/list, expose strict schemas and rich verification state, use the shared active diagram, and are described in pagination instructions."
+  },
+  "simplicity": {
+    "verdict": "Already minimal",
+    "notes": "The implementation reuses existing pagination, validation, result parsing, stable sort, and resource-limit patterns; no new engine abstraction or persistent model was added."
+  },
+  "verification": [
+    "focused contract, integration, resource-limit, and request-validation suites",
+    "compiled stdio e2e schema fingerprint and structured-output suite",
+    "eslint",
+    "TypeScript no-emit type check"
+  ],
+  "verdict": "Ready to merge; repository-wide contributor test gate passed"
+}

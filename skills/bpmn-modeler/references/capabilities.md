@@ -4,16 +4,19 @@ This is a routing guide, not a copy of the API. Use the live MCP tool schemas fo
 
 ## Tool families
 
-The server currently exposes 27 semantic tool names:
+The server exposes these semantic tool families:
 
 | Purpose | Tools |
 | --- | --- |
+| Select a workspace | `get_workspace`, `select_workspace` |
 | Establish or change context | `new_bpmn`, `new_from_mermaid`, `open_bpmn`, `open_mermaid_file`, `close`, `current` |
-| Persist and locate files | `save`, `save_as`, `list_diagrams`, `delete_diagram_file`, `get_diagrams_path` |
+| Persist and locate files | `save`, `save_as`, `save_svg`, `save_png`, `list_diagrams`, `delete_diagram_file`, `get_diagrams_path` |
 | Create BPMN content | `add_event`, `add_activity`, `add_gateway`, `add_data_object`, `add_text_annotation`, `add_pool`, `add_lane` |
 | Relate BPMN content | `connect`, `add_association` |
-| Inspect or edit | `list_elements`, `get_element`, `update_element`, `delete_element` |
-| Check and deliver | `validate`, `auto_layout`, `export` |
+| Inspect | `list_elements`, `get_element`, `list_connections`, `get_connection` |
+| Edit semantics | `update_element`, `update_connection`, `delete_element` |
+| Inspect or edit geometry | `analyze_geometry`, `update_element_geometry`, `update_connection_geometry`, `apply_geometry_patch`, `route_connection`, `auto_layout` |
+| Check and deliver | `validate`, `export` |
 
 Host applications may prefix these names. Select the exposed tool whose base semantic name matches; do not encode a host-specific prefix in instructions or examples.
 
@@ -31,9 +34,17 @@ Host applications may prefix these names. Select the exposed tool whose base sem
 | Flow semantics | Sequence and message flows; labels; formal conditions; activity/gateway default flows |
 | Structure | Pool ownership, process/subprocess scope, boundary attachment, lane membership, and multi-instance activity characteristics |
 | Inspection | Paginated stable-order listings plus element, lane, association, and connection detail |
-| Output | BPMN XML and rendered SVG; syntax, semantic, and full validation; deterministic horizontal layout |
+| Output | BPMN XML and rendered SVG export; managed SVG/PNG artifacts; syntax, semantic, and full validation; deterministic horizontal layout |
 
 The server, not this guide, decides whether a specific event definition, endpoint pair, scope, property, or default/conditional flow combination is BPMN-legal.
+
+For an existing relationship, use `get_connection` before `update_connection` and carry its `semanticRevision` into `expectedSemanticRevision`. Rewiring either endpoint also requires the explicit `snap-to-boundary` endpoint policy so the server can preserve endpoint geometry invariants. If the revision is stale, refresh the connection, reassess the requested mutation, and retry against the new semantic revision rather than overwriting blindly.
+
+For a local edge obstruction, use `route_connection` before replacing geometry
+by hand. It proposes without mutation by default and returns an
+`apply_geometry_patch`-compatible patch. Inspect its score and diagnostics,
+then apply that patch or repeat with explicit avoid lists and clearance. Use
+`apply: true` only when the proposal may be selected and committed atomically.
 
 ## Extension profiles
 

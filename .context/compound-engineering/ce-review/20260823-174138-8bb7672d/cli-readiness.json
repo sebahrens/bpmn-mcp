@@ -1,0 +1,68 @@
+{
+  "reviewer": "cli-readiness",
+  "findings": [
+    {
+      "title": "Uninstall discards registration cleanup state",
+      "severity": "P1",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 622,
+      "why_it_matters": "If a previously configured client is temporarily absent from PATH, uninstall reports that its registration was not changed but then deletes the installed executable and ownership marker. The client is left with a stale registration, and a later retry cannot remove it because the installer no longer has ownership evidence. An unattended caller therefore receives a successful exit from an incomplete, non-retryable uninstall.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Treat an unavailable client as pending cleanup: return nonzero and retain enough installer state (and preferably the executable) for a later uninstall retry. If artifact-only removal is needed, expose it as an explicit flag and record pending registrations so a subsequent normal uninstall can finish safely.",
+      "confidence": 0.99,
+      "evidence": [
+        "Lines 622-625 and 637-640 only log that an unavailable client registration was not changed; they do not mark uninstall incomplete or change its exit status.",
+        "Lines 646-655 subsequently remove APP_DIR and STATE_FILE whenever installation_owned is true.",
+        "On a later retry, lines 607-610 set installation_owned to false because STATE_FILE is gone, so lines 625 and 640 explicitly refuse to change either leftover registration."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Doctor has no machine-readable health result",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 716,
+      "why_it_matters": "Automation must parse unstable prose to inspect doctor results, and it still cannot rely on the exit status: missing executables, conflicting registrations, and missing skills are printed as status text but do not make the command fail. CI jobs and agents can therefore treat an unhealthy installation as healthy unless they duplicate the script's presentation parsing.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Add a stable `doctor --json` mode with explicit fields such as `healthy`, `issues`, platform/runtime data, registration state, and skill state. Define health-check exit semantics (or a separate `--check` flag) so actionable installation failures return nonzero while preserving the current human-readable report by default.",
+      "confidence": 0.98,
+      "evidence": [
+        "Lines 718-760 emit every doctor field as human-readable label/value prose; there is no JSON or format branch.",
+        "Lines 725-752 report `not installed`, `missing`/`conflict`, and missing skill states without accumulating an unhealthy result.",
+        "Lines 762-766 only fail doctor for missing or unsupported Node/npm, and lines 791-793 reject all doctor arguments, so callers cannot request structured or strict output."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Registration probe failures masquerade as absence",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 191,
+      "why_it_matters": "Every nonzero result from a client registration lookup is classified as `missing`, including malformed client configuration, permission failures, or a broken client executable, and the diagnostic stderr is discarded. Install then proceeds as though it is safe to create a new registration, while doctor can report a misleading absence; autonomous callers lose the actual correction needed and may make futile or risky retries.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Capture probe stderr and distinguish the client's confirmed not-found response from other failures. Classify only confirmed absence as `missing`; for other nonzero outcomes, stop with the client name, failed lookup, preserved diagnostic, and a corrective hint. If the clients do not expose distinct exit codes, use their structured list/get surface where available and test the known not-found diagnostic explicitly.",
+      "confidence": 0.93,
+      "evidence": [
+        "Lines 188-216 initialize CODEX_REGISTRATION to `missing`, redirect `codex mcp get` stderr to /dev/null, and leave the state unchanged on every nonzero exit.",
+        "Lines 219-243 implement the same behavior for `claude mcp get`.",
+        "The shared classifications feed both install preflight (lines 296-315) and doctor output (lines 731-740), so the misleading state affects mutation decisions and machine diagnostics."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Claude registration ownership is inferred by parsing human-readable `claude mcp get` prose, so a client output-format change can turn an owned registration into a conflict; this needs validation against the supported Claude Code versions.",
+    "The WSL2 checklist validates only Windows-binary rejection; a successful install with native WSL Node and real client registration remains an opt-in operational check."
+  ],
+  "testing_gaps": [
+    "Add an uninstall case where one or both previously configured client executables are absent, then restore PATH and retry; assert no stale registration becomes permanently orphaned and incomplete cleanup returns nonzero.",
+    "Inject operational failures from `codex mcp get` and `claude mcp get` separately from true not-found responses; assert the installer preserves the diagnostic, avoids registration mutation, and reports a distinct failure.",
+    "Cover doctor machine/strict-mode output and exit status for a healthy install, absent install, conflicting registration, missing skill, and invalid runtime once that contract is defined."
+  ]
+}

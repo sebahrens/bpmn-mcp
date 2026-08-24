@@ -1,0 +1,8 @@
+{
+  "reviewer": "maintainability",
+  "findings": [],
+  "residual_risks": [
+    "The source/e2e partition regex is now repeated in the test and test:all scripts, in addition to related watch and coverage commands. The current entries agree, so this is not an actionable defect, but future suite-path changes will require coordinated package-script updates."
+  ],
+  "testing_gaps": []
+}

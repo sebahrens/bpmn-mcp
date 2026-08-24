@@ -19,7 +19,9 @@ export class SafeFilePathError extends Error {
 
 export type SafeFilePathErrorCode =
   | 'access'
+  | 'busy'
   | 'changed'
+  | 'conflict'
   | 'exists'
   | 'invalid'
   | 'not_found'
@@ -41,7 +43,7 @@ interface ResolvedSafeRoot {
   rootInode: string;
 }
 
-type AnchoredOperation = 'read' | 'write' | 'delete';
+type AnchoredOperation = 'read' | 'write' | 'compare-write' | 'delete';
 
 const ANCHORED_FILE_WORKER_IDLE_TIMEOUT_MS = 5_000;
 
@@ -55,7 +57,7 @@ const ANCHORED_FILE_WORKER_IDLE_TIMEOUT_MS = 5_000;
 const ANCHORED_FILE_WORKER = String.raw`
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 
 class OperationFailure extends Error {
@@ -84,6 +86,46 @@ async function existingFile(filename) {
   if (stats.isSymbolicLink()) fail('symlink');
   if (!stats.isFile()) fail('not_file');
   return stats;
+}
+
+async function readExactFile(filename, expectedSize) {
+  const beforeOpen = await existingFile(filename);
+  let handle;
+  try {
+    handle = await fs.open(filename, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+    const afterOpen = await handle.stat({ bigint: true });
+    if (!afterOpen.isFile() || !sameIdentity(beforeOpen, afterOpen)) fail('changed');
+    if (afterOpen.size !== BigInt(expectedSize)) fail('conflict');
+    const buffer = Buffer.alloc(expectedSize);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+      if (result.bytesRead === 0) break;
+      bytesRead += result.bytesRead;
+    }
+    const afterRead = await handle.stat({ bigint: true });
+    if (!sameIdentity(afterOpen, afterRead)
+      || afterOpen.size !== afterRead.size
+      || afterOpen.mtimeNs !== afterRead.mtimeNs
+      || afterOpen.ctimeNs !== afterRead.ctimeNs) fail('changed');
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function acquireLock(filename) {
+  const lock = '.mcp-bpmn-lock-' + createHash('sha256').update(filename).digest('hex');
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    try {
+      await fs.mkdir(lock, { mode: 0o700 });
+      return lock;
+    } catch (error) {
+      if (!error || error.code !== 'EEXIST') throw error;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  }
+  fail('busy');
 }
 
 async function perform(request) {
@@ -148,6 +190,40 @@ async function perform(request) {
       else await fs.link(temporary, filename);
       return Buffer.alloc(0);
     } finally {
+      await fs.unlink(temporary).catch(() => undefined);
+    }
+  }
+
+  if (operation === 'compare-write') {
+    const temporary = '.' + filename + '.' + process.pid + '.' + randomUUID() + '.tmp';
+    let lock;
+    try {
+      const content = Buffer.from(request.input || '', 'base64');
+      await fs.writeFile(temporary, content, { flag: 'wx', mode: 0o600 });
+      lock = await acquireLock(filename);
+      if (request.expected === null) {
+        try {
+          await existingFile(filename);
+          fail('conflict');
+        } catch (error) {
+          if (!(error instanceof OperationFailure) || error.code !== 'not_found') throw error;
+        }
+        await fs.link(temporary, filename);
+      } else {
+        const expected = Buffer.from(request.expected || '', 'base64');
+        let actual;
+        try {
+          actual = await readExactFile(filename, expected.length);
+        } catch (error) {
+          if (error instanceof OperationFailure && error.code === 'not_found') fail('conflict');
+          throw error;
+        }
+        if (!actual.equals(expected)) fail('conflict');
+        await fs.rename(temporary, filename);
+      }
+      return Buffer.alloc(0);
+    } finally {
+      if (lock) await fs.rmdir(lock).catch(() => undefined);
       await fs.unlink(temporary).catch(() => undefined);
     }
   }
@@ -256,7 +332,7 @@ export class SafeFileStore {
   async write(
     filename: string,
     allowedExtensions: readonly string[],
-    content: string,
+    content: string | Buffer,
     overwrite: boolean
   ): Promise<string> {
     const target = await this.resolveTarget(filename, allowedExtensions, 'write');
@@ -264,7 +340,24 @@ export class SafeFileStore {
       'write',
       filename,
       overwrite ? 'overwrite' : 'no-overwrite',
-      Buffer.from(content, 'utf8')
+      typeof content === 'string' ? Buffer.from(content, 'utf8') : content
+    );
+    return target.candidatePath;
+  }
+
+  async compareAndWrite(
+    filename: string,
+    allowedExtensions: readonly string[],
+    expectedContent: string | null,
+    content: string
+  ): Promise<string> {
+    const target = await this.resolveTarget(filename, allowedExtensions, 'write');
+    await this.workerFor(target).run(
+      'compare-write',
+      filename,
+      '',
+      Buffer.from(content, 'utf8'),
+      expectedContent === null ? null : Buffer.from(expectedContent, 'utf8')
     );
     return target.candidatePath;
   }
@@ -377,13 +470,15 @@ class AnchoredFileWorker {
     operation: AnchoredOperation,
     filename: string,
     option: string,
-    input: Buffer = Buffer.alloc(0)
+    input: Buffer = Buffer.alloc(0),
+    expected?: Buffer | null
   ): Promise<Buffer> {
     const result = this.queue.then(() => this.runWithRetry(
       operation,
       filename,
       option,
-      input
+      input,
+      expected
     ));
     this.queue = result.then(() => undefined, () => undefined);
     return result;
@@ -393,11 +488,12 @@ class AnchoredFileWorker {
     operation: AnchoredOperation,
     filename: string,
     option: string,
-    input: Buffer
+    input: Buffer,
+    expected?: Buffer | null
   ): Promise<Buffer> {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        return await this.send(operation, filename, option, input);
+        return await this.send(operation, filename, option, input, expected);
       } catch (error) {
         if (!(error instanceof WorkerTransportError) || attempt === 1) throw error;
         this.child?.kill();
@@ -412,7 +508,8 @@ class AnchoredFileWorker {
     operation: AnchoredOperation,
     filename: string,
     option: string,
-    input: Buffer
+    input: Buffer,
+    expected?: Buffer | null
   ): Promise<Buffer> {
     await this.ensureStarted();
     const child = this.child;
@@ -425,7 +522,12 @@ class AnchoredFileWorker {
       operation,
       filename,
       option,
-      input: input.length === 0 ? undefined : input.toString('base64')
+      input: input.length === 0 ? undefined : input.toString('base64'),
+      expected: expected === undefined
+        ? undefined
+        : expected === null
+          ? null
+          : expected.toString('base64')
     })}\n`;
     try {
       try {
@@ -551,6 +653,10 @@ function workerError(code: string): SafeFilePathError {
       return new SafeFilePathError('File already exists', 'exists');
     case 'changed':
       return new SafeFilePathError('File changed during operation', 'changed');
+    case 'conflict':
+      return new SafeFilePathError('Document revision conflict', 'conflict');
+    case 'busy':
+      return new SafeFilePathError('Diagram file is busy', 'busy');
     default:
       return new SafeFilePathError('Unable to access diagram file');
   }

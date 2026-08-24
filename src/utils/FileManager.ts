@@ -12,6 +12,8 @@ export interface SaveOptions {
   filename?: string;
   directory?: string;
   overwrite?: boolean;
+  /** Exact prior content, or null when the target must not exist. */
+  expectedContent?: string | null;
 }
 
 export interface SaveResult {
@@ -19,7 +21,10 @@ export interface SaveResult {
   filePath?: string;
   filename?: string;
   error?: string;
+  conflict?: boolean;
 }
+
+export type RenderedArtifactFormat = 'svg' | 'png';
 
 export class BpmnFileTooLargeError extends Error {
   constructor() {
@@ -183,12 +188,19 @@ export class FileManager {
       assertSafeFilename(filename, ['.bpmn']);
       await this.ensureDirectory(this.defaultDirectory);
 
-      const filePath = await this.safeFiles.write(
-        filename,
-        ['.bpmn'],
-        xmlContent,
-        options.overwrite === true
-      );
+      const filePath = Object.prototype.hasOwnProperty.call(options, 'expectedContent')
+        ? await this.safeFiles.compareAndWrite(
+          filename,
+          ['.bpmn'],
+          options.expectedContent ?? null,
+          xmlContent
+        )
+        : await this.safeFiles.write(
+          filename,
+          ['.bpmn'],
+          xmlContent,
+          options.overwrite === true
+        );
 
       return {
         success: true,
@@ -197,10 +209,14 @@ export class FileManager {
       };
 
     } catch (error) {
+      const conflict = error instanceof SafeFilePathError && error.code === 'conflict';
       return {
         success: false,
+        ...(conflict ? { conflict: true } : {}),
         error: error instanceof SafeFilePathError
-          ? error.code === 'exists' && filename
+          ? error.code === 'conflict'
+            ? 'Document revision conflict'
+            : error.code === 'exists' && filename
             ? `File already exists: ${filename}. Use overwrite option to replace.`
             : error.code === 'access' || error.code === 'changed'
               ? 'Unable to save BPMN file'
@@ -214,6 +230,58 @@ export class FileManager {
 
   async deleteBpmnFile(filename: string): Promise<void> {
     await this.safeFiles.delete(filename, ['.bpmn']);
+  }
+
+  /**
+   * Persist renderer-owned output through the same anchored managed-store
+   * boundary as BPMN documents. Binary PNG bytes must never be coerced through
+   * UTF-8, while SVG remains an exact renderer-produced string.
+   */
+  async saveRenderedArtifact(
+    content: string | Buffer,
+    filename: string,
+    format: RenderedArtifactFormat,
+    overwrite: boolean,
+    maxBytes: number
+  ): Promise<SaveResult> {
+    const extension = format === 'svg' ? '.svg' : '.png';
+    const byteLength = typeof content === 'string'
+      ? Buffer.byteLength(content, 'utf8')
+      : content.byteLength;
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+      return { success: false, error: 'Invalid rendered artifact byte limit' };
+    }
+    if (byteLength > maxBytes) {
+      return {
+        success: false,
+        error: 'Rendered artifact exceeds the configured byte limit'
+      };
+    }
+
+    try {
+      assertSafeFilename(filename, [extension]);
+      await this.ensureDirectory(this.defaultDirectory);
+      const filePath = await this.safeFiles.write(
+        filename,
+        [extension],
+        content,
+        overwrite
+      );
+      return { success: true, filePath, filename };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof SafeFilePathError
+          ? error.code === 'exists'
+            ? `File already exists: ${filename}. Use overwrite option to replace.`
+            : error.code === 'access' || error.code === 'changed'
+              ? 'Unable to save rendered artifact'
+              : error.message
+          : (error as NodeJS.ErrnoException).code === 'EEXIST'
+            ? `File already exists: ${filename}. Use overwrite option to replace.`
+            : 'Unable to save rendered artifact'
+      };
+    }
   }
 
   /**

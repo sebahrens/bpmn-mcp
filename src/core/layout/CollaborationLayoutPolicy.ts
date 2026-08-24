@@ -7,6 +7,7 @@ import type {
   BpmnShapeModel,
   Position
 } from '../../types/index.js';
+import { ConnectionRouter } from './ConnectionRouter.js';
 
 export const COLLABORATION_LAYOUT_POLICY = Object.freeze({
   participantHeaderWidth: 30,
@@ -90,7 +91,7 @@ export function applyCollaborationLayoutPolicy(
       + COLLABORATION_LAYOUT_POLICY.participantGap;
   }
 
-  routeCollaborationConnections(laidOut, participants, diagramLookup);
+  routeCollaborationConnections(laidOut, diagramLookup);
 }
 
 function applyLaneConstraints(
@@ -322,227 +323,29 @@ function translateConnection(
 
 function routeCollaborationConnections(
   document: BpmnDocument,
-  participants: Array<Extract<BpmnDocumentElement, { kind: 'participant' }>>,
   diagramLookup: DiagramLookup
 ): void {
-  const participantByProcess = new Map(participants
-    .filter(participant => participant.processRef)
-    .map(participant => [participant.processRef!, participant]));
-  const obstacleBounds = Array.from(document.elements.values())
-    .filter(element => element.kind !== 'participant')
-    .map(elementBounds);
-  const labelObstacles = [
-    ...Array.from(document.elements.values()).map(elementBounds),
-    ...Array.from(document.lanes.values()).map(laneBounds)
-  ];
-  const outer = {
-    left: participants.reduce(
-      (minimum, participant) => Math.min(minimum, participant.position.x),
-      Infinity
-    ),
-    right: participants.reduce(
-      (maximum, participant) => Math.max(
-        maximum,
-        participant.position.x + participant.size.width
-      ),
-      -Infinity
-    ),
-    top: participants.reduce(
-      (minimum, participant) => Math.min(minimum, participant.position.y),
-      Infinity
-    ),
-    bottom: participants.reduce(
-      (maximum, participant) => Math.max(
-        maximum,
-        participant.position.y + participant.size.height
-      ),
-      -Infinity
-    )
-  };
+  const router = new ConnectionRouter();
 
   for (const connection of document.connections.values()) {
     if (connection.type !== 'bpmn:MessageFlow') continue;
-    const source = document.elements.get(connection.source);
-    const target = document.elements.get(connection.target);
-    if (!source || !target) continue;
-    const sourceParticipant = source.kind === 'participant'
-      ? source
-      : participantByProcess.get(source.ownerId);
-    const targetParticipant = target.kind === 'participant'
-      ? target
-      : participantByProcess.get(target.ownerId);
-    if (!sourceParticipant || !targetParticipant) continue;
-
-    const candidates = messageRouteCandidates(
-      source,
-      target,
-      sourceParticipant,
-      targetParticipant,
-      outer
-    );
-    connection.waypoints = candidates
-      .map(points => ({
-        points,
-        collisions: countRouteCollisions(points, obstacleBounds, source, target),
-        length: routeLength(points)
-      }))
-      .sort((left, right) => left.collisions - right.collisions || left.length - right.length)[0]
-      .points;
+    const candidates = router.route(document, connection.id, {
+      avoidElementIds: [],
+      avoidConnectionIds: [],
+      clearance: COLLABORATION_LAYOUT_POLICY.routeClearance,
+      shapes: Array.from(diagramLookup.shapesByElement.values()),
+      edges: Array.from(diagramLookup.edgesByConnection.values())
+    });
+    const selected = candidates.find(candidate => candidate.diagnostics.length === 0)
+      ?? candidates[0];
+    if (!selected) continue;
+    connection.waypoints = selected.waypoints.map(point => ({ ...point }));
     const edge = diagramLookup.edgesByConnection.get(connection.id);
-    if (edge?.labelBounds) {
-      edge.labelBounds = placeMessageLabel(
-        connection.waypoints,
-        edge.labelBounds,
-        labelObstacles,
-        outer
-      );
-      labelObstacles.push({ id: connection.id, ...edge.labelBounds });
+    if (edge) {
+      edge.waypoints = connection.waypoints.map(point => ({ ...point }));
+      if (selected.labelBounds) edge.labelBounds = { ...selected.labelBounds };
     }
   }
-}
-
-function placeMessageLabel(
-  route: Position[],
-  label: Bounds,
-  obstacles: Array<Bounds & { id: string }>,
-  outer: { left: number; right: number; top: number; bottom: number }
-): Bounds {
-  const gap = 5;
-  const candidates = route.slice(1).flatMap((point, index) => {
-    const start = route[index];
-    const middle = { x: (start.x + point.x) / 2, y: (start.y + point.y) / 2 };
-    const length = Math.abs(point.x - start.x) + Math.abs(point.y - start.y);
-    return start.y === point.y
-      ? [
-          { x: middle.x - label.width / 2, y: middle.y - label.height - gap, length },
-          { x: middle.x - label.width / 2, y: middle.y + gap, length }
-        ]
-      : [
-          { x: middle.x - label.width - gap, y: middle.y - label.height / 2, length },
-          { x: middle.x + gap, y: middle.y - label.height / 2, length }
-        ];
-  }).filter(candidate => obstacles.every(obstacle => !rectanglesOverlap(candidate, {
-    width: label.width,
-    height: label.height
-  }, obstacle)));
-  const selected = candidates.sort((left, right) => right.length - left.length)[0];
-  if (selected) return { ...label, x: selected.x, y: selected.y };
-
-  const fallback = {
-    ...label,
-    x: outer.right + gap,
-    y: (outer.top + outer.bottom - label.height) / 2
-  };
-  for (let attempt = 0; attempt <= obstacles.length; attempt++) {
-    const collisions = obstacles.filter(obstacle => rectanglesOverlap(
-      fallback,
-      { width: fallback.width, height: fallback.height },
-      obstacle
-    ));
-    if (collisions.length === 0) return fallback;
-    fallback.y = collisions.reduce(
-      (maximum, obstacle) => Math.max(maximum, obstacle.y + obstacle.height),
-      -Infinity
-    ) + gap;
-  }
-  return fallback;
-}
-
-function messageRouteCandidates(
-  source: BpmnDocumentElement,
-  target: BpmnDocumentElement,
-  sourceParticipant: Extract<BpmnDocumentElement, { kind: 'participant' }>,
-  targetParticipant: Extract<BpmnDocumentElement, { kind: 'participant' }>,
-  outer: { left: number; right: number; top: number; bottom: number }
-): Position[][] {
-  const clearance = COLLABORATION_LAYOUT_POLICY.routeClearance;
-  const sourceBounds = elementBounds(source);
-  const targetBounds = elementBounds(target);
-  const right = outer.right + clearance;
-  const left = outer.left - clearance;
-  const sourceRight = { x: sourceBounds.x + sourceBounds.width, y: centerY(sourceBounds) };
-  const targetRight = { x: targetBounds.x + targetBounds.width, y: centerY(targetBounds) };
-  const sourceLeft = { x: sourceBounds.x, y: centerY(sourceBounds) };
-  const targetLeft = { x: targetBounds.x, y: centerY(targetBounds) };
-  const sourceAbove = centerY(elementBounds(sourceParticipant))
-    < centerY(elementBounds(targetParticipant));
-  const sourceVertical = sourceAbove
-    ? { x: centerX(sourceBounds), y: sourceBounds.y + sourceBounds.height }
-    : { x: centerX(sourceBounds), y: sourceBounds.y };
-  const targetVertical = sourceAbove
-    ? { x: centerX(targetBounds), y: targetBounds.y }
-    : { x: centerX(targetBounds), y: targetBounds.y + targetBounds.height };
-  const sourcePoolEdge = sourceAbove
-    ? sourceParticipant.position.y + sourceParticipant.size.height
-    : sourceParticipant.position.y;
-  const targetPoolEdge = sourceAbove
-    ? targetParticipant.position.y
-    : targetParticipant.position.y + targetParticipant.size.height;
-  const betweenParticipants = (sourcePoolEdge + targetPoolEdge) / 2;
-  return [
-    compactRoute([sourceRight, { x: right, y: sourceRight.y }, { x: right, y: targetRight.y }, targetRight]),
-    compactRoute([sourceLeft, { x: left, y: sourceLeft.y }, { x: left, y: targetLeft.y }, targetLeft]),
-    compactRoute([
-      sourceVertical,
-      { x: sourceVertical.x, y: betweenParticipants },
-      { x: targetVertical.x, y: betweenParticipants },
-      targetVertical
-    ])
-  ];
-}
-
-function countRouteCollisions(
-  route: Position[],
-  obstacles: Array<Bounds & { id: string }>,
-  source: BpmnDocumentElement,
-  target: BpmnDocumentElement
-): number {
-  const ignored = new Set([source.id, target.id]);
-  return route.slice(1).reduce((total, point, index) => total + obstacles.filter(obstacle =>
-    !ignored.has(obstacle.id)
-      && segmentCrossesInterior(route[index], point, obstacle)
-  ).length, 0);
-}
-
-function segmentCrossesInterior(start: Position, end: Position, bounds: Bounds): boolean {
-  const epsilon = 0.001;
-  if (start.x === end.x) {
-    return start.x > bounds.x + epsilon
-      && start.x < bounds.x + bounds.width - epsilon
-      && Math.max(start.y, end.y) > bounds.y + epsilon
-      && Math.min(start.y, end.y) < bounds.y + bounds.height - epsilon;
-  }
-  if (start.y === end.y) {
-    return start.y > bounds.y + epsilon
-      && start.y < bounds.y + bounds.height - epsilon
-      && Math.max(start.x, end.x) > bounds.x + epsilon
-      && Math.min(start.x, end.x) < bounds.x + bounds.width - epsilon;
-  }
-  return true;
-}
-
-function routeLength(route: Position[]): number {
-  return route.slice(1).reduce((total, point, index) =>
-    total + Math.abs(point.x - route[index].x) + Math.abs(point.y - route[index].y), 0
-  );
-}
-
-function compactRoute(route: Position[]): Position[] {
-  return route.filter((point, index) => index === 0
-    || point.x !== route[index - 1].x
-    || point.y !== route[index - 1].y
-  );
-}
-
-function rectanglesOverlap(
-  position: Position,
-  size: { width: number; height: number },
-  obstacle: Bounds
-): boolean {
-  return position.x < obstacle.x + obstacle.width
-    && position.x + size.width > obstacle.x
-    && position.y < obstacle.y + obstacle.height
-    && position.y + size.height > obstacle.y;
 }
 
 function createDiagramLookup(document: BpmnDocument): DiagramLookup {
@@ -562,14 +365,6 @@ function elementBounds(element: BpmnDocumentElement): Bounds & { id: string } {
 
 function laneBounds(lane: BpmnLane): Bounds & { id: string } {
   return { id: lane.id, ...lane.position, ...lane.size };
-}
-
-function centerX(bounds: Bounds): number {
-  return bounds.x + bounds.width / 2;
-}
-
-function centerY(bounds: Bounds): number {
-  return bounds.y + bounds.height / 2;
 }
 
 function isParticipant(

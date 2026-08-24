@@ -1,0 +1,26 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Test omits cross-plane label overlap case",
+      "severity": "P2",
+      "file": "tests/helpers/bpmnGeometry.test.ts",
+      "line": 133,
+      "why_it_matters": "The new label-pair loop deliberately skips labels on different planes, but the regression exercises only two labels on the same plane. A future change that drops or reverses the plane guard would emit false LABEL_OVERLAP diagnostics for separate BPMN diagrams without this test failing.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add a regression with geometrically overlapping labels assigned to different plane IDs and assert that no LABEL_OVERLAP diagnostic is emitted for their owner IDs.",
+      "confidence": 0.88,
+      "evidence": [
+        "tests/helpers/bpmnGeometry.ts adds `if (left.planeId !== right.planeId || !finiteBounds(right.bounds)) continue;` for label-label pairs.",
+        "The new test at tests/helpers/bpmnGeometry.test.ts:133 creates both labels in the simple-process fixture's single plane and asserts only the collision path."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "No direct regression covers the newly introduced label-pair skip when the two labels belong to different BPMN planes."
+  ]
+}

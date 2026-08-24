@@ -1,0 +1,1 @@
+{"reviewer":"adversarial","findings":[],"residual_risks":["Concurrent installer processes targeting the same prefix are unsupported; sequential retries are covered."],"testing_gaps":[]}

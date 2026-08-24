@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  id="Definitions_AgentProcess"
+  targetNamespace="urn:mcp-bpmn:agent-geometry">
+  <bpmn:process id="Process_AgentProcess" name="Agent repair process" isExecutable="true">
+    <bpmn:startEvent id="Start_Process" name="Start" />
+    <bpmn:task id="Task_Process" name="Review" />
+    <bpmn:endEvent id="End_Process" name="Finish" />
+    <bpmn:sequenceFlow id="Flow_Start_Task" name="incorrect direction" sourceRef="Task_Process" targetRef="Start_Process" />
+    <bpmn:sequenceFlow id="Flow_Task_End" sourceRef="Task_Process" targetRef="End_Process" />
+    <bpmn:textAnnotation id="Annotation_Unrelated">
+      <bpmn:text>Untouched process note</bpmn:text>
+    </bpmn:textAnnotation>
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="Diagram_AgentProcess">
+    <bpmndi:BPMNPlane id="Plane_AgentProcess" bpmnElement="Process_AgentProcess">
+      <bpmndi:BPMNShape id="Start_Process_di" bpmnElement="Start_Process">
+        <dc:Bounds x="100" y="120" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Process_di" bpmnElement="Task_Process">
+        <dc:Bounds x="120" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Process_di" bpmnElement="End_Process">
+        <dc:Bounds x="500" y="120" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Annotation_Unrelated_di" bpmnElement="Annotation_Unrelated">
+        <dc:Bounds x="300" y="260" width="150" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Start_Task_di" bpmnElement="Flow_Start_Task">
+        <di:waypoint x="120" y="140" />
+        <di:waypoint x="136" y="138" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Task_End_di" bpmnElement="Flow_Task_End">
+        <di:waypoint x="220" y="140" />
+        <di:waypoint x="500" y="138" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

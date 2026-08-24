@@ -52,16 +52,31 @@ done
 APP_DIR=$INSTALL_ROOT/app
 STATE_FILE=$INSTALL_ROOT/.mcp-bpmn-installer-owned
 SERVER_BIN=$APP_DIR/node_modules/.bin/mcp-bpmn-server
-if [ -n "${MCP_BPMN_DIAGRAMS_PATH:-}" ]; then
+DIAGRAMS_EXPLICIT=0
+LEGACY_DEFAULT_DIAGRAMS=
+if [ "${MCP_BPMN_DIAGRAMS_PATH+x}" = x ]; then
   DIAGRAMS_DIR=$MCP_BPMN_DIAGRAMS_PATH
+  [ -n "$DIAGRAMS_DIR" ] || fail "MCP_BPMN_DIAGRAMS_PATH must be a non-empty absolute path"
+  DIAGRAMS_EXPLICIT=1
 elif [ ! -L "$STATE_FILE" ] && [ -f "$STATE_FILE" ] \
   && [ "$(sed -n '1p' "$STATE_FILE")" = "$OWNERSHIP_MARKER" ]; then
-  DIAGRAMS_DIR=$(sed -n 's/^diagrams-path=//p' "$STATE_FILE")
-  DIAGRAMS_DIR=${DIAGRAMS_DIR:-$HOME/mcp-bpmn}
+  installed_diagrams=$(sed -n 's/^diagrams-path=//p' "$STATE_FILE")
+  installed_explicit=$(sed -n 's/^diagrams-path-explicit=//p' "$STATE_FILE")
+  if [ "$installed_explicit" = 1 ] \
+    || { [ -z "$installed_explicit" ] \
+      && [ -n "$installed_diagrams" ] \
+      && [ "$installed_diagrams" != "$HOME/mcp-bpmn" ]; }; then
+    DIAGRAMS_DIR=$installed_diagrams
+    DIAGRAMS_EXPLICIT=1
+  else
+    DIAGRAMS_DIR=
+    LEGACY_DEFAULT_DIAGRAMS=$installed_diagrams
+  fi
 else
-  DIAGRAMS_DIR=$HOME/mcp-bpmn
+  DIAGRAMS_DIR=
 fi
-while [ "$DIAGRAMS_DIR" != "/" ] && [ "${DIAGRAMS_DIR%/}" != "$DIAGRAMS_DIR" ]; do
+while [ -n "$DIAGRAMS_DIR" ] && [ "$DIAGRAMS_DIR" != "/" ] \
+  && [ "${DIAGRAMS_DIR%/}" != "$DIAGRAMS_DIR" ]; do
   DIAGRAMS_DIR=${DIAGRAMS_DIR%/}
 done
 CODEX_SKILL_DIR=${CODEX_HOME:-$HOME/.codex}/skills/$SKILL_NAME
@@ -172,10 +187,20 @@ check_runtime() {
   NODE_BIN=$(command -v node)
   NPM_BIN=$(command -v npm)
   if [ "$IS_WSL" -eq 1 ]; then
+    NODE_PLATFORM=$(node -p 'process.platform' 2>/dev/null) \
+      || fail "could not determine whether Node.js is native Linux"
+    [ "$NODE_PLATFORM" = linux ] \
+      || fail "WSL requires native Linux Node.js; detected Node.js platform $NODE_PLATFORM"
+    NODE_RESOLVED=$(readlink -f "$NODE_BIN" 2>/dev/null || printf '%s' "$NODE_BIN")
+    NPM_RESOLVED=$(readlink -f "$NPM_BIN" 2>/dev/null || printf '%s' "$NPM_BIN")
     windows_binary_in_wsl "$NODE_BIN" \
       && fail "WSL is using Windows Node.js at $NODE_BIN; install a Linux Node.js and fix PATH"
+    windows_binary_in_wsl "$NODE_RESOLVED" \
+      && fail "WSL is using Windows Node.js at $NODE_RESOLVED; install a Linux Node.js and fix PATH"
     windows_binary_in_wsl "$NPM_BIN" \
       && fail "WSL is using Windows npm at $NPM_BIN; install Linux npm and fix PATH"
+    windows_binary_in_wsl "$NPM_RESOLVED" \
+      && fail "WSL is using Windows npm at $NPM_RESOLVED; install Linux npm and fix PATH"
   fi
 
   NODE_VERSION=$(node -p 'process.versions.node' 2>/dev/null) \
@@ -272,6 +297,7 @@ validate_outside_removable_paths() {
 }
 
 diagrams_within_path() {
+  [ -n "$DIAGRAMS_DIR" ] || return 1
   DWP_diagrams=$(canonicalize_path "$DIAGRAMS_DIR") || return 2
   DWP_boundary=$(canonicalize_boundary_path "$1") || return 2
   path_is_equal_or_within "$DWP_diagrams" "$DWP_boundary"
@@ -290,17 +316,25 @@ codex_registration_state() {
           const config = JSON.parse(input);
           const transport = config.transport || {};
           const environment = transport.env || {};
+          const expectedPath = process.argv[2];
+          const legacyPath = process.argv[3];
+          const expectedEnvironment = expectedPath
+            ? { MCP_BPMN_DIAGRAMS_PATH: expectedPath }
+            : {};
+          const legacyEnvironment = legacyPath
+            ? { MCP_BPMN_DIAGRAMS_PATH: legacyPath }
+            : undefined;
           process.exit(transport.type === "stdio"
             && transport.command === process.argv[1]
             && Array.isArray(transport.args)
             && transport.args.length === 0
-            && environment.MCP_BPMN_DIAGRAMS_PATH === process.argv[2]
-            && Object.keys(environment).length === 1 ? 0 : 1);
+            && (JSON.stringify(environment) === JSON.stringify(expectedEnvironment)
+              || JSON.stringify(environment) === JSON.stringify(legacyEnvironment)) ? 0 : 1);
         } catch {
           process.exit(1);
         }
       });
-    ' "$SERVER_BIN" "$DIAGRAMS_DIR"; then
+    ' "$SERVER_BIN" "$DIAGRAMS_DIR" "$LEGACY_DEFAULT_DIAGRAMS"; then
       CODEX_REGISTRATION=owned
     else
       CODEX_REGISTRATION=conflict
@@ -313,7 +347,8 @@ claude_registration_state() {
   CLAUDE_REGISTRATION_OUTPUT=
   if CLAUDE_REGISTRATION_OUTPUT=$(claude mcp get "$PROGRAM_NAME" 2>/dev/null); then
     if printf '%s\n' "$CLAUDE_REGISTRATION_OUTPUT" \
-      | awk -v expected="$SERVER_BIN" -v expected_diagrams="$DIAGRAMS_DIR" '
+      | awk -v expected="$SERVER_BIN" -v expected_diagrams="$DIAGRAMS_DIR" \
+        -v legacy_diagrams="$LEGACY_DEFAULT_DIAGRAMS" '
       /^[[:space:]]*Scope:[[:space:]]*User config/ { user_scope = 1 }
       /^[[:space:]]*Command:[[:space:]]*/ {
         value = $0
@@ -325,7 +360,17 @@ claude_registration_state() {
         sub(/^[[:space:]]*MCP_BPMN_DIAGRAMS_PATH=/, "", diagrams)
         diagrams_found = 1
       }
-      END { exit !(user_scope && found && value == expected && diagrams_found && diagrams == expected_diagrams) }
+      END {
+        environment_matches = 0
+        if (expected_diagrams == "" && !diagrams_found) environment_matches = 1
+        if (expected_diagrams != "" && diagrams_found && diagrams == expected_diagrams) {
+          environment_matches = 1
+        }
+        if (legacy_diagrams != "" && diagrams_found && diagrams == legacy_diagrams) {
+          environment_matches = 1
+        }
+        exit !(user_scope && found && value == expected && environment_matches)
+      }
     '; then
       CLAUDE_REGISTRATION=owned
     else
@@ -432,7 +477,6 @@ prepare_clients() {
 validate_targeted_diagrams_change() {
   state_is_owned || return 0
   installed_diagrams=$(sed -n 's/^diagrams-path=//p' "$STATE_FILE")
-  [ -n "$installed_diagrams" ] || return 0
   [ "$installed_diagrams" != "$DIAGRAMS_DIR" ] || return 0
   installed_clients=$(sed -n 's/^clients=//p' "$STATE_FILE")
 
@@ -791,6 +835,10 @@ build_and_install_artifact() {
   mkdir -p "$INSTALL_ROOT"
   TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/mcp-bpmn-install.XXXXXX") \
     || fail "could not create a temporary installation directory"
+  if [ -z "${MCP_BPMN_PACKAGE_TARBALL:-}" ] \
+    && [ -n "${MCP_BPMN_PACKAGE_SHA256:-}" ]; then
+    fail "MCP_BPMN_PACKAGE_SHA256 requires MCP_BPMN_PACKAGE_TARBALL"
+  fi
   if [ -n "${MCP_BPMN_PACKAGE_TARBALL:-}" ]; then
     case "$MCP_BPMN_PACKAGE_TARBALL" in
       /*) tarball_path=$MCP_BPMN_PACKAGE_TARBALL ;;
@@ -802,17 +850,27 @@ build_and_install_artifact() {
       || fail "MCP_BPMN_PACKAGE_TARBALL must name an existing, non-symlinked file"
     [ -n "${MCP_BPMN_PACKAGE_SHA256:-}" ] \
       || fail "MCP_BPMN_PACKAGE_SHA256 is required with MCP_BPMN_PACKAGE_TARBALL"
-    cp -f "$tarball_path" "$TEMP_DIR/release-candidate.tgz" \
-      || fail "could not stage the prebuilt release tarball"
-    tarball_path=$TEMP_DIR/release-candidate.tgz
     node -e '
       const { createHash } = require("node:crypto");
-      const { readFileSync } = require("node:fs");
-      const actual = createHash("sha256").update(readFileSync(process.argv[1])).digest("hex");
-      const expected = process.argv[2].toLowerCase();
-      if (!/^[a-f0-9]{64}$/.test(expected) || actual !== expected) process.exit(1);
-    ' "$tarball_path" "$MCP_BPMN_PACKAGE_SHA256" \
+      const { closeSync, constants, fstatSync, openSync, readFileSync, writeFileSync } = require("node:fs");
+      let descriptor;
+      try {
+        descriptor = openSync(process.argv[1], constants.O_RDONLY | constants.O_NOFOLLOW);
+        const stat = fstatSync(descriptor);
+        if (!stat.isFile() || stat.size > 100 * 1024 * 1024) process.exit(1);
+        const bytes = readFileSync(descriptor);
+        const actual = createHash("sha256").update(bytes).digest("hex");
+        const expected = process.argv[2].toLowerCase();
+        if (!/^[a-f0-9]{64}$/.test(expected) || actual !== expected) process.exit(1);
+        writeFileSync(process.argv[3], bytes, { flag: "wx", mode: 0o600 });
+      } catch {
+        process.exit(1);
+      } finally {
+        if (descriptor !== undefined) closeSync(descriptor);
+      }
+    ' "$tarball_path" "$MCP_BPMN_PACKAGE_SHA256" "$TEMP_DIR/release-candidate.tgz" \
       || fail "prebuilt release tarball does not match MCP_BPMN_PACKAGE_SHA256"
+    tarball_path=$TEMP_DIR/release-candidate.tgz
   else
     pack_json=$(cd "$PROJECT_ROOT" && npm_config_cache="$TEMP_DIR/npm-cache" \
       npm pack --json --pack-destination "$TEMP_DIR") \
@@ -878,6 +936,7 @@ activate_staged_artifact() {
     printf 'package=%s@%s\n' "$PACKAGE_NAME" "$PACKAGE_VERSION"
     printf 'installed-root=%s\n' "$INSTALL_ROOT"
     printf 'diagrams-path=%s\n' "$DIAGRAMS_DIR"
+    printf 'diagrams-path-explicit=%s\n' "$DIAGRAMS_EXPLICIT"
     printf 'clients=%s\n' "$installed_clients"
   } > "$STATE_FILE"
   log "installed $PACKAGE_NAME@$PACKAGE_VERSION at $APP_DIR"
@@ -919,9 +978,14 @@ register_codex() {
     codex mcp remove "$PROGRAM_NAME" >/dev/null \
       || fail "could not remove the existing Codex registration"
   fi
-  codex mcp add "$PROGRAM_NAME" \
-    --env "MCP_BPMN_DIAGRAMS_PATH=$DIAGRAMS_DIR" -- "$SERVER_BIN" >/dev/null \
-    || fail "could not add the Codex registration"
+  if [ -n "$DIAGRAMS_DIR" ]; then
+    codex mcp add "$PROGRAM_NAME" \
+      --env "MCP_BPMN_DIAGRAMS_PATH=$DIAGRAMS_DIR" -- "$SERVER_BIN" >/dev/null \
+      || fail "could not add the Codex registration"
+  else
+    codex mcp add "$PROGRAM_NAME" -- "$SERVER_BIN" >/dev/null \
+      || fail "could not add the Codex registration"
+  fi
   : > "$ROLLBACK_DIR/codex-registration.add-succeeded"
   codex mcp get "$PROGRAM_NAME" --json > "$ROLLBACK_DIR/codex-registration.installed.candidate.json" 2>/dev/null \
     || fail "could not verify the new Codex registration"
@@ -938,18 +1002,24 @@ register_claude() {
     || fail "Claude Code '$PROGRAM_NAME' user registration changed after preflight; refusing to overwrite it"
   : > "$ROLLBACK_DIR/claude-registration.touched"
   node -e '
-    process.stdout.write(JSON.stringify({
-      type: "stdio", command: process.argv[1], args: [],
-      env: { MCP_BPMN_DIAGRAMS_PATH: process.argv[2] }
-    }));
+    const registration = { type: "stdio", command: process.argv[1], args: [] };
+    if (process.argv[2]) {
+      registration.env = { MCP_BPMN_DIAGRAMS_PATH: process.argv[2] };
+    }
+    process.stdout.write(JSON.stringify(registration));
   ' "$SERVER_BIN" "$DIAGRAMS_DIR" > "$ROLLBACK_DIR/claude-registration.desired.json"
   if [ "$(cat "$ROLLBACK_DIR/claude-registration.state")" != missing ]; then
     claude mcp remove --scope user "$PROGRAM_NAME" >/dev/null \
       || fail "could not remove the existing Claude Code user registration"
   fi
-  claude mcp add --scope user "$PROGRAM_NAME" "$SERVER_BIN" \
-    -e "MCP_BPMN_DIAGRAMS_PATH=$DIAGRAMS_DIR" >/dev/null \
-    || fail "could not add the Claude Code user registration"
+  if [ -n "$DIAGRAMS_DIR" ]; then
+    claude mcp add --scope user "$PROGRAM_NAME" "$SERVER_BIN" \
+      -e "MCP_BPMN_DIAGRAMS_PATH=$DIAGRAMS_DIR" >/dev/null \
+      || fail "could not add the Claude Code user registration"
+  else
+    claude mcp add --scope user "$PROGRAM_NAME" "$SERVER_BIN" >/dev/null \
+      || fail "could not add the Claude Code user registration"
+  fi
   : > "$ROLLBACK_DIR/claude-registration.add-succeeded"
   claude_user_registration_json > "$ROLLBACK_DIR/claude-registration.installed.candidate.json" \
     || fail "could not verify the new Claude Code user registration"
@@ -991,7 +1061,11 @@ run_install() {
   fi
 
   commit_install_transaction
-  log "diagrams remain in $DIAGRAMS_DIR"
+  if [ -n "$DIAGRAMS_DIR" ]; then
+    log "explicit diagram workspace remains at $DIAGRAMS_DIR"
+  else
+    log "diagram workspace resolves per client session cwd"
+  fi
 }
 
 remove_owned_skill() {
@@ -1048,6 +1122,7 @@ validate_purge_request() {
 }
 
 validate_diagrams_path() {
+  [ -n "$DIAGRAMS_DIR" ] || return 0
   case "$DIAGRAMS_DIR" in
     /*) ;;
     *) fail "MCP_BPMN_DIAGRAMS_PATH must be an absolute path" ;;
@@ -1141,7 +1216,11 @@ run_uninstall() {
   fi
 
   if [ -z "${PURGE_DIAGRAMS:-}" ]; then
-    log "preserved diagrams at $DIAGRAMS_DIR"
+    if [ -n "$DIAGRAMS_DIR" ]; then
+      log "preserved diagrams at $DIAGRAMS_DIR"
+    else
+      log "preserved all repository-scoped diagram workspaces"
+    fi
   else
     safe_purge_diagrams
   fi
@@ -1234,8 +1313,13 @@ run_doctor() {
   else
     printf 'Claude skill discovery: not installed at %s\n' "$CLAUDE_SKILL_DIR"
   fi
-  printf 'Diagrams directory: %s (%s)\n' "$DIAGRAMS_DIR" \
-    "$([ -d "$DIAGRAMS_DIR" ] && printf present || printf not-created)"
+  if [ -n "$DIAGRAMS_DIR" ]; then
+    printf 'Workspace mode: explicit override\n'
+    printf 'Diagrams directory: %s (%s)\n' "$DIAGRAMS_DIR" \
+      "$([ -d "$DIAGRAMS_DIR" ] && printf present || printf not-created)"
+  else
+    printf 'Workspace mode: client launch cwd (or repository .mcp-bpmn.json)\n'
+  fi
   if detected_browser=$(browser_path); then
     printf 'SVG browser readiness: ready (%s)\n' "$detected_browser"
   else

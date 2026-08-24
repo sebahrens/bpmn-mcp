@@ -20,8 +20,9 @@ with an opt-in typed Camunda 7 profile documented in
 - **Mermaid conversion**: Bootstrap diagrams from the documented flowchart subset
 - **Horizontal auto-layout**: Deterministic process and collaboration placement
 - **Local persistence**: Atomically save and reopen diagrams in a configured directory
-- **XML and SVG export**: XML is generated in-process; SVG is rendered through
-  Puppeteer and `bpmn-js`
+- **XML/SVG export and rendered artifacts**: XML is generated in-process; SVG
+  export and managed SVG/PNG artifacts are rendered through Puppeteer and
+  `bpmn-js`
 - **Portable and Camunda 7 profiles**: Vendor-free output by default, with three
   typed Camunda 7 user-task fields when explicitly selected
 
@@ -30,57 +31,64 @@ with an opt-in typed Camunda 7 profile documented in
 ### Requirements
 
 - Node.js 22.12.0 or newer
-- npm with lockfile support
-- Chrome or Chromium for `export({ format: "svg" })`; the normal Puppeteer
-  install downloads a compatible browser
+- npm with lockfile support; `make` is additionally required for the
+  Codex/Claude installer
+- macOS, Linux, or WSL2 with Linux-native Node.js, npm, and agent clients
+- Chrome or Chromium for `export({ format: "svg" })`, `save_svg`, and
+  `save_png`; the normal Puppeteer install downloads a compatible browser
 
 XML authoring, validation, layout, persistence, and XML export do not launch a
-browser. SVG export does. If the Puppeteer browser download is intentionally
-skipped, set `PUPPETEER_EXECUTABLE_PATH` to a compatible Chrome or Chromium
-executable before starting the server. SVG rendering is headless, limited to
-one concurrent render per server instance, and has a ten-second render timeout.
+browser. SVG export and managed SVG/PNG artifact rendering do. If the Puppeteer
+browser download is intentionally skipped, set `PUPPETEER_EXECUTABLE_PATH` to a
+compatible Chrome or Chromium executable before starting the server. Rendering
+is headless, limited to one concurrent render per server instance, and has a
+ten-second timeout.
 
-### Run from a source checkout
+### Install for Codex and Claude Code
 
 ```bash
 git clone https://github.com/oisee/mcp-bpmn.git
 cd mcp-bpmn
 npm ci
+make install
+make doctor
+```
+
+`make install` builds a private release, registers every supported client found
+on `PATH`, and copies the `bpmn-modeler` skill into each detected client. Start
+a new client session, then ask it to create a small BPMN process and export XML.
+Each stdio session uses its canonical launch directory as the managed workspace
+by default, so the same registration follows Codex or Claude Code across
+repositories.
+
+See [agent client installation and operation](docs/agent-client-installation.md)
+for targeted installs, custom paths, updates, verification, the first safe BPMN
+workflow, and generic MCP-only setup. See
+[installation troubleshooting](docs/agent-client-troubleshooting.md) for WSL,
+browser, registration-conflict, and recovery guidance.
+
+`make uninstall` removes installer-owned program files, registrations, and skill
+copies but **preserves diagrams by default**.
+
+### Generic stdio setup
+
+Clients other than Codex and Claude Code can launch the source checkout directly:
+
+```bash
 npm run build
 npm start
 ```
 
 `npm run build` emits the canonical ESM executable at
+`dist/server/index.js`. For a generic MCP client, configure `command` as the
+absolute result of `command -v node` and `args` as the absolute checkout path to
 `dist/server/index.js`. The server uses stdio, so it normally appears idle when
-started in a terminal and is intended to be launched by an MCP client.
+started in a terminal.
 
-### Configuration
-
-#### For Claude Desktop
-
-Add to your Claude Desktop configuration file:
-
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`  
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-
-```json
-{
-  "mcpServers": {
-    "mcp-bpmn": {
-      "command": "node",
-      "args": ["/absolute/path/to/mcp-bpmn/dist/server/index.js"]
-    }
-  }
-}
-```
-
-#### For other MCP clients
-
-Use the same ESM entrypoint with an absolute path:
-
-```bash
-node /absolute/path/to/mcp-bpmn/dist/server/index.js
-```
+To use the stable executable created by `make install` instead, obtain its
+absolute path from `make doctor` and configure it as `command` with an empty
+`args` array. Generic MCP clients receive the server's built-in workflow
+instructions but do not automatically discover the optional Agent Skill.
 
 ### Install a packed release artifact
 
@@ -106,95 +114,16 @@ For an MCP client, use the absolute value of
 `$consumer_dir/node_modules/.bin/mcp-bpmn-server` as `command` and an empty
 `args` array. The package is a CLI, not an importable JavaScript library.
 
-### Develop the Codex plugin locally
+### Agent plugins and evaluations
 
-The release artifact is also a Codex plugin. Its manifest discovers the
-canonical `skills/bpmn-modeler` skill and starts one `mcp-bpmn` stdio server
-through a launcher copied into the plugin cache. The launcher uses the stable
-private release installed by `make install-codex`; it does not execute
-TypeScript or depend on the checkout after installation.
+The checkout contains Codex and Claude Code plugin metadata for development and
+release validation. Public marketplace installation is a later distribution
+path; no public marketplace entry is claimed here. Do not combine a development
+plugin with a same-named user MCP registration without first following the
+[conflict checks](docs/agent-client-troubleshooting.md#stale-or-conflicting-registrations).
 
-Build the release artifact, add this checkout as a temporary repo marketplace,
-and install the plugin with:
-
-```bash
-npm ci
-npm run build
-make install-codex
-codex plugin marketplace add .
-codex plugin list --available
-codex plugin add mcp-bpmn@mcp-bpmn-local
-```
-
-Start a new Codex conversation after installation so the skill and MCP tools
-are loaded. The bundled server defaults to `writes` approval mode: tools marked
-read-only can run automatically, while diagram mutations remain visible for
-approval. Remove the development installation with:
-
-```bash
-codex plugin remove mcp-bpmn@mcp-bpmn-local
-codex plugin marketplace remove mcp-bpmn-local
-```
-
-Run the isolated marketplace, cache, discovery, MCP startup, and removal smoke
-without changing the real Codex configuration:
-
-```bash
-npm run test:codex-plugin
-```
-
-### Develop the Claude Code plugin locally
-
-The release artifact is also a Claude Code plugin. Claude discovers the
-canonical `skills/bpmn-modeler/SKILL.md` as the namespaced
-`/mcp-bpmn:bpmn-modeler` skill and starts the inline `mcp-bpmn` server from the
-plugin cache. The plugin uses `skills/`; it does not carry a legacy `commands/`
-copy.
-
-From a source checkout, install dependencies, build, validate, and load the
-plugin for one development session:
-
-```bash
-npm ci
-npm run build
-claude plugin validate .
-claude --plugin-dir .
-```
-
-Inside Claude Code, use `/mcp` to confirm the plugin-provided server, invoke
-`/mcp-bpmn:bpmn-modeler` to inspect the skill, and run `/reload-plugins` after
-changing the manifest or MCP configuration. The checkout contains a root
-`CLAUDE.md` for repository contributors, so source validation reports that it
-is not plugin context; the command still succeeds. The packed plugin excludes
-that repository-only file and passes strict validation.
-
-Run the complete local marketplace smoke with:
-
-```bash
-npm run test:claude-plugin
-```
-
-That check uses a temporary Claude home and marketplace. It installs a copied
-release artifact, checks Claude's component inventory, launches the cached MCP
-server, exercises a reload, and then disables, enables, and removes the plugin.
-It does not change the developer's real Claude configuration.
-
-Diagrams are never written into `${CLAUDE_PLUGIN_ROOT}`. They remain in
-`MCP_BPMN_DIAGRAMS_PATH` when set, or in `~/mcp-bpmn` by default, so plugin
-reloads, updates, disablement, and removal do not delete them. Before switching
-from a manual Claude MCP registration to the plugin, inspect `claude mcp list`
-and remove the old `mcp-bpmn` registration if its command differs from the
-plugin endpoint; Claude only deduplicates plugin and user servers that resolve
-to the same command.
-
-### Evaluate agent workflows
-
-The canonical machine-readable corpus is
-`evals/bpmn-modeler/cases.json`. Both client adapters consume those exact
-prompts and semantic expectations. The deterministic check is safe for normal
-development and CI: it verifies activation boundaries, skill metadata, tool
-names, client parity, and the create/mutate/validate/layout/validate/export
-sequence without calling a model:
+The deterministic cross-client workflow evaluation is safe for development and
+CI:
 
 ```bash
 npm run test:evaluations
@@ -255,9 +184,9 @@ and approval policies.
 | Context lifecycle | `save`, `save_as`, `close`, `current` | One active diagram and filename; local atomic persistence |
 | Authoring | `add_event`, `add_activity`, `add_gateway`, `add_data_object`, `add_text_annotation`, `add_pool`, `add_lane` | The explicit schema enums and typed properties below, not arbitrary BPMN elements or extension attributes |
 | Relationships | `connect`, `add_association` | Direct `connect` authors sequence flows; Mermaid subgraphs can also produce message flows; associations are artifact relationships |
-| Query/mutation | `list_elements`, `get_element`, `update_element`, `delete_element` | Paginated queries and the documented typed mutation fields |
-| Export/quality | `export`, `validate`, `auto_layout` | XML or browser-backed SVG; layered structural validation; horizontal layout only |
-| Stored files | `list_diagrams`, `delete_diagram_file`, `get_diagrams_path` | Sandboxed access inside the configured diagrams directory |
+| Query/mutation | `list_elements`, `get_element`, `list_connections`, `get_connection`, `update_element`, `update_connection`, `update_element_geometry`, `update_connection_geometry`, `apply_geometry_patch`, `route_connection`, `delete_element` | Paginated queries, typed semantic updates, guarded BPMNShape/BPMNEdge geometry updates, and proposal-first local rerouting |
+| Export/quality | `export`, `save_svg`, `save_png`, `validate`, `analyze_geometry`, `auto_layout` | XML or browser-backed SVG export; managed SVG/PNG artifact persistence; structural and geometry diagnostics; horizontal layout only |
+| Workspace and stored files | `get_workspace`, `select_workspace`, `list_diagrams`, `delete_diagram_file`, `get_diagrams_path` | Per-session repository discovery and sandboxed access inside the selected workspace; rendered artifacts remain separate from managed BPMN listings; `get_diagrams_path` is a compatibility alias |
 
 ### Creation Tools
 
@@ -564,10 +493,11 @@ associations.
 }
 ```
 
-The response is `{ count, returnedCount, offset, limit, hasMore, elements }`.
+The response is `{ count, returnedCount, offset, limit, hasMore, elements, revision }`.
 Compatibility note: the pagination envelope replaces the earlier bare-array
 response; clients written against that contract must now read `elements`. The
-existing element fields retain their meanings; additional metadata fields and
+existing element fields retain their meanings. Rendered elements also expose
+`shapeId`, `bounds`, and optional `labelBounds`; additional metadata fields and
 lane entries may be present.
 
 #### `get_element`
@@ -576,6 +506,32 @@ Get details of a specific element or association.
 ```javascript
 {
   elementId: "UserTask_1"
+}
+```
+
+#### `list_connections`
+List a stable, ID-ordered page of SequenceFlow, MessageFlow, and Association
+connections. Optional filters select a connection type, endpoint, owner, or
+scope. Each result includes semantic fields, BPMN DI waypoints, and the current
+semantic, geometry, and document revisions.
+
+```javascript
+{
+  connectionType: "bpmn:MessageFlow", // optional
+  sourceId: "SendTask_1", // optional
+  limit: 100,
+  offset: 0
+}
+```
+
+#### `get_connection`
+Get the complete semantic and rendered geometry state for one SequenceFlow,
+MessageFlow, or Association. Use the returned revisions as compare-and-set
+guards for connection mutations and routing.
+
+```javascript
+{
+  connectionId: "Flow_1"
 }
 ```
 
@@ -590,6 +546,120 @@ Update element properties.
   defaultFlow: "Flow_2" // outgoing flow ID, or null to clear
 }
 ```
+
+#### `update_connection`
+Update SequenceFlow, MessageFlow, or Association semantics without replacing
+the connection ID. Labels may be cleared with `null`; SequenceFlow conditions
+may be replaced or cleared, default ownership may be toggled, and Association
+direction may be changed. Supply either the `semanticRevision` returned by
+`get_connection` or the current document revision. Changing either endpoint
+requires explicit `snap-to-boundary`, which validates and attaches the retained
+route to the new endpoint shapes before the atomic autosave.
+
+```javascript
+{
+  connectionId: "Flow_1",
+  targetId: "Task_3", // optional
+  label: "Approved", // optional; null clears
+  condition: { body: "${approved}", language: "FEEL" }, // null clears
+  isDefault: false, // SequenceFlow only
+  endpointPolicy: "snap-to-boundary", // required when an endpoint changes
+  expectedSemanticRevision: "sha256:...",
+  collisionPolicy: "reject-new" // or "warn" / "allow"
+}
+```
+
+#### `update_element_geometry`
+Move or resize one rendered element with atomic autosave. Connected shapes
+require `incidentConnectionPolicy`; use `snap-endpoints` to keep incident edges
+attached or `reject` to refuse the change. Newly introduced collisions are
+rejected unless `collisionPolicy: "allow"` is explicit. Use `dryRun` to receive
+the proposed before/after geometry and diagnostics without changing the file.
+
+```javascript
+{
+  elementId: "UserTask_1",
+  bounds: { x: 420, y: 180, width: 120, height: 90 },
+  labelBounds: { x: 430, y: 275, width: 100, height: 20 }, // optional; null clears
+  expectedBounds: { x: 300, y: 180, width: 100, height: 80 }, // optional CAS guard
+  expectedRevision: "sha256:...:v4", // optional optimistic-concurrency guard
+  collisionPolicy: "reject", // or "allow"; defaults to "reject"
+  incidentConnectionPolicy: "snap-endpoints", // required for connected moves/resizes
+  dryRun: false
+}
+```
+
+#### `update_connection_geometry`
+Replace all waypoints for one rendered connection with atomic autosave. Exact
+endpoints must already attach to the source and target boundaries;
+`snap-to-boundary` adjusts both endpoints while preserving interior waypoints.
+Omitting `labelBounds` preserves the edge label and `null` clears it. Use either
+`expectedWaypoints` or the `geometryRevision` returned by `get_connection` as a
+compare-and-set guard. Newly introduced error diagnostics are rejected by
+default; `warn` and `allow` apply while returning the resulting diagnostics.
+
+```javascript
+{
+  connectionId: "Flow_1",
+  waypoints: [{ x: 200, y: 140 }, { x: 300, y: 140 }, { x: 400, y: 140 }],
+  labelBounds: null, // optional; omission preserves the current BPMNLabel
+  expectedGeometryRevision: "sha256:...", // optional geometry CAS guard
+  expectedRevision: "sha256:...:v5", // optional document CAS guard
+  endpointPolicy: "exact", // or "snap-to-boundary"; defaults to "exact"
+  collisionPolicy: "reject-new", // or "warn" / "allow"
+  dryRun: false
+}
+```
+
+#### `apply_geometry_patch`
+Update up to 256 rendered elements and connections in one atomic commit. The
+server applies every shape, label, and route update to a private candidate,
+then evaluates diagnostics against that complete final geometry. Supply either
+`expectedRevision` for the whole patch or per-object before guards. Any stale
+guard, invalid final geometry, rejected diagnostic, or save failure leaves both
+memory and disk unchanged.
+
+```javascript
+{
+  expectedRevision: "sha256:...:v6",
+  elementUpdates: [{
+    elementId: "UserTask_1",
+    bounds: { x: 500, y: 180, width: 120, height: 90 },
+    labelBounds: { x: 510, y: 275, width: 100, height: 20 }
+  }],
+  connectionUpdates: [{
+    connectionId: "Flow_1",
+    waypoints: [{ x: 200, y: 140 }, { x: 500, y: 225 }],
+    endpointPolicy: "exact"
+  }],
+  collisionPolicy: "reject-new", // or "warn" / "allow"
+  dryRun: false
+}
+```
+
+#### `route_connection`
+Generate ranked orthogonal routing candidates for one SequenceFlow,
+MessageFlow, or Association. The default is proposal-only: memory, disk, and
+the document revision remain unchanged. The returned `geometryPatch` can be
+passed directly to `apply_geometry_patch`. Set `apply: true` to commit the best
+collision-free candidate in one atomic autosave. The router scores shape and
+label collisions, clearance failures, crossings with existing connections,
+bends, and length while preserving every unrelated DI object.
+
+```javascript
+{
+  connectionId: "Flow_1",
+  avoidElementIds: ["Task_Obstacle"],
+  avoidConnectionIds: ["Flow_Existing"],
+  clearance: 20,
+  preserveOtherGeometry: true,
+  expectedGeometryRevision: "sha256:...", // optional geometry CAS guard
+  apply: false // proposal-only by default
+}
+```
+
+If no acceptable route exists, the tool returns a `routing_failed` error with
+ranked candidate geometry, score breakdowns, and diagnostics without mutation.
 
 #### `delete_element`
 Delete an element and its incident connections. Passing an association ID
@@ -620,6 +690,27 @@ result, and returns an embedded `image/svg+xml` resource. It requires an
 available Chrome/Chromium executable and retains the visible bpmn.io
 attribution described under [License](#-license).
 
+#### `save_svg` and `save_png`
+Render the current diagram and atomically persist a separate SVG or PNG
+artifact in the managed workspace. The required filename must use the matching
+`.svg` or `.png` extension. Existing files are preserved unless `overwrite` is
+explicitly true.
+
+```javascript
+{
+  filename: "order-review.svg", // or order-review.png for save_png
+  overwrite: false // optional; defaults to false
+}
+```
+
+Both tools render from the active BPMN snapshot without changing its XML,
+revision, or active `.bpmn` filename. SVG uses the same sanitization and visible
+bpmn.io attribution as `export`; PNG is rasterized from that sanitized SVG.
+Rendered output is capped at 5 MiB by default and can be configured with
+`MCP_BPMN_MAX_ARTIFACT_BYTES`. Filenames are basename-only and traversal-safe.
+`list_diagrams` and `delete_diagram_file` continue to operate only on BPMN XML
+files, keeping diagram and rendered-artifact operations explicit.
+
 #### `validate`
 Validate the current diagram structure.
 
@@ -632,6 +723,22 @@ Validate the current diagram structure.
 Validation levels are cumulative. `syntax` parses XML and resolves references;
 `semantic` adds owner-aware event, flow, subprocess, lane, and collaboration
 rules; `full` also adds executable-profile start/end/connectivity guidance.
+
+#### `analyze_geometry`
+Inspect the whole diagram or selected element and connection IDs for missing DI,
+endpoint gaps, overlaps, crossings, containment failures, minimum clearance,
+and optional non-orthogonal routes. The response includes stable severity-coded
+diagnostics, a summary, and the relevant shapes, edges, and labels.
+
+```javascript
+{
+  elementIds: ["DataObjectReference_1"], // optional
+  connectionIds: ["MessageFlow_1"], // optional
+  clearance: 5,
+  tolerance: 1,
+  requireOrthogonal: true
+}
+```
 
 #### `auto_layout`
 Apply automatic layout to position elements in the current diagram.
@@ -682,10 +789,31 @@ Delete a saved diagram file.
 ```
 
 #### `get_diagrams_path`
-Get the storage path for diagrams.
+Get the current workspace path. This compatibility alias predates the richer
+workspace discovery response.
 
 ```javascript
 {}
+```
+
+#### `get_workspace`
+Report the canonical launch cwd, immutable startup boundary, current workspace,
+and whether it came from the environment, repository config, launch cwd, or a
+session selection.
+
+```javascript
+{}
+```
+
+#### `select_workspace`
+Select another workspace below the startup boundary for this stdio session.
+Changing workspaces closes the active diagram; successful prior mutations are
+already autosaved.
+
+```javascript
+{
+  path: "wiki/processes/assets"
+}
 ```
 
 ## 🔄 Context Management
@@ -797,12 +925,25 @@ console.log(info); // Shows: { name: "Process A", filename: "process-a.bpmn", ..
 
 ## 🗂️ File Storage
 
-BPMN diagrams are automatically saved to your local filesystem:
+BPMN diagrams are automatically saved in the canonical directory from which
+the MCP client launched the stdio child. A repository may narrow storage to a
+relative descendant with `.mcp-bpmn.json`:
 
-- **Unix/Linux/Mac**: `~/mcp-bpmn/`
-- **Windows**: `%USERPROFILE%\mcp-bpmn\`
+```json
+{
+  "path": "wiki/processes/assets"
+}
+```
 
-Custom path via environment variable:
+Dot segments, absolute repository-config paths, and symlink traversal are
+rejected. Use `get_workspace` to inspect the launch cwd, immutable startup
+boundary, current workspace, and resolution source. `select_workspace` may
+narrow the current session to another relative descendant and closes the active
+diagram when the workspace changes; it never changes the Node process cwd.
+
+An explicit absolute environment override remains available for clients that
+do not propagate the intended repository cwd:
+
 ```bash
 export MCP_BPMN_DIAGRAMS_PATH=/custom/path
 ```
@@ -940,8 +1081,9 @@ defaults are documented under [File Storage](#-file-storage).
   engine.
 - The Camunda 7 authoring profile is limited to `assignee`, `candidateGroups`,
   and `dueDate` on user tasks. It is not general Camunda modeler coverage.
-- SVG export requires Chrome/Chromium through Puppeteer and permits only one
-  concurrent render per server instance. XML workflows remain browser-free.
+- SVG export and managed SVG/PNG artifact rendering require Chrome/Chromium
+  through Puppeteer and permit only one concurrent render per server instance.
+  XML workflows remain browser-free.
 - The server does not execute, simulate, or deploy BPMN processes.
 
 ## 🚧 Roadmap
@@ -971,7 +1113,8 @@ Contributions are welcome! Please:
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
-SVG export uses `bpmn-js@17.11.1`. Every exported SVG includes a visible
+SVG export and saved SVG/PNG artifacts use `bpmn-js@17.11.1`. Every exported or
+saved artifact includes the visible
 "Powered by bpmn.io" logo linked to `https://bpmn.io`; clients should not crop,
 cover, or remove that attribution. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 for the dependency's license terms and

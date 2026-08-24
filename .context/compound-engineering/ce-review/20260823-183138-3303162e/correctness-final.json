@@ -1,0 +1,50 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "All install can still strand absent client",
+      "severity": "P1",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 430,
+      "why_it_matters": "The new clients metadata protects a targeted change when the other client is unavailable, but `install all` returns from this guard before inspecting it. If a prior all-install recorded `clients=codex,claude`, then Claude is temporarily absent and the diagrams path changes, the command updates Codex and the state marker to the new path while silently retaining the old Claude registration at the old path. This leaves precisely the incoherent state that the targeted guard says `install all` will avoid.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "When a diagrams-path change is requested, compare recorded clients with USE_CODEX/USE_CLAUDE even for `all`; refuse the change if any recorded client is unavailable, unless an explicit safe reconciliation mode is implemented.",
+      "confidence": 0.94,
+      "evidence": [
+        "validate_targeted_diagrams_change immediately returns for `CLIENT_SELECTION=all` at line 431.",
+        "prepare_clients intentionally skips an unavailable client in an all install (lines 405-426), so its existing registration is not updated.",
+        "activate_staged_artifact preserves previously recorded client names (lines 813-827) while writing the new global diagrams path at lines 834-840, making the marker disagree with the unavailable client's retained registration."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Claude verification uses a stale read",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 912,
+      "why_it_matters": "A third party can replace the Claude registration after `claude_user_registration_json` writes the candidate file but before the candidate is compared with the desired JSON. The comparison then validates the stale candidate and commits the transaction while the actual registration has already changed, bypassing the intended late-replacement detection.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "After validating the candidate, read the current Claude registration again and compare that fresh read to the desired JSON before committing the installed snapshot; add a deterministic hook that replaces it after the first read.",
+      "confidence": 0.87,
+      "evidence": [
+        "register_claude reads the registration once into `installed.candidate.json` at lines 912-913, then compares that file rather than the live configuration at lines 914-916.",
+        "Unlike the Codex path, which performs a second `codex_registration_state` read after its candidate fetch at lines 884-888, the Claude path has no second live read.",
+        "The existing Claude replacement test mutates inside fake `claude mcp add`, before the candidate read; it does not cover a replacement after that read."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Legacy `http` snapshots are now rejected before replacement, and the focused test verifies that refusal.",
+    "Canonicalizing INSTALL_ROOT before lock creation makes symlink aliases contend on one lock; the test exercises that alias case.",
+    "Rollback distinguishes confirmed deletion from unreadable client state for both clients and preserves rather than resurrects unsafe states."
+  ],
+  "testing_gaps": [
+    "No test changes the diagrams path with `install all` while a client recorded in `clients=` is unavailable and has a retained old registration.",
+    "No deterministic Claude test replaces the registration after its candidate JSON has been read but before post-add verification completes."
+  ]
+}

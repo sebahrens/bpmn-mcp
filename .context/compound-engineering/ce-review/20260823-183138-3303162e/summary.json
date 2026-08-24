@@ -1,0 +1,23 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "scripts/install-agent-integrations.sh",
+    "tests/install-agent-integrations.test.sh"
+  ],
+  "intent": "Prevent concurrent installer rollback from clobbering client state for mcp-bpmn-33g.10.12.",
+  "applied_fixes": [
+    "Distinguish confirmed-missing from unreadable client registration state during rollback.",
+    "Preserve registrations deleted or replaced after the transaction added them.",
+    "Reject Codex registration snapshots that codex mcp add cannot reproduce exactly.",
+    "Verify new Codex and Claude registrations before commit.",
+    "Canonicalize per-prefix locks and release them despite cleanup failures.",
+    "Record installed clients and reject diagrams-path changes that cannot update every recorded client."
+  ],
+  "residual_actionable_work": [],
+  "advisory": [
+    "A third-party mutation strictly between an exact comparison and the following client CLI remove remains outside the clients' available compare-and-swap capabilities.",
+    "SIGKILL or host failure can leave a stale lock that requires the actionable manual recovery printed by the installer.",
+    "Cross-filesystem artifact snapshot moves predate this selected bead and were excluded from its review scope."
+  ],
+  "verdict": "ready"
+}

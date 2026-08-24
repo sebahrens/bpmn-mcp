@@ -1,0 +1,53 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "README.md",
+    "skills/bpmn-modeler/SKILL.md",
+    "skills/bpmn-modeler/references/capabilities.md",
+    "src/types/index.ts",
+    "src/core/BpmnDocument.ts",
+    "src/core/SimpleBpmnEngine.ts",
+    "src/server/handlers.ts",
+    "src/server/tools.ts",
+    "tests/contracts/engine-contract.test.ts",
+    "tests/contracts/tool-annotations.test.ts",
+    "tests/e2e/server.test.ts",
+    "tests/integration/handlers.test.ts",
+    "tests/integration/persistence.test.ts",
+    "tests/security/request-validation.test.ts",
+    "tests/unit/core/SimpleBpmnEngine.test.ts"
+  ],
+  "intent": "Implement atomic, revision-guarded update_connection semantic mutation for SequenceFlow, MessageFlow, and Association in mcp-bpmn-9sv.11.5.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "security",
+    "api-contract",
+    "reliability",
+    "adversarial",
+    "kieran-typescript"
+  ],
+  "applied_fixes": [
+    "Fail closed when connection geometry diagnostics are truncated.",
+    "Allow semantic-only updates on diagrams without DI while retaining strict DI requirements for endpoint rewiring.",
+    "Reconcile explicit SequenceFlow incoming/outgoing references and Association semantic containers after rewiring.",
+    "Document the update_connection workflow in the packaged modeling skill.",
+    "Add production-path rollback coverage for truncated diagnostics, including model, cached XML, revision, and disk state."
+  ],
+  "findings": [],
+  "residual_actionable_work": [],
+  "advisory": [
+    "No docs/solutions directory with applicable institutional learnings exists.",
+    "Unrelated dirty worktree changes were excluded from the review scope and preserved."
+  ],
+  "validation": {
+    "full_gate": "npm run test:all passed: 796 source tests, 17 compiled e2e tests, 3 renderer tests, and installer lifecycle smoke.",
+    "final_focused": "Public updateConnection truncation rollback regression passed after the cached-XML assertion was added.",
+    "diff_check": "git diff --check passed."
+  },
+  "verdict": "Ready to merge"
+}

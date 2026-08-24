@@ -8,6 +8,7 @@ export interface DiagramInfo {
   connectionCount: number;
   type: 'process' | 'collaboration';
   extensionProfile: BpmnExtensionProfile;
+  revision: string;
 }
 
 export class DiagramContext {
@@ -53,7 +54,8 @@ export class DiagramContext {
       elementCount: this.currentContext.elements.size,
       connectionCount: this.currentContext.connections.size,
       type: this.currentContext.type,
-      extensionProfile: this.currentContext.extensionProfile
+      extensionProfile: this.currentContext.extensionProfile,
+      revision: this.currentContext.revision
     };
   }
 

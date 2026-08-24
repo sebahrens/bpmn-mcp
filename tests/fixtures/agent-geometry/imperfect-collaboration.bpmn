@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  id="Definitions_AgentCollaboration"
+  targetNamespace="urn:mcp-bpmn:agent-geometry">
+  <bpmn:process id="Process_Upper" name="Upper process" isExecutable="true">
+    <bpmn:startEvent id="Upper_Start" name="Start upper" />
+    <bpmn:sendTask id="Upper_Send" name="Send request" />
+    <bpmn:endEvent id="Upper_End" name="Finish upper" />
+    <bpmn:sequenceFlow id="Upper_Flow_1" sourceRef="Upper_Start" targetRef="Upper_Send" />
+    <bpmn:sequenceFlow id="Upper_Flow_2" sourceRef="Upper_Send" targetRef="Upper_End" />
+  </bpmn:process>
+  <bpmn:process id="Process_Lower" name="Lower process" isExecutable="true">
+    <bpmn:startEvent id="Lower_Main_Start" name="Start main" />
+    <bpmn:task id="Lower_Main_Work" name="Main work" />
+    <bpmn:endEvent id="Lower_Main_End" name="Finish main" />
+    <bpmn:startEvent id="Lower_Request_Start" name="Start request" />
+    <bpmn:receiveTask id="Lower_Receive" name="Receive request" />
+    <bpmn:endEvent id="Lower_Request_End" name="Finish request" />
+    <bpmn:dataObject id="Data_Request_Object" name="Request payload" />
+    <bpmn:dataObjectReference id="Data_Request" name="Request data" dataObjectRef="Data_Request_Object" />
+    <bpmn:sequenceFlow id="Lower_Main_Flow_1" sourceRef="Lower_Main_Start" targetRef="Lower_Main_Work" />
+    <bpmn:sequenceFlow id="Lower_Main_Flow_2" sourceRef="Lower_Main_Work" targetRef="Lower_Main_End" />
+    <bpmn:sequenceFlow id="Lower_Request_Flow_1" sourceRef="Lower_Request_Start" targetRef="Lower_Receive" />
+    <bpmn:sequenceFlow id="Lower_Request_Flow_2" sourceRef="Lower_Receive" targetRef="Lower_Request_End" />
+    <bpmn:association id="Association_Request_Data" sourceRef="Lower_Receive" targetRef="Data_Request" associationDirection="One" />
+  </bpmn:process>
+  <bpmn:collaboration id="Collaboration_AgentGeometry" name="Agent repair collaboration">
+    <bpmn:participant id="Participant_Upper" name="Upper participant" processRef="Process_Upper" />
+    <bpmn:participant id="Participant_Lower" name="Lower participant" processRef="Process_Lower" />
+    <bpmn:messageFlow id="Message_Request" name="wrong sender" sourceRef="Upper_Start" targetRef="Lower_Receive" />
+  </bpmn:collaboration>
+  <bpmndi:BPMNDiagram id="Diagram_AgentCollaboration">
+    <bpmndi:BPMNPlane id="Plane_AgentCollaboration" bpmnElement="Collaboration_AgentGeometry">
+      <bpmndi:BPMNShape id="Participant_Upper_di" bpmnElement="Participant_Upper" isHorizontal="true">
+        <dc:Bounds x="40" y="40" width="900" height="260" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Participant_Lower_di" bpmnElement="Participant_Lower" isHorizontal="true">
+        <dc:Bounds x="40" y="360" width="900" height="360" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Upper_Start_di" bpmnElement="Upper_Start">
+        <dc:Bounds x="100" y="130" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Upper_Send_di" bpmnElement="Upper_Send">
+        <dc:Bounds x="350" y="108" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Upper_End_di" bpmnElement="Upper_End">
+        <dc:Bounds x="800" y="130" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lower_Main_Start_di" bpmnElement="Lower_Main_Start">
+        <dc:Bounds x="100" y="422" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lower_Main_Work_di" bpmnElement="Lower_Main_Work">
+        <dc:Bounds x="650" y="400" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lower_Main_End_di" bpmnElement="Lower_Main_End">
+        <dc:Bounds x="850" y="422" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lower_Request_Start_di" bpmnElement="Lower_Request_Start">
+        <dc:Bounds x="100" y="582" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lower_Receive_di" bpmnElement="Lower_Receive">
+        <dc:Bounds x="220" y="560" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lower_Request_End_di" bpmnElement="Lower_Request_End">
+        <dc:Bounds x="430" y="582" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Data_Request_di" bpmnElement="Data_Request">
+        <dc:Bounds x="300" y="450" width="36" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Data_Request_Object_di" bpmnElement="Data_Request_Object">
+        <dc:Bounds x="875" y="650" width="36" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Upper_Flow_1_di" bpmnElement="Upper_Flow_1">
+        <di:waypoint x="136" y="148" />
+        <di:waypoint x="350" y="148" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Upper_Flow_2_di" bpmnElement="Upper_Flow_2">
+        <di:waypoint x="450" y="148" />
+        <di:waypoint x="800" y="148" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Lower_Main_Flow_1_di" bpmnElement="Lower_Main_Flow_1">
+        <di:waypoint x="136" y="440" />
+        <di:waypoint x="650" y="440" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Lower_Main_Flow_2_di" bpmnElement="Lower_Main_Flow_2">
+        <di:waypoint x="750" y="440" />
+        <di:waypoint x="850" y="440" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Lower_Request_Flow_1_di" bpmnElement="Lower_Request_Flow_1">
+        <di:waypoint x="136" y="600" />
+        <di:waypoint x="220" y="600" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Lower_Request_Flow_2_di" bpmnElement="Lower_Request_Flow_2">
+        <di:waypoint x="320" y="600" />
+        <di:waypoint x="430" y="600" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Association_Request_Data_di" bpmnElement="Association_Request_Data">
+        <di:waypoint x="270" y="560" />
+        <di:waypoint x="318" y="500" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Message_Request_di" bpmnElement="Message_Request">
+        <di:waypoint x="118" y="166" />
+        <di:waypoint x="270" y="560" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

@@ -1,0 +1,40 @@
+{
+  "mode": "autofix",
+  "scope": "mcp-bpmn-33g.11 focused diff only",
+  "intent": "Make installer staging and real-browser e2e checks deterministic under the aggregate CI gate without weakening behavior assertions.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "reliability",
+    "agent-native",
+    "learnings-researcher"
+  ],
+  "findings": [
+    {
+      "title": "Tarball assertion was detached from npm install",
+      "severity": "P2",
+      "file": "tests/install-agent-integrations.test.sh",
+      "line": 470,
+      "reviewers": ["testing", "reliability"],
+      "confidence": 1.0,
+      "route": "safe_auto -> review-fixer",
+      "status": "fixed"
+    }
+  ],
+  "applied_fixes": [
+    "Isolated the candidate update's single npm log record and asserted its exact private staged tarball argument on the npm install invocation."
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "The e2e suite retains a bounded outer deadline while browser-specific calls receive budgets aligned with production launch and render limits.",
+    "No agent-accessibility gaps were introduced.",
+    "No docs/solutions knowledge base exists in this repository."
+  ],
+  "rereview": {
+    "correctness": "clean",
+    "testing": "clean"
+  },
+  "verdict": "ready"
+}

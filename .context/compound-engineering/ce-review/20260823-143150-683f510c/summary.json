@@ -1,0 +1,49 @@
+{
+  "mode": "autofix",
+  "scope": {
+    "base": "HEAD",
+    "files": [
+      "tests/helpers/bpmnGeometry.ts",
+      "tests/helpers/bpmnGeometry.test.ts"
+    ]
+  },
+  "intent": "Detect pairwise BPMN label-label collisions in the geometry oracle and report both semantic owner IDs.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings-researcher",
+    "kieran-typescript"
+  ],
+  "findings": [
+    {
+      "title": "Test omits cross-plane label overlap case",
+      "severity": "P2",
+      "file": "tests/helpers/bpmnGeometry.test.ts",
+      "line": 133,
+      "confidence": 0.88,
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "status": "fixed"
+    }
+  ],
+  "applied_fixes": [
+    "Added a regression proving geometrically overlapping labels on different BPMN DI planes do not produce LABEL_OVERLAP."
+  ],
+  "re_review": {
+    "reviewer": "testing",
+    "findings": [],
+    "residual_risks": [],
+    "testing_gaps": []
+  },
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "No agent-native parity or discoverability gap was introduced.",
+    "No docs/solutions directory or relevant prior institutional learning exists in this checkout."
+  ],
+  "verdict": "Ready to merge"
+}

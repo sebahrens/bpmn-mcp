@@ -1,0 +1,24 @@
+{
+  "reviewer": "maintainability",
+  "findings": [
+    {
+      "title": "Workflow result indexes obscure request-result coupling",
+      "severity": "P2",
+      "file": "scripts/package-smoke.mjs",
+      "line": 943,
+      "why_it_matters": "The two repair workflows bind more than forty assertions and follow-up request factories to bare array offsets. Inserting, removing, or reordering one MCP request requires manually updating every dependent index; a missed update can make the smoke test inspect or mutate the wrong response while its error labels still describe the intended step.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Define descriptive step constants (or a keyed result map) beside each workflow and use them for both request factories and post-run assertions instead of literal results[n] offsets.",
+      "confidence": 0.93,
+      "evidence": [
+        "The process workflow's request list spans lines 934-1006, while its factories and assertions reference results[5], results[9], results[11]-results[13], and results[16]-results[22].",
+        "The collaboration workflow repeats the positional protocol on lines 1114-1175 and then references results[0], results[3]-results[13], and results[16]-results[23] across lines 1180-1305."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": []
+}

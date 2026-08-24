@@ -54,6 +54,7 @@ surface.
 | `update_element` | C4/C6, engine mutation | Full for name and supported properties | None |
 | `delete_element` | C4/C6, engine mutation/cascade | Full, including incident connections and nested ownership | None |
 | `export` | C2/C3/C6, engine XML export | Full XML with typed semantics/refs/DI; SVG is G2 | Partial XML semantics; no DI or SVG |
+| `save_svg` / `save_png` | G2, handler renderer + engine/FileManager persistence | Full: renderer-owned output, managed-root atomic writes, explicit overwrite and byte limits | None: no renderer or file API |
 | `validate` | C6/G5, handler checks | Handler; basic graph checks only | Same handler logic could inspect flat maps, but candidate cannot construct live handler |
 | `auto_layout` | C4/C6/C9, engine mutation | Full for the advertised horizontal layout | None |
 | `list_diagrams` | C5/G6, engine persistence | Partial: files are listed, but generated process IDs are misparsed | None |

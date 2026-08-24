@@ -1,0 +1,49 @@
+{
+  "reviewer": "cli-readiness",
+  "findings": [
+    {
+      "title": "Stale locks block automated retries",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 381,
+      "why_it_matters": "An installer killed without running its EXIT trap leaves the lock directory permanently. Every later install, update, or uninstall for that prefix exits before doing work and requires a person to verify the PID and remove filesystem state manually, so an agent cannot safely complete a normal retry workflow after an interrupted run.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Add an explicit non-interactive stale-lock recovery command or flag that records sufficient owner identity to validate liveness, refuses ambiguous cases, and emits a machine-parseable recovery result; retain the current conservative default.",
+      "confidence": 0.91,
+      "evidence": [
+        "The lock is removed only from the EXIT cleanup path (lines 81-99 and 388-395), which does not run after SIGKILL or a host crash.",
+        "On every lock acquisition failure, line 381 tells the caller to manually verify and remove the stale directory; no CLI recovery path exists in argument parsing at lines 1179-1230.",
+        "Both mutating entry points acquire this lock before their operation (run_install and run_uninstall)."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Doctor output lacks structured format",
+      "severity": "P3",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 1126,
+      "why_it_matters": "Automation that needs to decide whether an install or repair is safe must parse a presentation-oriented sequence of labels and parenthetical prose. Label changes, spaces in paths, and diagnostic wording make programmatic use brittle even though the command is the installer’s primary inspection surface.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": false,
+      "suggested_fix": "Add a `doctor --json` mode (or `--format json`) that writes one stable JSON object to stdout and keeps warnings/errors on stderr; preserve the current human-readable default.",
+      "confidence": 0.93,
+      "evidence": [
+        "run_doctor emits a sequence of human-formatted lines with `printf` at lines 1128-1169.",
+        "The doctor argument parser rejects every argument at lines 1201-1203, so it exposes no machine-readable mode.",
+        "The output includes free-form values such as paths and browser status in the same textual representation agents must parse."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The mutating commands are otherwise non-interactive: replacement requires an explicit force flag and diagram deletion requires an exact repeated confirmation path.",
+    "A global client-registration writer or an installer using another prefix can still change client configuration outside this prefix lock’s scope; the errors are actionable but no cross-prefix serialization is exposed."
+  ],
+  "testing_gaps": [
+    "No CLI-level test exercises an interrupted process that leaves a stale lock and then demonstrates a supported, non-interactive recovery path, because no such path exists.",
+    "No contract test establishes a stable machine-facing output format for doctor."
+  ]
+}

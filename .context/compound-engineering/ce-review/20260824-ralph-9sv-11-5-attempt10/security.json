@@ -1,0 +1,11 @@
+{
+  "reviewer": "security",
+  "findings": [],
+  "residual_risks": [
+    "The explicit collisionPolicy: allow mode can persist a semantically valid rewire whose generated BPMN DI still has geometry diagnostics. This is an intentional, caller-selected destructive capability rather than an input-boundary bypass; it should remain restricted to the MCP session's existing write authority."
+  ],
+  "testing_gaps": [
+    "No focused update_connection test supplies XML metacharacters in label and condition.body, then verifies the persisted BPMN remains escaped, reparses successfully, and creates no unintended BPMN elements. The reviewed path uses bounded Zod strings and bpmn-moddle serialization, so this is a regression-coverage gap rather than a confirmed injection finding.",
+    "No focused test submits maximum-length label and condition payloads to update_connection while exercising the before/after geometry validation path. Request strings are bounded to 1,024 and 8,192 characters and geometry diagnostics are capped, but the end-to-end resource envelope is not directly asserted for this tool."
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "run_id": "20260823-174138-8bb7672d",
+  "mode": "autofix",
+  "scope": [
+    "scripts/install-agent-integrations.sh",
+    "tests/install-agent-integrations.test.sh",
+    ".github/workflows/ci.yml",
+    "docs/testing/wsl2-installer-smoke.md"
+  ],
+  "intent": "Verify installer safety in isolated macOS/Linux environments, add transactional rollback coverage, run package and installer checks on both CI platforms, and document the real-WSL-only path check.",
+  "applied_fixes": [
+    "Added exact Claude conflict and forced user-scope argv coverage",
+    "Added native-node and Windows-npm WSL rejection coverage",
+    "Added failed-upgrade and interrupted-snapshot restoration coverage",
+    "Restored rollback payloads even when the final snapshot marker is absent",
+    "Cleaned abandoned destination-adjacent staged skill directories",
+    "Used non-interactive metadata-preserving rollback copies",
+    "Rejected dangling and non-owned skill symlinks without FORCE",
+    "Made the WSL2 smoke create and validate its mounted Windows parent"
+  ],
+  "round_2_findings": [
+    {
+      "title": "Symlinked ownership marker guard remains untested",
+      "severity": "P2",
+      "file": "tests/install-agent-integrations.test.sh",
+      "line": 341,
+      "route": "safe_auto -> review-fixer",
+      "status": "tracked in mcp-bpmn-33g.10.13 after bounded round limit"
+    }
+  ],
+  "residual_actionable_work": [
+    "mcp-bpmn-33g.10.12: concurrent installer and target-scoped registration rollback",
+    "mcp-bpmn-33g.10.13: canonical diagram/skill deletion boundaries and symlink ownership-marker coverage"
+  ],
+  "advisory_outputs": [
+    "Agent-native review passed with 6/6 installer capabilities agent-accessible",
+    "No docs/solutions institutional learnings exist in this repository",
+    "Real WSL2 execution remains an opt-in release smoke"
+  ],
+  "validation": [
+    "CI YAML parsed with Ruby Psych",
+    "npm run check passed",
+    "38 Jest suites and 734 tests passed",
+    "renderer integration passed",
+    "installer harness passed",
+    "package smoke passed",
+    "production npm audit found zero vulnerabilities"
+  ]
+}

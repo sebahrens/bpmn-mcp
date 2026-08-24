@@ -1,6 +1,6 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
@@ -10,8 +10,10 @@ import BpmnModdle from 'bpmn-moddle';
 const STARTUP_MESSAGE = 'MCP-BPMN Server running on stdio';
 const STARTUP_TIMEOUT_MS = 3000;
 const RESPONSE_TIMEOUT_MS = 2000;
+const BROWSER_START_TIMEOUT_MS = 15_000;
+const SVG_RESPONSE_TIMEOUT_MS = 25_000;
 
-jest.setTimeout(10_000);
+jest.setTimeout(40_000);
 
 const EXPECTED_TOOL_NAMES = [
   'new_bpmn',
@@ -33,14 +35,26 @@ const EXPECTED_TOOL_NAMES = [
   'add_lane',
   'list_elements',
   'get_element',
+  'list_connections',
+  'get_connection',
   'update_element',
+  'update_connection',
+  'update_element_geometry',
+  'update_connection_geometry',
+  'apply_geometry_patch',
+  'route_connection',
   'delete_element',
   'export',
+  'save_svg',
+  'save_png',
   'validate',
+  'analyze_geometry',
   'auto_layout',
   'list_diagrams',
   'delete_diagram_file',
-  'get_diagrams_path'
+  'get_diagrams_path',
+  'get_workspace',
+  'select_workspace'
 ] as const;
 
 // Fingerprints pin the complete advertised input schemas. A schema change must
@@ -51,59 +65,83 @@ const EXPECTED_SCHEMA_FINGERPRINTS: Record<string, string> = {
   new_from_mermaid: 'bdf6ae5a0516b9425ce350bbeb53f5a9908aca7954c50a8a629a78e12ae4b6b8',
   open_bpmn: '7587abc15d187397b8d68fe03f16befb84d338d6c996c9698ed095c172575e33',
   open_mermaid_file: '45b8782a7743d24839dc7235199cde0ed9c661ea1a756448251d0432b801e065',
-  save: '99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa',
-  save_as: 'be6306c0c78351fb0f70f6ab9141db64a32ed1f3df4520d22b144dc95562edad',
+  save: 'e3953439e8c37941081d153623aa62a4f5c3d66d40311fb5d141d83b8bb4149b',
+  save_as: '7776d32d4d8f27f75d90dda36f7a2dd6da991820c4444499965176e47b34a9e5',
   close: '99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa',
   current: '99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa',
-  add_event: '15686d24e00e09a6ae79a169575cd46f78e392159df53163a3fb5f9ce092bda8',
-  add_activity: '0e2154e362a6b5f7f91d20dd3bd9bae2920e3b13dd0092ad53a8eb6662576c10',
-  add_gateway: 'c8d6214f2dbc1bec06ddbc6d17a2052da199defd10fe3f3cb97c299752bd2544',
-  add_data_object: '2a318b5ba5d7354468c71a3efc251665910e00aaf666fd46ff8b8b49b5ab4ab4',
-  add_text_annotation: 'c475c6806ae5799ee8a097cd775352181e1151e9f764c32da344594e071b4694',
-  connect: '51b95d23e2be7905e3691742caca9bd9bad2d9c813b038077ffccb248883a59e',
-  add_association: '38126c572ff007c443b9eaf93402b04935afb1304326b082dc845586f1c64bb6',
-  add_pool: 'af4830cb358539790bb20c4ec0ff38b7527bc0d1dfd05dbe2f307036314fe09e',
-  add_lane: 'aa2c852e40edf37607ee0adcb6f78719e105da98fe7360559b02edcc763816ad',
+  add_event: 'e7d02f2eb7ed8ff409725ac57cf6c3aa7533253dabdaa9fa5698e6c5f7ffc2ca',
+  add_activity: '28047c2200d1bc4285c83c7f0c0973055987959bd23d917c751454f71dd5b1f2',
+  add_gateway: '6b90a1756c20772fe595355864c30b2fccfb5aa64863c08fb21bacb36f007d54',
+  add_data_object: 'c17986f49a040a837a7380c3e772f5c59961fcd38045a8456ca925fce1ddd900',
+  add_text_annotation: '7a0ccb8cca4dd0186e652b86644cd514dd17a73b2281530960cfb0152ceff388',
+  connect: '2f907c315ebe108e83269f200f4483e627924af5e01e05834f73664f86a0f6d5',
+  add_association: 'b3b5f6b89d87a1210a273980ba9c4c40eae60e4591f86dc0725a8ac44dabaa24',
+  add_pool: '550f30243a1967595a7dbf31813529298ae6d201a6e6892764094beba6960424',
+  add_lane: '3d7bae26730864137e5835e922c34a55a95cc4e74e983b815098baac7781729d',
   list_elements: 'a6cd6d19adcc3d088f1740e0d298d2da71c13334dfadd81348fd2e75a0f19269',
   get_element: '6a0b98f2c7a65860e11538c9226f98c244ee14ab94df83358dee8ba400c827fa',
-  update_element: '878df27ce94392f82459f59092c4a39b7dfc15caa72950d52e64013ef9edfd8f',
-  delete_element: '58339a2466a63b79438966015d53efdcc7b02a75930412fd06799e69e58a1941',
+  list_connections: '0955a33a04979d10fe4e6d10d2e491e90b6421c44cd288980646cdcfc1a0ac0f',
+  get_connection: 'a8d2494864383f5456f5246b9db83755e7e386bc3c3e23a4731b229ff2cdfa86',
+  update_element: 'fc7b11fde0c85ea6ab0bf4b7256b6bdb4a59c55e8b24d4704de1c0cb06d78976',
+  update_connection: 'a21f42a43df5e3c44f71c416dca5ef832615d387245e750d13b2c01aea2e8413',
+  update_element_geometry: 'af731b8e3af773c333b56069b5b0612b84548b77ee0de1f91b3bf86138689a78',
+  update_connection_geometry: '23154fdaf45120b7811eab3f1937912df423cc8ac0c286aa9b2642f42add8c67',
+  apply_geometry_patch: 'b24ad1f84788b55f3a90c9a91a28b649ab58184286024b4c10b048ef5d543fa3',
+  route_connection: '97f02593e029053aad4ef8bfdf43002ab62be0f24e2660b87a784616cb2b3eec',
+  delete_element: '180e259778ae17811d6b473dd94661e2da2f7be52d8350c7d95afb09b2a05a06',
   export: '5246d220ea6867c12b818a950bb411b641872c4ebae8daa7462d3939e1a63710',
+  save_svg: '63463e9bad4e8f8f17a905f0b237431048d40742c5990347dcba88e3385dd695',
+  save_png: '128f014b187ac80c6dfab3977a267fc3f0aabac2194ec689c42b03888496c5b1',
   validate: '7480ee2efa429395b7cd39c1cc63b6323354ab4200eb9a2135ddbf9d6b9f07b8',
-  auto_layout: 'bdb18546636cee6d26f0bbf04c3f115bab3ba0f4d3808e332a738b9109e9a1e4',
+  analyze_geometry: 'bbd7b771ec28732a75288fbd1b7a96af5dc4686983681ad8ecc95dc1fcc64eb7',
+  auto_layout: 'e102744408602f685882544dd368cef68f410c2545bae815796aa50ad91dee43',
   list_diagrams: '7ee2be8c2aa4cf5ee19648606709df5d0bd35de2cc3d489dbbc34ee69d81b294',
   delete_diagram_file: 'e2e4c99bc839f8567b6fbc158c5f6370b2bd906466477efad74a97738abe451d',
-  get_diagrams_path: '99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa'
+  get_diagrams_path: '99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa',
+  get_workspace: '99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa',
+  select_workspace: 'cb23e8b6c4dfad30db9a249668a70d3b7eb18e21f1299adb2dbcfa0f15090fd9'
 };
 
 const EXPECTED_OUTPUT_SCHEMA_FINGERPRINTS: Record<string, string> = {
-  new_bpmn: 'c75552380ad88680ac88e9868e8b41ea8d7a8190f1f4846a9af82fbcabcc1e0e',
-  new_from_mermaid: '3469a18e651406b3a89ce40ceb79aa1de2c7ecd02fa24dfc0789d1223ae4c273',
-  open_bpmn: '3ef91ffd2590c1a7894369c02a404f58a492556dc7f6ddc054087233747e6466',
-  open_mermaid_file: '976a690c047db2f613448f4b053055b984b3e5a0ce52cc3bf0e3204f9701e5df',
-  save: '77e0878869e208b96f6e4e5100b271fbafa56cf387d5a6e26d916a81187e52ec',
-  save_as: '77e0878869e208b96f6e4e5100b271fbafa56cf387d5a6e26d916a81187e52ec',
-  close: '77e0878869e208b96f6e4e5100b271fbafa56cf387d5a6e26d916a81187e52ec',
-  current: 'fc1f775e270c61dddb84a23d1a736c94b277133290b1492d3c5e97ec48b7925f',
-  add_event: 'f011fdea44dc3e2594dc34efc9fbb969bbf496cb58750a2ff1720c510f9ac5b3',
-  add_activity: 'f011fdea44dc3e2594dc34efc9fbb969bbf496cb58750a2ff1720c510f9ac5b3',
-  add_gateway: 'f011fdea44dc3e2594dc34efc9fbb969bbf496cb58750a2ff1720c510f9ac5b3',
-  add_data_object: '5768ddd7b96e94229336217afb243150f725b8e3ef662aa5c4f5b372a8b465a7',
-  add_text_annotation: 'efc252dcaf10f68d8f16df0a664a0820b4032ad2d0b89332f0a8d61a13c5571a',
-  connect: 'ab64a6a261f902d9ea36d0be2bf21a5a2b3abe8b75aabca8efa94c4e85312de1',
-  add_association: 'e5637f1006ada5aaa5656fda40bfd0d2e19f00d8a984eaca521a2d89acdecbab',
-  add_pool: '3faceed074959ee21e0b02f1e7b1d97bd1833c7ae186a37f476f6cf0b79031d9',
-  add_lane: '4a3e98a22d4446db534251878b8c8bfdc1d301fe27bbddfacefa3852b156f9b9',
-  list_elements: '39fe0f90002184cabcc6807a456c175cc2b755e069b227b20aa0ec4b453e047b',
-  get_element: 'd92e25534b803762677117e140406766b811154d6da8b1b6600f8c0127f32432',
-  update_element: '427fef05430fa8b2ec3001fa5c10b11ebd99fd02d2c55bbe8aa16ea66ff852d5',
-  delete_element: 'aceea2b43cc49d839f46aa0a4c6c92a3b68ffe3c868d6d6a9700111411a40270',
+  new_bpmn: '04bf0364da0b9823385a2482fa8b9fed98182e2e28db3db602c1b35d8296d180',
+  new_from_mermaid: 'abc91ffdb190e1a0f54357efa2f059841b4af090cbad1df038b963d4a61d8cb3',
+  open_bpmn: 'c950412b9362a324d5aadb4de15e88e55d403dbabd80ca822e18a763e89326ce',
+  open_mermaid_file: '902e5e667eae807c7a05494155ade36923c276fa031ca3322f5c45c32704bbe8',
+  save: 'cce8979283b4f6d56e348dd8cdb401f5e5f94ccb656dd6e93d44581d10e79cc8',
+  save_as: 'cce8979283b4f6d56e348dd8cdb401f5e5f94ccb656dd6e93d44581d10e79cc8',
+  close: 'bb1f660f35dbe3378b10a47ecebe1a803b1bd437ccb3f280d1bd837d77e13aac',
+  current: '957f34a407215681221444baaaf02adff10f93d5a507592135bf88feebc47aaa',
+  add_event: 'd7e3c2de2b29bec9cc34c7849892fe7201ff687eb423d699353287d678022964',
+  add_activity: 'd7e3c2de2b29bec9cc34c7849892fe7201ff687eb423d699353287d678022964',
+  add_gateway: 'd7e3c2de2b29bec9cc34c7849892fe7201ff687eb423d699353287d678022964',
+  add_data_object: 'b0c5f7a6cb41a8cafd8f491d968efc98c19ff3748e29a87cbce6e4dae7210b19',
+  add_text_annotation: '87075ca424a6ec6d523e96a339c6a2c6ba75d1f8eb01cca28453c901dfc5889a',
+  connect: '67a04acd2405d0d07639fbf99eca3a11dde5a77d4255a920e932b49da3497d91',
+  add_association: 'b46defecc658ffbd49c16e3ce77584a6df835e00497bddf1bccb03661b2dd1a0',
+  add_pool: '91fc256a5c8c10d230a926252ba5d816d41f350a7a98d682239a6b5f76c55ebb',
+  add_lane: '70fdb3ef5c34986164384cf1b4f3b267ccaa75c88a702ecfbe30fb2e56106497',
+  list_elements: 'c9a126d8679efad62943b7979effeb020d66d54252d552f73f6fff6402f4293a',
+  get_element: '6bacfd2932098da88df335c374f8ddaa3d728f6c810b270da9856f7ace60c3fe',
+  list_connections: '7be4192a2906654bb980870e3b5bc5ba8dfbac8e6d13dd80376386da4dacb150',
+  get_connection: 'd7c972eafd878cfa1321ae3de8c8391fd88db5d7352bc16117aa24effa143592',
+  update_element: '7a9342ecc1c04552b07d66e8d30893a6a19940419c2e40a1a4f7779f0903bab6',
+  update_connection: 'd27c4cd3a1ae6e629e10a517f04153679f7df128773b6e2427085a33bfb7ce00',
+  update_element_geometry: 'c057fce71e7bd4f74d321e0aa39fc3948bb8367ad8b775794aa91dc08816f74c',
+  update_connection_geometry: '107dd91228c30411da079888af0c8baa9e1e09021cfc5f428b46c82e975fe654',
+  apply_geometry_patch: '28aaa10560531121a986edb44a9220ad88f23bdfbd9eb29c3f0dc3bc0125832e',
+  route_connection: 'c5d75104c94e3bee70e050c7cd0998ecc9555508d73cdfe9fa3d0145fe37451a',
+  delete_element: 'cb744fd33b21e9cf83a53dc2e36818647481910cd018e4491008353d2e71e330',
   export: '62b4cdf277d72915b590cff5fe0a0fa2569d9a6ad756ed994fab000dc5582b01',
+  save_svg: '03d7e82d126d313d69758afad9a933dcd60f4eca906b19a260ccb6ca3b6d83b5',
+  save_png: '82a7fa1d59b5ff0a616e386ffe9b07be7367f8d41017faa5b9dd50bca2a7ee64',
   validate: '51b040b98aa2c23860847c0deb71e59ae2ea0a44756fb947157a61e29a2931ac',
-  auto_layout: 'dadf141e336461d4e06c1e4694a6949f60c8121dbbcb343ccfba4ddb3d056b0c',
+  analyze_geometry: '726e0006fae222243be6da25c89d3823fe0375e2b28446e3c00e7d5ea4206495',
+  auto_layout: 'a27dd3a547ee7662516554c754956196eea5fe5ecb348aaf66fc6506e4c9c352',
   list_diagrams: 'b70e5d844a9ff74f00dbc169404b2ff2334a47f9c3e790399733816919669ec8',
   delete_diagram_file: '08820ad10e47a4d8c3ed02d5e7a489846dcc7efacb67a12ce3fa4559486ba8f9',
-  get_diagrams_path: 'fe84c056d57a34dde9e7f1e1aacf5ee9cf724dc231ec24f8acfc29b8cabce3dc'
+  get_diagrams_path: 'fe84c056d57a34dde9e7f1e1aacf5ee9cf724dc231ec24f8acfc29b8cabce3dc',
+  get_workspace: '5c322f6ad5f4f47efdf0ca4e29ce43aca2dfd1ae458907639dfd5f190c71bb68',
+  select_workspace: 'bb83cdfb45ac5e7bfb201d5b869731a577b623e25e50be008910a2eab9961b75'
 };
 
 interface JsonRpcResponse {
@@ -221,9 +259,11 @@ function launchServer(
   command: string,
   args: string[],
   env: NodeJS.ProcessEnv = process.env,
-  startupTimeoutMs = STARTUP_TIMEOUT_MS
+  startupTimeoutMs = STARTUP_TIMEOUT_MS,
+  cwd?: string
 ): ServerLaunch {
   const child = spawn(command, args, {
+    cwd,
     env,
     stdio: ['pipe', 'pipe', 'pipe']
   });
@@ -594,8 +634,8 @@ describe('MCP server process lifecycle', () => {
         id: 3,
         method: 'tools/call',
         params: { name: 'export', arguments: { format: 'svg' } }
-      }, 5000);
-      await waitForFile(marker, 3000);
+      }, SVG_RESPONSE_TIMEOUT_MS);
+      await waitForFile(marker, BROWSER_START_TIMEOUT_MS);
       const browserPid = Number(await readFile(marker, 'utf8'));
       expect(isPidAlive(browserPid)).toBe(true);
 
@@ -746,7 +786,9 @@ describe('MCP server process lifecycle', () => {
 
 describe('MCP Server End-to-End Tests', () => {
   it('returns schema-valid structured output for every advertised tool', async () => {
-    const diagramsDirectory = await mkdtemp(path.join(tmpdir(), 'mcp-bpmn-output-e2e-'));
+    const diagramsDirectory = await realpath(
+      await mkdtemp(path.join(tmpdir(), 'mcp-bpmn-output-e2e-'))
+    );
     const isolatedHome = path.join(diagramsDirectory, 'isolated-home');
     const mermaidFilename = 'source-flow.mmd';
     await writeFile(
@@ -761,7 +803,7 @@ describe('MCP Server End-to-End Tests', () => {
       HOME: isolatedHome,
       USERPROFILE: isolatedHome,
       MCP_BPMN_DIAGRAMS_PATH: diagramsDirectory
-    });
+    }, STARTUP_TIMEOUT_MS, diagramsDirectory);
 
     try {
       await launch.ready;
@@ -804,7 +846,15 @@ describe('MCP Server End-to-End Tests', () => {
             return;
           case 'list_elements':
           case 'get_element':
+          case 'list_connections':
+          case 'get_connection':
           case 'list_diagrams':
+          case 'analyze_geometry':
+          case 'update_element_geometry':
+          case 'update_connection':
+          case 'update_connection_geometry':
+          case 'apply_geometry_patch':
+          case 'route_connection':
             expect(JSON.parse(text)).toEqual(structured);
             return;
           case 'validate': {
@@ -870,10 +920,16 @@ describe('MCP Server End-to-End Tests', () => {
             expect(text).toContain(String(structured.connectionCount));
             return;
           case 'delete_diagram_file':
+          case 'save_svg':
+          case 'save_png':
             expect(text).toContain(structured.filename);
             return;
           case 'get_diagrams_path':
             expect(text).toContain(structured.path);
+            return;
+          case 'get_workspace':
+          case 'select_workspace':
+            expect(JSON.parse(text)).toEqual(structured);
             return;
           default:
             throw new Error(`Missing legacy-content assertion for advertised tool ${name}`);
@@ -882,7 +938,12 @@ describe('MCP Server End-to-End Tests', () => {
       const calledTools = new Set<string>();
       let requestId = 3;
       const call = async (name: string, args: Record<string, unknown> = {}) => {
-        const result = await callTool(launch, requestId++, name, args, 6_000);
+        const responseTimeoutMs = (name === 'export' && args.format === 'svg')
+          || name === 'save_svg'
+          || name === 'save_png'
+          ? SVG_RESPONSE_TIMEOUT_MS
+          : 6_000;
+        const result = await callTool(launch, requestId++, name, args, responseTimeoutMs);
         calledTools.add(name);
         expect(result.structuredContent).toEqual(expect.any(Object));
         const validation = outputValidators.get(name)!(result.structuredContent);
@@ -898,6 +959,13 @@ describe('MCP Server End-to-End Tests', () => {
 
       const pathResult = await call('get_diagrams_path');
       expect(pathResult.structuredContent.path).toBe(diagramsDirectory);
+      const workspaceResult = await call('get_workspace');
+      expect(workspaceResult.structuredContent).toMatchObject({
+        launchCwd: diagramsDirectory,
+        startupBoundary: diagramsDirectory,
+        workspace: diagramsDirectory,
+        source: 'environment'
+      });
       const emptyListing = await call('list_diagrams');
       expect(emptyListing.structuredContent).toMatchObject({
         count: 0,
@@ -973,13 +1041,152 @@ describe('MCP Server End-to-End Tests', () => {
         id: firstElement.id,
         type: firstElement.type
       });
+      const connectionListing = await call('list_connections', {
+        connectionType: 'bpmn:SequenceFlow',
+        limit: 1,
+        offset: 0
+      });
+      expect(connectionListing.structuredContent).toMatchObject({
+        count: 1,
+        returnedCount: 1,
+        offset: 0,
+        limit: 1,
+        hasMore: false,
+        connections: [{
+          type: 'bpmn:SequenceFlow',
+          sourceId: expect.any(String),
+          targetId: expect.any(String),
+          isDefault: false,
+          edgeId: expect.any(String),
+          waypoints: expect.any(Array),
+          geometryRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/)
+        }],
+        revision: expect.any(String)
+      });
+      expect(new Set([
+        connectionListing.structuredContent.connections[0].sourceId,
+        connectionListing.structuredContent.connections[0].targetId
+      ])).toEqual(new Set([firstElement.id, secondElement.id]));
+      const connectionDetails = await call('get_connection', {
+        connectionId: connectionListing.structuredContent.connections[0].id
+      });
+      expect(connectionDetails.structuredContent)
+        .toEqual(expect.objectContaining(connectionListing.structuredContent.connections[0]));
+      const connectionGeometryPreview = await call('update_connection_geometry', {
+        connectionId: connectionDetails.structuredContent.id,
+        waypoints: connectionDetails.structuredContent.waypoints,
+        expectedWaypoints: connectionDetails.structuredContent.waypoints,
+        expectedGeometryRevision: connectionDetails.structuredContent.geometryRevision,
+        expectedRevision: connectionDetails.structuredContent.revision,
+        dryRun: true
+      });
+      expect(connectionGeometryPreview.structuredContent).toMatchObject({
+        connectionId: connectionDetails.structuredContent.id,
+        before: {
+          edgeId: connectionDetails.structuredContent.edgeId,
+          waypoints: connectionDetails.structuredContent.waypoints,
+          geometryRevision: connectionDetails.structuredContent.geometryRevision
+        },
+        after: {
+          waypoints: connectionDetails.structuredContent.waypoints,
+          geometryRevision: connectionDetails.structuredContent.geometryRevision
+        },
+        endpointPolicy: 'exact',
+        collisionPolicy: 'reject-new',
+        dryRun: true,
+        applied: false,
+        beforeRevision: connectionDetails.structuredContent.revision,
+        afterRevision: connectionDetails.structuredContent.revision,
+        filename: mermaidBpmnFilename
+      });
+      const connectionSemanticUpdate = await call('update_connection', {
+        connectionId: connectionDetails.structuredContent.id,
+        label: 'Updated connection',
+        expectedSemanticRevision: connectionDetails.structuredContent.semanticRevision
+      });
+      expect(connectionSemanticUpdate.structuredContent).toMatchObject({
+        connectionId: connectionDetails.structuredContent.id,
+        before: { semanticRevision: connectionDetails.structuredContent.semanticRevision },
+        after: { label: 'Updated connection', semanticRevision: expect.any(String) },
+        collisionPolicy: 'reject-new',
+        filename: mermaidBpmnFilename
+      });
       const updated = await call('update_element', {
         elementId: firstElement.id,
         name: 'Updated Alpha'
       });
-      expect(updated.structuredContent).toEqual({
+      expect(updated.structuredContent).toMatchObject({
         elementId: firstElement.id,
         filename: mermaidBpmnFilename
+      });
+      const geometryPreview = await call('update_element_geometry', {
+        elementId: firstElement.id,
+        bounds: details.structuredContent.bounds,
+        expectedBounds: details.structuredContent.bounds,
+        expectedRevision: updated.structuredContent.afterRevision,
+        dryRun: true
+      });
+      expect(geometryPreview.structuredContent).toMatchObject({
+        elementId: firstElement.id,
+        before: { shapeId: expect.any(String), bounds: details.structuredContent.bounds },
+        after: { shapeId: expect.any(String), bounds: details.structuredContent.bounds },
+        diagnostics: expect.any(Array),
+        dryRun: true,
+        applied: false,
+        filename: mermaidBpmnFilename,
+        beforeRevision: updated.structuredContent.afterRevision,
+        afterRevision: updated.structuredContent.afterRevision
+      });
+      const patchPreview = await call('apply_geometry_patch', {
+        expectedRevision: updated.structuredContent.afterRevision,
+        elementUpdates: [{
+          elementId: firstElement.id,
+          bounds: details.structuredContent.bounds
+        }],
+        connectionUpdates: [{
+          connectionId: connectionDetails.structuredContent.id,
+          waypoints: connectionDetails.structuredContent.waypoints
+        }],
+        dryRun: true
+      });
+      expect(patchPreview.structuredContent).toMatchObject({
+        elements: [{
+          elementId: firstElement.id,
+          before: { bounds: details.structuredContent.bounds },
+          after: { bounds: details.structuredContent.bounds }
+        }],
+        connections: [{
+          connectionId: connectionDetails.structuredContent.id,
+          before: { waypoints: connectionDetails.structuredContent.waypoints },
+          after: { waypoints: connectionDetails.structuredContent.waypoints },
+          endpointPolicy: 'exact'
+        }],
+        diagnostics: expect.any(Array),
+        introducedDiagnostics: [],
+        summary: expect.objectContaining({ total: expect.any(Number) }),
+        collisionPolicy: 'reject-new',
+        dryRun: true,
+        applied: false,
+        beforeRevision: updated.structuredContent.afterRevision,
+        afterRevision: updated.structuredContent.afterRevision
+      });
+      const routePreview = await call('route_connection', {
+        connectionId: connectionDetails.structuredContent.id
+      });
+      expect(routePreview.structuredContent).toMatchObject({
+        connectionId: connectionDetails.structuredContent.id,
+        proposedWaypoints: expect.any(Array),
+        scoreBreakdown: expect.objectContaining({ total: expect.any(Number) }),
+        introducedDiagnostics: [],
+        geometryPatch: expect.objectContaining({
+          expectedRevision: updated.structuredContent.afterRevision,
+          collisionPolicy: 'reject-new',
+          dryRun: false
+        }),
+        apply: false,
+        applied: false,
+        beforeRevision: updated.structuredContent.afterRevision,
+        afterRevision: updated.structuredContent.afterRevision
       });
       const layout = await call('auto_layout');
       expect(layout.structuredContent).toMatchObject({
@@ -989,6 +1196,34 @@ describe('MCP Server End-to-End Tests', () => {
         warnings: expect.any(Array),
         filename: mermaidBpmnFilename
       });
+      const geometry = await call('analyze_geometry', {
+        elementIds: [firstElement.id],
+        clearance: 8,
+        tolerance: 0.5,
+        requireOrthogonal: true
+      });
+      expect(geometry.structuredContent).toMatchObject({
+        valid: expect.any(Boolean),
+        diagnostics: expect.any(Array),
+        summary: {
+          total: expect.any(Number),
+          errors: expect.any(Number),
+          warnings: expect.any(Number),
+          byCode: expect.any(Object)
+        },
+        scope: {
+          elementIds: [firstElement.id],
+          connectionIds: [],
+          clearance: 8,
+          tolerance: 0.5,
+          requireOrthogonal: true
+        },
+        geometry: expect.objectContaining({ shapes: expect.any(Array) }),
+        filename: mermaidBpmnFilename,
+        revision: expect.any(String)
+      });
+      expect(geometry.structuredContent.summary.total)
+        .toBe(geometry.structuredContent.diagnostics.length);
 
       const event = await call('add_event', { eventType: 'end', name: 'Done' });
       const activity = await call('add_activity', { activityType: 'task', name: 'Review' });
@@ -1025,7 +1260,7 @@ describe('MCP Server End-to-End Tests', () => {
       const unassociatedAnnotation = await call('add_text_annotation', {
         text: 'Standalone note'
       });
-      expect(unassociatedAnnotation.structuredContent).toEqual({
+      expect(unassociatedAnnotation.structuredContent).toMatchObject({
         annotationId: expect.any(String),
         filename: mermaidBpmnFilename
       });
@@ -1071,7 +1306,7 @@ describe('MCP Server End-to-End Tests', () => {
       const deletedConnection = await call('delete_element', {
         elementId: connection.structuredContent.connectionId
       });
-      expect(deletedConnection.structuredContent).toEqual({
+      expect(deletedConnection.structuredContent).toMatchObject({
         elementId: connection.structuredContent.connectionId,
         deletedKind: 'connection',
         removedConnectionCount: 0,
@@ -1131,6 +1366,26 @@ describe('MCP Server End-to-End Tests', () => {
         uri: svgResource.uri
       });
       expect(svgExport.structuredContent.mimeType).toBe(svgResource.mimeType);
+      const savedSvg = await call('save_svg', { filename: 'structured-output.svg' });
+      expect(savedSvg.structuredContent).toMatchObject({
+        processId: mermaidCreation.structuredContent.processId,
+        filename: 'structured-output.svg',
+        format: 'svg',
+        mimeType: 'image/svg+xml',
+        byteLength: expect.any(Number)
+      });
+      const savedPng = await call('save_png', { filename: 'structured-output.png' });
+      expect(savedPng.structuredContent).toMatchObject({
+        processId: mermaidCreation.structuredContent.processId,
+        filename: 'structured-output.png',
+        format: 'png',
+        mimeType: 'image/png',
+        byteLength: expect.any(Number)
+      });
+      expect((await readFile(path.join(diagramsDirectory, 'structured-output.svg'), 'utf8')))
+        .toContain('<svg');
+      expect((await readFile(path.join(diagramsDirectory, 'structured-output.png')))
+        .subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
 
       expect((await call('save')).structuredContent.filename).toBe(mermaidBpmnFilename);
       const savedAs = await call('save_as', { filename: 'structured-output.bpmn' });
@@ -1145,7 +1400,7 @@ describe('MCP Server End-to-End Tests', () => {
       const deleted = await call('delete_element', {
         elementId: gateway.structuredContent.elementId
       });
-      expect(deleted.structuredContent).toEqual({
+      expect(deleted.structuredContent).toMatchObject({
         elementId: gateway.structuredContent.elementId,
         deletedKind: 'element',
         removedConnectionCount: 0,
@@ -1177,6 +1432,29 @@ describe('MCP Server End-to-End Tests', () => {
           condition: expect.objectContaining({ evaluatesToTypeRef: 'ItemDefinition_Request' })
         })
       ]));
+      const importedConnection = await call('get_connection', {
+        connectionId: 'Flow_Approved'
+      });
+      expect(importedConnection.structuredContent).toMatchObject({
+        id: 'Flow_Approved',
+        type: 'bpmn:SequenceFlow',
+        ownerId: 'Process_RoundTrip',
+        scopeId: 'Process_RoundTrip',
+        sourceId: 'Gateway_Decision',
+        targetId: 'SubProcess_Preserved',
+        label: 'approved',
+        condition: {
+          body: '${approved = true}',
+          type: 'bpmn:FormalExpression',
+          evaluatesToTypeRef: 'ItemDefinition_Request'
+        },
+        isDefault: false,
+        edgeId: 'Flow_Approved_CustomDI',
+        waypoints: [{ x: 430, y: 208 }, { x: 490, y: 208 }],
+        labelBounds: { x: 444, y: 186, width: 62, height: 14 },
+        geometryRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        revision: expect.any(String)
+      });
       await call('close');
 
       const openedMermaid = await call('open_mermaid_file', { filename: mermaidFilename });
@@ -1206,7 +1484,7 @@ describe('MCP Server End-to-End Tests', () => {
         filename: collaboration.structuredContent.filename
       });
       const blackBoxPool = await call('add_pool', { name: 'External', blackBox: true });
-      expect(blackBoxPool.structuredContent).toEqual({
+      expect(blackBoxPool.structuredContent).toMatchObject({
         elementId: expect.any(String),
         blackBox: true,
         filename: collaboration.structuredContent.filename
@@ -1302,10 +1580,109 @@ describe('MCP Server End-to-End Tests', () => {
       });
       expect(expectedToolError.structuredContent).toBeUndefined();
 
+      const selectedWorkspace = await call('select_workspace', { path: 'selected' });
+      expect(selectedWorkspace.structuredContent).toMatchObject({
+        workspace: path.join(diagramsDirectory, 'selected'),
+        source: 'selection',
+        changed: true
+      });
+
       expect([...calledTools].sort()).toEqual([...EXPECTED_TOOL_NAMES].sort());
     } finally {
       await stopServer(launch.process);
       await rm(diagramsDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('isolates repository workspaces across two stdio sessions from one executable', async () => {
+    const temporaryRoot = await realpath(
+      await mkdtemp(path.join(tmpdir(), 'mcp-bpmn-multi-repository-e2e-'))
+    );
+    const firstRepository = path.join(temporaryRoot, 'first-repository');
+    const secondRepository = path.join(temporaryRoot, 'second-repository');
+    const outside = path.join(temporaryRoot, 'outside');
+    await Promise.all([
+      mkdir(firstRepository),
+      mkdir(secondRepository),
+      mkdir(outside)
+    ]);
+    await writeFile(
+      path.join(secondRepository, '.mcp-bpmn.json'),
+      JSON.stringify({ path: 'wiki/processes/assets' }),
+      'utf8'
+    );
+    await symlink(outside, path.join(firstRepository, 'linked'));
+
+    const serverPath = path.resolve(process.cwd(), 'dist/server/index.js');
+    const environment = { ...process.env };
+    delete environment.MCP_BPMN_DIAGRAMS_PATH;
+    const first = launchServer(
+      process.execPath,
+      [serverPath],
+      environment,
+      STARTUP_TIMEOUT_MS,
+      firstRepository
+    );
+    const second = launchServer(
+      process.execPath,
+      [serverPath],
+      environment,
+      STARTUP_TIMEOUT_MS,
+      secondRepository
+    );
+
+    try {
+      await Promise.all([first.ready, second.ready]);
+      expect(first.process.pid).not.toBe(second.process.pid);
+      await Promise.all([
+        initializeServer(first, 'mcp-bpmn-first-repository'),
+        initializeServer(second, 'mcp-bpmn-second-repository')
+      ]);
+
+      const firstWorkspace = (await callTool(first, 2, 'get_workspace', {}))
+        .structuredContent;
+      const secondWorkspace = (await callTool(second, 2, 'get_workspace', {}))
+        .structuredContent;
+      expect(firstWorkspace).toMatchObject({
+        launchCwd: firstRepository,
+        startupBoundary: firstRepository,
+        workspace: firstRepository,
+        source: 'launch_cwd'
+      });
+      expect(secondWorkspace).toMatchObject({
+        launchCwd: secondRepository,
+        startupBoundary: secondRepository,
+        workspace: path.join(secondRepository, 'wiki', 'processes', 'assets'),
+        source: 'repository_config'
+      });
+
+      await Promise.all([
+        callTool(first, 3, 'new_bpmn', { name: 'First repository' }),
+        callTool(second, 3, 'new_bpmn', { name: 'Second repository' })
+      ]);
+      expect((await readdir(firstRepository)).filter(name => name.endsWith('.bpmn')))
+        .toHaveLength(1);
+      expect((await readdir(path.join(secondRepository, 'wiki', 'processes', 'assets')))
+        .filter(name => name.endsWith('.bpmn'))).toHaveLength(1);
+
+      const dotEscape = expectProtocolSuccess(await sendRequest(first, {
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'tools/call',
+        params: { name: 'select_workspace', arguments: { path: '../outside' } }
+      }), 4);
+      expect(dotEscape).toMatchObject({ isError: true });
+      const symlinkEscape = expectProtocolSuccess(await sendRequest(first, {
+        jsonrpc: '2.0',
+        id: 5,
+        method: 'tools/call',
+        params: { name: 'select_workspace', arguments: { path: 'linked/escape' } }
+      }), 5);
+      expect(symlinkEscape).toMatchObject({ isError: true });
+      await expect(readdir(outside)).resolves.toEqual([]);
+    } finally {
+      await Promise.allSettled([stopServer(first.process), stopServer(second.process)]);
+      await rm(temporaryRoot, { recursive: true, force: true });
     }
   });
 
@@ -1716,6 +2093,93 @@ describe('MCP Server End-to-End Tests', () => {
       await expect(access(isolatedDefaultDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await stopServer(launch.process);
+      await rm(diagramsDirectory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('cross-process optimistic persistence', () => {
+  it('rejects a stale MCP server and succeeds after reopening the winning file', async () => {
+    const diagramsDirectory = await mkdtemp(path.join(tmpdir(), 'mcp-bpmn-revision-e2e-'));
+    const serverPath = path.resolve(process.cwd(), 'dist/server/index.js');
+    const first = launchServer(process.execPath, [serverPath], {
+      ...process.env,
+      HOME: path.join(diagramsDirectory, 'first-home'),
+      USERPROFILE: path.join(diagramsDirectory, 'first-home'),
+      MCP_BPMN_DIAGRAMS_PATH: diagramsDirectory
+    });
+    const second = launchServer(process.execPath, [serverPath], {
+      ...process.env,
+      HOME: path.join(diagramsDirectory, 'second-home'),
+      USERPROFILE: path.join(diagramsDirectory, 'second-home'),
+      MCP_BPMN_DIAGRAMS_PATH: diagramsDirectory
+    });
+
+    try {
+      await Promise.all([first.ready, second.ready]);
+      await Promise.all([
+        initializeServer(first, 'mcp-bpmn-revision-first'),
+        initializeServer(second, 'mcp-bpmn-revision-second')
+      ]);
+      const created = await callTool(first, 2, 'new_bpmn', { name: 'Shared revision' });
+      const filename = created.structuredContent.filename as string;
+      await callTool(first, 3, 'close', {});
+      const firstOpened = await callTool(first, 4, 'open_bpmn', { filename });
+      const firstRevision = firstOpened.structuredContent.revision as string;
+      const opened = await callTool(second, 2, 'open_bpmn', { filename });
+      expect(opened.structuredContent.revision).toBe(firstRevision);
+
+      const winner = await callTool(first, 5, 'add_activity', {
+        activityType: 'task',
+        name: 'First writer',
+        expectedRevision: firstRevision
+      });
+      const winnerBytes = await readFile(path.join(diagramsDirectory, filename), 'utf8');
+
+      const staleResponse = expectProtocolSuccess(await sendRequest(second, {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: {
+          name: 'add_activity',
+          arguments: {
+            activityType: 'task',
+            name: 'Stale writer',
+            expectedRevision: opened.structuredContent.revision
+          }
+        }
+      }), 3);
+      expect(staleResponse).toMatchObject({
+        isError: true,
+        structuredContent: {
+          code: 'revision_conflict',
+          conflict: true,
+          reason: 'external_change',
+          expectedRevision: opened.structuredContent.revision,
+          actualRevision: expect.any(String)
+        }
+      });
+      await expect(readFile(path.join(diagramsDirectory, filename), 'utf8'))
+        .resolves.toBe(winnerBytes);
+      expect(textContent(await callTool(second, 4, 'export', { format: 'xml' })))
+        .not.toContain('Stale writer');
+
+      const refreshed = await callTool(second, 5, 'open_bpmn', { filename });
+      const recovered = await callTool(second, 6, 'add_activity', {
+        activityType: 'task',
+        name: 'After reopen',
+        expectedRevision: refreshed.structuredContent.revision
+      });
+      expect(recovered.structuredContent.beforeRevision)
+        .toBe(refreshed.structuredContent.revision);
+      expect(recovered.structuredContent.afterRevision)
+        .not.toBe(winner.structuredContent.afterRevision);
+      const finalBytes = await readFile(path.join(diagramsDirectory, filename), 'utf8');
+      expect(finalBytes).toContain('First writer');
+      expect(finalBytes).toContain('After reopen');
+      expect(finalBytes).not.toContain('Stale writer');
+    } finally {
+      await Promise.allSettled([stopServer(first.process), stopServer(second.process)]);
       await rm(diagramsDirectory, { recursive: true, force: true });
     }
   });

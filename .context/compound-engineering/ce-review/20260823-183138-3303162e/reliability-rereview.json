@@ -1,0 +1,10 @@
+{
+  "reviewer": "reliability",
+  "findings": [],
+  "residual_risks": [
+    "Cross-filesystem snapshot moves remain non-atomic when TMPDIR and a moved path differ, but this was explicitly classified as pre-existing and is excluded from this selected-bead re-review."
+  ],
+  "testing_gaps": [
+    "The new deterministic unreadable-state and late-deletion tests cover Codex. Claude's symmetric unreadable-state and post-add deletion rollback branches are implemented but do not have equivalent injected-failure coverage."
+  ]
+}

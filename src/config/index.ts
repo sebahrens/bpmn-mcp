@@ -1,5 +1,4 @@
-import { homedir } from 'os';
-import { join } from 'path';
+import { resolve } from 'path';
 
 export interface Config {
   bpmnDiagramsPath: string;
@@ -17,6 +16,7 @@ export interface BpmnImportLimits {
 
 export interface ResourceLimits {
   maxMermaidBytes: number;
+  maxArtifactBytes: number;
   maxLayoutElements: number;
   maxLayoutConnections: number;
   maxLayoutDensity: number;
@@ -43,6 +43,7 @@ const DEFAULT_IMPORT_LIMITS: BpmnImportLimits = {
  */
 export const DEFAULT_RESOURCE_LIMITS: Readonly<ResourceLimits> = Object.freeze({
   maxMermaidBytes: DEFAULT_IMPORT_LIMITS.maxBytes,
+  maxArtifactBytes: DEFAULT_IMPORT_LIMITS.maxBytes,
   maxLayoutElements: 2_000,
   maxLayoutConnections: 2_000,
   maxLayoutDensity: 10,
@@ -82,8 +83,9 @@ export function getConfig(): Config {
   // Allow override via environment variable
   const customPath = process.env.MCP_BPMN_DIAGRAMS_PATH;
   
-  // Default to ~/mcp-bpmn on Unix-like or %HOME%\mcp-bpmn on Windows
-  const defaultPath = join(homedir(), 'mcp-bpmn');
+  // The stdio child inherits the client session cwd. Server startup replaces
+  // this lexical fallback with WorkspaceSession's canonical resolution.
+  const defaultPath = resolve(process.cwd());
   
   return {
     bpmnDiagramsPath: customPath || defaultPath,
@@ -113,6 +115,10 @@ export function getConfig(): Config {
       maxMermaidBytes: positiveIntegerFromEnvironment(
         'MCP_BPMN_MAX_MERMAID_BYTES',
         DEFAULT_RESOURCE_LIMITS.maxMermaidBytes
+      ),
+      maxArtifactBytes: positiveIntegerFromEnvironment(
+        'MCP_BPMN_MAX_ARTIFACT_BYTES',
+        DEFAULT_RESOURCE_LIMITS.maxArtifactBytes
       ),
       maxLayoutElements: positiveIntegerFromEnvironment(
         'MCP_BPMN_MAX_LAYOUT_ELEMENTS',

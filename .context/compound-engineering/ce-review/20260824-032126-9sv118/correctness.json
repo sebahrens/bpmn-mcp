@@ -1,0 +1,8 @@
+{
+  "reviewer": "correctness",
+  "findings": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "The workflow preserves representative unrelated DI objects, but it does not snapshot and compare every unrelated BPMNShape and BPMNEdge in the collaboration fixture."
+  ]
+}

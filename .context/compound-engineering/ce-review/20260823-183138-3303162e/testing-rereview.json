@@ -1,0 +1,47 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Claude fail-safe rollback branches untested",
+      "severity": "P2",
+      "file": "tests/install-agent-integrations.test.sh",
+      "line": 872,
+      "why_it_matters": "The test suite proves late replacement for Claude, but not its distinct confirmed-deletion or unreadable-state branches. Those branches use different client commands, error parsing, and restoration semantics from Codex, so Codex-only fault injection cannot catch a regression there.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add deterministic Claude fake modes for deleting the entry after add and for making `claude_user_registration_json`/`claude mcp get` unreadable during rollback; assert deletion or third-party state is preserved and unreadability marks rollback incomplete.",
+      "confidence": 0.93,
+      "evidence": [
+        "Implementation has separate Claude deletion and unreadable paths at scripts/install-agent-integrations.sh:721-729, including the `claude_registration_is_confirmed_missing` error contract at lines 669-675.",
+        "The only Claude late-mutation case at tests/install-agent-integrations.test.sh:872-881 replaces the entry after add; the late-deletion and unreadable tests at lines 863-870 and 895-904 inject Codex state only."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Canonical lock alias behavior untested",
+      "severity": "P2",
+      "file": "tests/install-agent-integrations.test.sh",
+      "line": 768,
+      "why_it_matters": "The contention test uses one lexical PREFIX and therefore does not prove the new canonical lock key prevents two symlink aliases of the same physical install root from taking separate locks.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Start one stalled update through a symlinked PREFIX and a competing update through its real path (or a second alias); assert the contender fails before npm/client calls and the one physical lock is released afterwards.",
+      "confidence": 0.91,
+      "evidence": [
+        "The lock now derives from canonicalize_path of INSTALL_ROOT at scripts/install-agent-integrations.sh:372-375.",
+        "The existing contention scenario at tests/install-agent-integrations.test.sh:768-795 invokes both processes with the same `$PREFIX`, so it would pass even if canonicalization were removed."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The deterministic cases requested are otherwise covered: lock contention (768-795), staging replacement (748-755), post-add verification rollback (757-762), cleanup lock release (764-766), targeted path coherence (797-807), Codex late deletion (863-870), Codex/Claude late replacement (872-890), unreadable Codex state (895-904), and Codex exact-restorability rejection (739-746).",
+    "The late-replacement fakes mutate before rollback's comparison. They do not exercise a mutation after the comparison but before the client remove command, which cannot be made race-free by this shell-level guard alone."
+  ],
+  "testing_gaps": [
+    "Claude deletion and unreadable rollback scenarios.",
+    "Canonical lock contention through two PREFIX aliases for one physical directory."
+  ]
+}

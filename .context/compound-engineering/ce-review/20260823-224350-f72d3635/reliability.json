@@ -1,0 +1,27 @@
+{
+  "reviewer": "reliability",
+  "findings": [
+    {
+      "title": "Staged tarball assertion is not install-specific",
+      "severity": "P2",
+      "file": "tests/install-agent-integrations.test.sh",
+      "line": 470,
+      "why_it_matters": "An unrelated or incorrectly located argument ending in release-candidate.tgz can satisfy this assertion, so a regression that stops passing the private staged copy to npm install could pass the release gate.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Isolate the npm log line appended by the candidate update, assert that it is the install invocation, and assert that its tarball argument starts under $TMPDIR/mcp-bpmn-install. and ends in /release-candidate.tgz.",
+      "confidence": 0.98,
+      "evidence": [
+        "The changed assertion searches the entire cumulative npm log for only '/release-candidate.tgz>', without checking the command or staging-directory prefix.",
+        "The fake npm records every invocation in the same npm.log (tests/install-agent-integrations.test.sh:84-92), so the match is not tied to the candidate update's npm install call.",
+        "The installer creates the private staging directory with mktemp and passes $TEMP_DIR/release-candidate.tgz to npm install (scripts/install-agent-integrations.sh:802-839, 863-867), which is the behavior the acceptance criterion requires the test to pin."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The 40-second Jest deadline covers the entire long structured-output test while its SVG call alone may consume 25 seconds; serialization removes the observed contention, but hosted-runner headroom for the surrounding calls and cleanup is not established by the diff itself."
+  ],
+  "testing_gaps": []
+}

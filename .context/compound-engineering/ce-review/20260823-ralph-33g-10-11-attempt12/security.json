@@ -1,0 +1,29 @@
+{
+  "reviewer": "security",
+  "findings": [
+    {
+      "title": "Verified tarball path remains mutable before execution",
+      "severity": "P2",
+      "file": "scripts/package-smoke.mjs",
+      "line": 23,
+      "why_it_matters": "The digest is calculated from the caller-owned path, but every consumer later reopens that path for extraction or npm installation. In the package smoke, builds and two MCP sessions occur between verification and first archive use. A process able to replace or rewrite the candidate after verification can therefore make different bytes reach tar, npm lifecycle execution, or the installed MCP server while the check still reports that the expected digest passed.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Copy the supplied archive into each consumer's private temporary directory first, hash that private snapshot, and use only the verified snapshot for every subsequent tar, npm, plugin, and MCP operation. In package-smoke, create temporaryRoot before verification; in the installer, copy into the already-created TEMP_DIR before hashing.",
+      "confidence": 0.93,
+      "evidence": [
+        "scripts/package-smoke.mjs:23-25 hashes suppliedTarball, but lines 443-462 perform a bundle build and two MCP sessions before lines 468-477 reopen the same external path; npm reopens it again during installation.",
+        "scripts/validate-codex-plugin.mjs:287-289 hashes tarballPath and lines 295-312 later reopen the external path for npm installation and tar extraction.",
+        "scripts/validate-claude-plugin.mjs:202-204 hashes tarballPath and lines 210-216 later reopen it for extraction.",
+        "scripts/install-agent-integrations.sh:805-812 hashes the external regular file, then lines 836-840 pass the same path to npm rather than a verified private copy."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "Digest mismatch tests cover a wrong value at verification time, but no test mutates or replaces the supplied path after verification and proves that all later consumers use an immutable verified snapshot.",
+    "The Codex workflow launches the cached MCP command directly at scripts/validate-codex-plugin.mjs:397-411. It verifies default_tools_approval_mode and readOnlyHint metadata, but does not exercise a write call through Codex's actual approval mediation."
+  ]
+}

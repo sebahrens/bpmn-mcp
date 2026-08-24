@@ -1,7 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -12,14 +10,14 @@ import {
   writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { snapshotReleaseArtifact } from './release-artifact.mjs';
 
 const projectRoot = process.cwd();
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'mcp-bpmn-claude-plugin-'));
 const npmCache = join(temporaryRoot, 'npm-cache');
 const isolatedHome = join(temporaryRoot, 'home');
 const claudeConfig = join(isolatedHome, '.claude');
-const diagramsPath = join(isolatedHome, 'mcp-bpmn');
 const marketplaceRoot = join(temporaryRoot, 'marketplace');
 const pluginSource = join(marketplaceRoot, 'plugin');
 const marketplaceName = 'mcp-bpmn-development';
@@ -31,10 +29,10 @@ const environment = {
   XDG_CONFIG_HOME: join(isolatedHome, '.config'),
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
   DISABLE_TELEMETRY: '1',
-  MCP_BPMN_DIAGRAMS_PATH: diagramsPath,
   npm_config_cache: npmCache,
   PUPPETEER_SKIP_DOWNLOAD: 'true'
 };
+delete environment.MCP_BPMN_DIAGRAMS_PATH;
 
 process.once('exit', () => {
   rmSync(temporaryRoot, { recursive: true, force: true });
@@ -71,10 +69,10 @@ function findPluginCacheRoot(directory) {
   return undefined;
 }
 
-function runMcpSession(command, args, requests) {
+function runMcpSession(command, args, cwd, requests) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
-      cwd: temporaryRoot,
+      cwd,
       env: environment,
       stdio: ['pipe', 'pipe', 'pipe']
     });
@@ -190,28 +188,13 @@ try {
   }
 
   mkdirSync(pluginSource, { recursive: true });
-  const suppliedTarballSource = process.env.MCP_BPMN_PACKAGE_TARBALL
-    ? realpathSync(resolve(projectRoot, process.env.MCP_BPMN_PACKAGE_TARBALL))
-    : undefined;
-  const tarballPath = suppliedTarballSource
-    ? join(temporaryRoot, 'release-candidate.tgz')
-    : join(temporaryRoot, JSON.parse(run('npm', [
+  const suppliedTarball = snapshotReleaseArtifact(projectRoot, temporaryRoot);
+  const tarballPath = suppliedTarball ?? join(temporaryRoot, JSON.parse(run('npm', [
       'pack',
       '--json',
       '--pack-destination',
       temporaryRoot
     ]))[0].filename);
-  if (suppliedTarballSource) {
-    copyFileSync(suppliedTarballSource, tarballPath);
-    const expectedDigest = process.env.MCP_BPMN_PACKAGE_SHA256?.toLowerCase();
-    const actualDigest = createHash('sha256')
-      .update(readFileSync(tarballPath))
-      .digest('hex');
-    if (!expectedDigest || !/^[a-f0-9]{64}$/.test(expectedDigest)
-      || actualDigest !== expectedDigest) {
-      throw new Error('Supplied release tarball does not match MCP_BPMN_PACKAGE_SHA256');
-    }
-  }
   run('tar', [
     '-xzf',
     tarballPath,
@@ -247,8 +230,23 @@ try {
   const cachedArgs = cachedServer.args.map(arg => (
     arg.replaceAll('${CLAUDE_PLUGIN_ROOT}', cachedPluginRoot)
   ));
-  const createResults = await runMcpSession(cachedServer.command, cachedArgs, [
+  let firstRepository = join(temporaryRoot, 'first-repository');
+  let secondRepository = join(temporaryRoot, 'second-repository');
+  mkdirSync(firstRepository);
+  mkdirSync(secondRepository);
+  firstRepository = realpathSync(firstRepository);
+  secondRepository = realpathSync(secondRepository);
+  const secondWorkspace = join(secondRepository, 'wiki', 'processes', 'assets');
+  writeFileSync(
+    join(secondRepository, '.mcp-bpmn.json'),
+    JSON.stringify({ path: 'wiki/processes/assets' })
+  );
+  const createResults = await runMcpSession(cachedServer.command, cachedArgs, firstRepository, [
     { method: 'tools/list', params: {} },
+    {
+      method: 'tools/call',
+      params: { name: 'get_workspace', arguments: {} }
+    },
     {
       method: 'tools/call',
       params: {
@@ -258,35 +256,57 @@ try {
     }
   ]);
   if (!createResults[0]?.tools?.some(tool => tool.name === 'new_bpmn')
-    || createResults[1]?.isError) {
+    || createResults[1]?.structuredContent?.workspace !== firstRepository
+    || createResults[1]?.structuredContent?.source !== 'launch_cwd'
+    || createResults[2]?.isError) {
     throw new Error('Cached plugin MCP server did not advertise and execute BPMN tools');
   }
 
-  const diagramFiles = () => (
-    existsSync(diagramsPath)
-      ? readdirSync(diagramsPath).filter(file => file.endsWith('.bpmn'))
+  const firstDiagramFiles = () => (
+    existsSync(firstRepository)
+      ? readdirSync(firstRepository).filter(file => file.endsWith('.bpmn'))
       : []
   );
-  if (diagramFiles().length !== 1) {
+  if (firstDiagramFiles().length !== 1) {
     throw new Error('Plugin MCP server did not store its diagram outside the plugin cache');
   }
 
-  const reloadResults = await runMcpSession(cachedServer.command, cachedArgs, [{
-    method: 'tools/call',
-    params: { name: 'list_diagrams', arguments: {} }
-  }]);
-  if (reloadResults[0]?.isError || diagramFiles().length !== 1) {
-    throw new Error('Reloading the plugin server did not preserve the user diagram');
+  const secondResults = await runMcpSession(cachedServer.command, cachedArgs, secondRepository, [
+    { method: 'tools/call', params: { name: 'get_workspace', arguments: {} } },
+    {
+      method: 'tools/call',
+      params: { name: 'new_bpmn', arguments: { name: 'Claude second repository' } }
+    }
+  ]);
+  const secondDiagramFiles = () => (
+    existsSync(secondWorkspace)
+      ? readdirSync(secondWorkspace).filter(file => file.endsWith('.bpmn'))
+      : []
+  );
+  if (secondResults[0]?.structuredContent?.workspace !== secondWorkspace
+    || secondResults[0]?.structuredContent?.source !== 'repository_config'
+    || secondResults[1]?.isError
+    || secondDiagramFiles().length !== 1
+    || firstDiagramFiles().length !== 1) {
+    throw new Error('One cached Claude MCP registration did not isolate two repository workspaces');
   }
 
   run('claude', ['plugin', 'disable', pluginId]);
-  if (diagramFiles().length !== 1) throw new Error('Disabling the plugin deleted a user diagram');
+  if (firstDiagramFiles().length !== 1 || secondDiagramFiles().length !== 1) {
+    throw new Error('Disabling the plugin deleted a user diagram');
+  }
   run('claude', ['plugin', 'enable', pluginId]);
-  if (diagramFiles().length !== 1) throw new Error('Enabling the plugin deleted a user diagram');
+  if (firstDiagramFiles().length !== 1 || secondDiagramFiles().length !== 1) {
+    throw new Error('Enabling the plugin deleted a user diagram');
+  }
   run('claude', ['plugin', 'uninstall', '--scope', 'user', pluginId]);
-  if (diagramFiles().length !== 1) throw new Error('Removing the plugin deleted a user diagram');
+  if (firstDiagramFiles().length !== 1 || secondDiagramFiles().length !== 1) {
+    throw new Error('Removing the plugin deleted a user diagram');
+  }
   run('claude', ['plugin', 'marketplace', 'remove', '--scope', 'user', marketplaceName]);
-  if (diagramFiles().length !== 1) throw new Error('Removing the marketplace deleted a user diagram');
+  if (firstDiagramFiles().length !== 1 || secondDiagramFiles().length !== 1) {
+    throw new Error('Removing the marketplace deleted a user diagram');
+  }
 
   console.log('Claude plugin validation and isolated lifecycle smoke passed');
 } finally {

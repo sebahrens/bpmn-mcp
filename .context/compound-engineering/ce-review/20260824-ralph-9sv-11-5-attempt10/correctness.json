@@ -1,0 +1,9 @@
+{
+  "reviewer": "correctness",
+  "findings": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "No focused test rewires a SequenceFlow source endpoint and verifies the serialized outgoing/incoming reference collections after reopening.",
+    "No focused test rewires an Association across compatible nested scopes and verifies it is removed from the old artifact container and attached to the new one after reopening."
+  ]
+}

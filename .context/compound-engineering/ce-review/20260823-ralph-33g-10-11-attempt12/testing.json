@@ -1,0 +1,30 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "JavaScript digest rejection branches remain untested",
+      "severity": "P2",
+      "file": "scripts/package-smoke.mjs",
+      "line": 21,
+      "why_it_matters": "The prerelease package and plugin checks can silently stop enforcing the required candidate digest while the expanded installer suite remains green, because it exercises only the shell installer's separate digest implementation.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add a shared digest helper with unit tests, or invoke each JavaScript validator with a supplied regular file and missing, malformed, and mismatched MCP_BPMN_PACKAGE_SHA256 values, asserting rejection before artifact installation or extraction.",
+      "confidence": 0.98,
+      "evidence": [
+        "tests/install-agent-integrations.test.sh:450-492 now proves the shell installer rejects missing and symlinked paths plus a mismatched digest, but it never executes any JavaScript validator.",
+        "scripts/package-smoke.mjs:21-29, scripts/validate-codex-plugin.mjs:285-293, and scripts/validate-claude-plugin.mjs:200-208 each contain an independent new missing/malformed/mismatch digest branch.",
+        "docs/testing/wsl2-installer-smoke.md:127-140 exercises the plugin validators only with the correct digest; it cannot catch a validator that accepts an absent or incorrect digest."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The documented genuine-WSL2 lifecycle now has coherent native CLI prerequisites and pre/post checksum checks, but it was not executable on this macOS host.",
+    "The real Codex and Claude plugin lifecycle commands were not run in this specialist pass."
+  ],
+  "testing_gaps": [
+    "Negative digest coverage exists for the shell installer only; the three JavaScript consumers are covered only on their valid-candidate path by the manual release procedure."
+  ]
+}

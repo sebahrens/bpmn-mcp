@@ -1,0 +1,68 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Revalidation race windows are untested",
+      "severity": "P2",
+      "file": "tests/install-agent-integrations.test.sh",
+      "line": 685,
+      "why_it_matters": "The test blocks one installer only to prove lock contention. It never changes a registration after preflight while artifact staging is blocked, nor after the transaction snapshot but before the selected client's remove/add. As a result, the new revalidation guards can regress or be placed in the wrong phase while this suite still passes.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add deterministic fake-CLI hooks that replace the selected registration during npm install and immediately before its registration command; assert a non-forced installer exits without removing or overwriting the replacement.",
+      "confidence": 0.95,
+      "evidence": [
+        "The contention setup at lines 685-709 pauses fake npm but only starts a second installer and asserts it fails on the prefix lock; it does not mutate either registration.",
+        "The installer has separate registration checks after staging in snapshot_client_registrations (lines 546-571) and immediately before replace in register_codex/register_claude (lines 763-791).",
+        "The existing late-mutation test at lines 779-789 acts only after Codex has been registered and tests rollback preservation, not either forward-path guard."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Claude rollback preservation is untested",
+      "severity": "P2",
+      "file": "tests/install-agent-integrations.test.sh",
+      "line": 779,
+      "why_it_matters": "The only deterministic late-replacement scenario replaces the Codex registration while Claude add fails, so it exercises Codex rollback preservation only. The independently implemented Claude rollback comparison and preservation branches have no test, allowing a future change to clobber a late Claude replacement undetected.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Inject a failure after a successful Claude registration, replace the Claude registration before cleanup, and assert rollback preserves that replacement and reports the preservation warning.",
+      "confidence": 0.98,
+      "evidence": [
+        "The test mutation hook writes only `$FAKE_STATE_DIR/codex-registration` at lines 217-220.",
+        "The final assertions at lines 783-786 inspect only the Codex replacement.",
+        "rollback_claude_registration has separate current-registration matching logic at installer lines 637-651."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Exact registration rollback lacks rich-config coverage",
+      "severity": "P2",
+      "file": "tests/install-agent-integrations.test.sh",
+      "line": 153,
+      "why_it_matters": "All fake Codex snapshots reduce a registration to stdio command, empty args, and one environment variable. Those fixtures cannot prove that the advertised JSON snapshot/compare/restore behavior preserves non-stdio transports, OAuth metadata, additional environment variables, or other registration fields.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Extend the Codex fake to round-trip a supplied JSON registration and add a forced-install failure test using an HTTP/OAuth registration plus additional metadata, asserting semantic equality after rollback.",
+      "confidence": 0.96,
+      "evidence": [
+        "The fake `codex mcp get` always emits only `transport.type`, `command`, `args`, and one env key at lines 150-154.",
+        "The rollback fixture records a two-line command/diagrams state at lines 643-646 and asserts only those two fields at lines 662-664.",
+        "The new implementation snapshots and compares complete JSON documents, so coverage should include a document that has fields beyond this fixture's minimal shape."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The suite is an integration-style shell test with controlled fakes; it does not validate the real Codex or Claude CLI's serialization semantics.",
+    "The one lock test proves contention rejection and successful lock release, but does not exercise stale-lock recovery because the implementation intentionally requires manual stale-lock removal."
+  ],
+  "testing_gaps": [
+    "No rollback case begins with a missing selected registration and then verifies that a successful temporary registration is removed after a later failure.",
+    "No targeted diagrams-path coherence case covers the symmetric Claude-selected/Codex-owned path, or an unselected missing CLI with its old registration retained.",
+    "No assertion directly verifies lock release after a failed preflight or rollback; later successful installs provide only indirect coverage."
+  ]
+}

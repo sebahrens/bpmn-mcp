@@ -1,0 +1,24 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Tarball assertion is detached from npm install",
+      "severity": "P2",
+      "file": "tests/install-agent-integrations.test.sh",
+      "line": 470,
+      "why_it_matters": "The acceptance criterion requires proof that npm install consumes the private staged release candidate. Searching the entire accumulated npm log for only the filename suffix can still pass if another npm invocation mentions that path while install receives a different tarball, leaving a regression in the staging boundary undetected.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Capture the npm log line added by the candidate update and assert that the same line contains the install command, the $TMPDIR/mcp-bpmn-install. private staging prefix, and /release-candidate.tgz>.",
+      "confidence": 0.92,
+      "evidence": [
+        "tests/install-agent-integrations.test.sh:470 searches all of npm.log for '/release-candidate.tgz>' without tying the match to an '|<install>|' record or the private temporary-directory prefix.",
+        "The fake npm writes one record per invocation at tests/install-agent-integrations.test.sh:85-92, while scripts/install-agent-integrations.sh:864-866 passes the staged tarball as the final argument of npm install, so the behavior can be asserted on one specific record."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": []
+}

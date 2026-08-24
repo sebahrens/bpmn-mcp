@@ -71,6 +71,10 @@ if [ "${1:-}" = "-p" ] && [ "${2:-}" = "process.versions.node" ]; then
   printf '%s\n' "${FAKE_NODE_VERSION:-22.12.0}"
   exit 0
 fi
+if [ "${1:-}" = "-p" ] && [ "${2:-}" = "process.platform" ]; then
+  printf '%s\n' linux
+  exit 0
+fi
 exec __REAL_NODE__ "$@"
 EOF
 
@@ -168,6 +172,9 @@ case "$1 ${2:-}" in
           "$command_path" "$diagrams_path"
       elif [ "$(sed -n '3p' "$state")" = legacy-http ]; then
         printf '{"transport":{"type":"http","url":"https://example.invalid/mcp"}}\n'
+      elif [ -z "$diagrams_path" ]; then
+        printf '{"transport":{"type":"stdio","command":"%s","args":[],"env":{}}}\n' \
+          "$command_path"
       else
         printf '{"transport":{"type":"stdio","command":"%s","args":[],"env":{"MCP_BPMN_DIAGRAMS_PATH":"%s"}}}\n' \
           "$command_path" "$diagrams_path"
@@ -238,9 +245,13 @@ case "$1 ${2:-}" in
       printf 'No MCP server named "mcp-bpmn".\n' >&2
       exit 1
     }
-    printf 'mcp-bpmn:\n  Scope: User config\n  Command: %s\n  Args:\n  Environment:\n    MCP_BPMN_DIAGRAMS_PATH=%s\n' \
-      "$(printf '%s\n' "$registration" | sed -n '1p')" \
-      "$(printf '%s\n' "$registration" | sed -n '2p')"
+    registration_command=$(printf '%s\n' "$registration" | sed -n '1p')
+    registration_diagrams=$(printf '%s\n' "$registration" | sed -n '2p')
+    printf 'mcp-bpmn:\n  Scope: User config\n  Command: %s\n  Args:\n  Environment:\n' \
+      "$registration_command"
+    if [ -n "$registration_diagrams" ]; then
+      printf '    MCP_BPMN_DIAGRAMS_PATH=%s\n' "$registration_diagrams"
+    fi
     ;;
   'mcp add')
     if [ "${FAKE_FAIL_CLAUDE_ADD:-0}" = 1 ]; then
@@ -276,7 +287,9 @@ case "$1 ${2:-}" in
       const [file, command, diagrams] = process.argv.slice(1);
       const config = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
       config.mcpServers ||= {};
-      config.mcpServers["mcp-bpmn"] = { type: "stdio", command, args: [], env: { MCP_BPMN_DIAGRAMS_PATH: diagrams } };
+      const registration = { type: "stdio", command, args: [] };
+      if (diagrams) registration.env = { MCP_BPMN_DIAGRAMS_PATH: diagrams };
+      config.mcpServers["mcp-bpmn"] = registration;
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, JSON.stringify(config));
     ' "$state" "$command_path" "$diagrams_path"
@@ -417,6 +430,63 @@ write_fakes "$FAKE_BIN"
 PATH=$FAKE_BIN:/usr/bin:/bin
 export PATH
 
+if empty_override_output=$(MCP_BPMN_DIAGRAMS_PATH= \
+  make -s -C "$SOURCE_ROOT" install 2>&1); then
+  fail 'installer accepted an empty MCP_BPMN_DIAGRAMS_PATH override'
+fi
+assert_contains "$empty_override_output" \
+  'MCP_BPMN_DIAGRAMS_PATH must be a non-empty absolute path'
+
+# A normal install owns one stable command registration without pinning all
+# client sessions to one global diagrams directory.
+DEFAULT_PREFIX=$CASE_ROOT/'default workspace install'
+PREFIX=$DEFAULT_PREFIX
+export PREFIX
+unset MCP_BPMN_DIAGRAMS_PATH
+: > "$FAKE_STATE_DIR/codex.log"
+: > "$FAKE_STATE_DIR/claude.log"
+default_install_output=$(make -s -C "$SOURCE_ROOT" install)
+assert_contains "$default_install_output" 'diagram workspace resolves per client session cwd'
+assert_contains "$(cat "$DEFAULT_PREFIX/.mcp-bpmn-installer-owned")" \
+  'diagrams-path-explicit=0'
+assert_equals "$(sed -n '2p' "$CODEX_STATE")" ''
+"$REAL_NODE" -e '
+  const registration = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))
+    .mcpServers["mcp-bpmn"];
+  if (registration.env !== undefined) process.exit(1);
+' "$CLAUDE_STATE" || fail 'default Claude registration unexpectedly pinned a workspace'
+assert_contains "$(cat "$FAKE_STATE_DIR/codex.log")" \
+  "argv|<mcp>|<add>|<mcp-bpmn>|<-->|<$DEFAULT_PREFIX/app/node_modules/.bin/mcp-bpmn-server>"
+assert_contains "$(cat "$FAKE_STATE_DIR/claude.log")" \
+  "argv|<mcp>|<add>|<--scope>|<user>|<mcp-bpmn>|<$DEFAULT_PREFIX/app/node_modules/.bin/mcp-bpmn-server>"
+
+# Updating legacy installer state removes only the historical default path.
+sed '/^diagrams-path-explicit=/d; s|^diagrams-path=.*|diagrams-path='"$HOME"'/mcp-bpmn|' \
+  "$DEFAULT_PREFIX/.mcp-bpmn-installer-owned" \
+  > "$DEFAULT_PREFIX/.mcp-bpmn-installer-owned.legacy"
+mv -f "$DEFAULT_PREFIX/.mcp-bpmn-installer-owned.legacy" \
+  "$DEFAULT_PREFIX/.mcp-bpmn-installer-owned"
+printf '%s\n%s\n' "$DEFAULT_PREFIX/app/node_modules/.bin/mcp-bpmn-server" \
+  "$HOME/mcp-bpmn" > "$CODEX_STATE"
+set_claude_registration "$CLAUDE_STATE" \
+  "$DEFAULT_PREFIX/app/node_modules/.bin/mcp-bpmn-server" "$HOME/mcp-bpmn"
+make -s -C "$SOURCE_ROOT" update >/dev/null
+assert_equals "$(sed -n '2p' "$CODEX_STATE")" ''
+assert_contains "$(cat "$DEFAULT_PREFIX/.mcp-bpmn-installer-owned")" \
+  'diagrams-path-explicit=0'
+"$REAL_NODE" -e '
+  const registration = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))
+    .mcpServers["mcp-bpmn"];
+  if (registration.env !== undefined) process.exit(1);
+' "$CLAUDE_STATE" || fail 'legacy default Claude workspace survived update'
+make -s -C "$SOURCE_ROOT" uninstall >/dev/null
+assert_absent "$DEFAULT_PREFIX"
+assert_absent "$CODEX_STATE"
+
+PREFIX=$CASE_ROOT/'stable install'
+MCP_BPMN_DIAGRAMS_PATH=$CASE_ROOT/'user diagrams'
+export PREFIX MCP_BPMN_DIAGRAMS_PATH
+
 install_output=$(make -s -C "$SOURCE_ROOT" install)
 assert_contains "$install_output" "registered Codex MCP command: $PREFIX/app/node_modules/.bin/mcp-bpmn-server"
 assert_contains "$install_output" "registered Claude Code user MCP command: $PREFIX/app/node_modules/.bin/mcp-bpmn-server"
@@ -458,12 +528,26 @@ candidate_sha256=$($REAL_NODE -e '
   process.stdout.write(createHash("sha256").update(readFileSync(process.argv[1])).digest("hex"));
 ' "$candidate_tarball")
 pack_count_before=$(grep -c '|<pack>|' "$FAKE_STATE_DIR/npm.log")
+npm_line_count_before=$(wc -l < "$FAKE_STATE_DIR/npm.log" | tr -d ' ')
 MCP_BPMN_PACKAGE_TARBALL="$candidate_tarball" \
   MCP_BPMN_PACKAGE_SHA256="$candidate_sha256" \
   make -s -C "$SOURCE_ROOT" update >/dev/null
 pack_count_after=$(grep -c '|<pack>|' "$FAKE_STATE_DIR/npm.log")
 assert_equals "$pack_count_after" "$pack_count_before"
-assert_contains "$(cat "$FAKE_STATE_DIR/npm.log")" "|<$candidate_tarball>"
+npm_line_count_after=$(wc -l < "$FAKE_STATE_DIR/npm.log" | tr -d ' ')
+assert_equals "$npm_line_count_after" "$((npm_line_count_before + 1))"
+candidate_install_log=$(sed -n "${npm_line_count_after}p" "$FAKE_STATE_DIR/npm.log")
+assert_contains "$candidate_install_log" \
+  '|<install>|<--omit=dev>|<--no-audit>|<--no-fund>|<--prefix>'
+candidate_cache=${candidate_install_log#cache=<}
+candidate_cache=${candidate_cache%%>|*}
+case "$candidate_cache" in
+  "$TMPDIR"/mcp-bpmn-install.*/npm-cache) ;;
+  *) fail "candidate install did not use a private staging directory: $candidate_cache" ;;
+esac
+candidate_staging_dir=${candidate_cache%/npm-cache}
+assert_contains "$candidate_install_log" \
+  "|<$candidate_staging_dir/release-candidate.tgz>"
 
 if missing_candidate_output=$(MCP_BPMN_PACKAGE_TARBALL="$candidate_dir/missing.tgz" \
   MCP_BPMN_PACKAGE_SHA256="$candidate_sha256" \
@@ -490,6 +574,16 @@ if digest_candidate_output=$(MCP_BPMN_PACKAGE_TARBALL="$candidate_tarball" \
 fi
 assert_contains "$digest_candidate_output" \
   'prebuilt release tarball does not match MCP_BPMN_PACKAGE_SHA256'
+
+pack_count_before=$(grep -c '|<pack>|' "$FAKE_STATE_DIR/npm.log")
+if digest_only_output=$(MCP_BPMN_PACKAGE_SHA256="$candidate_sha256" \
+  make -s -C "$SOURCE_ROOT" update 2>&1); then
+  fail 'installer accepted a release digest without an artifact path'
+fi
+pack_count_after=$(grep -c '|<pack>|' "$FAKE_STATE_DIR/npm.log")
+assert_equals "$pack_count_after" "$pack_count_before"
+assert_contains "$digest_only_output" \
+  'MCP_BPMN_PACKAGE_SHA256 requires MCP_BPMN_PACKAGE_TARBALL'
 
 configured_diagrams=$MCP_BPMN_DIAGRAMS_PATH
 unset MCP_BPMN_DIAGRAMS_PATH

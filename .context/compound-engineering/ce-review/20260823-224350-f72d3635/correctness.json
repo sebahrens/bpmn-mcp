@@ -1,0 +1,10 @@
+{
+  "reviewer": "correctness",
+  "findings": [],
+  "residual_risks": [
+    "The file-wide 40-second Jest deadline still bounds a structured-output scenario that permits up to 25 seconds for SVG export plus many sequential non-SVG calls. Serialization and the observed aggregate run reduce the practical risk, but the timeout hierarchy does not prove that every individually permitted call can complete before the outer deadline under extreme runner contention."
+  ],
+  "testing_gaps": [
+    "tests/install-agent-integrations.test.sh:470 matches the release-candidate.tgz basename anywhere in the cumulative npm log. It distinguishes the staged artifact from the original candidate filename, but does not bind the match to the immediately preceding npm install record or assert the mcp-bpmn-install.* private staging directory prefix."
+  ]
+}

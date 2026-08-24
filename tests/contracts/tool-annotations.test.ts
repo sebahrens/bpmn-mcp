@@ -71,14 +71,26 @@ const EXPECTED_ANNOTATIONS = {
   add_lane: DESTRUCTIVE_NON_IDEMPOTENT,
   list_elements: READ_ONLY,
   get_element: READ_ONLY,
+  list_connections: READ_ONLY,
+  get_connection: READ_ONLY,
   update_element: DESTRUCTIVE_UPDATE,
+  update_connection: DESTRUCTIVE_UPDATE,
+  update_element_geometry: DESTRUCTIVE_UPDATE,
+  update_connection_geometry: DESTRUCTIVE_UPDATE,
+  apply_geometry_patch: DESTRUCTIVE_UPDATE,
+  route_connection: DESTRUCTIVE_UPDATE,
   delete_element: DESTRUCTIVE_UPDATE,
   export: READ_ONLY,
+  save_svg: DESTRUCTIVE_UPDATE,
+  save_png: DESTRUCTIVE_UPDATE,
   validate: READ_ONLY,
+  analyze_geometry: READ_ONLY,
   auto_layout: DESTRUCTIVE_UPDATE,
   list_diagrams: READ_ONLY,
   delete_diagram_file: DESTRUCTIVE_UPDATE,
-  get_diagrams_path: READ_ONLY
+  get_diagrams_path: READ_ONLY,
+  get_workspace: READ_ONLY,
+  select_workspace: IDEMPOTENT_UPDATE
 } satisfies Record<ToolName, ReviewedAnnotations>;
 
 function successfulContent(result: CallToolResult): Record<string, unknown> {
@@ -131,6 +143,14 @@ describe('MCP tool behavior annotations', () => {
       eventType: 'start',
       name: 'Start'
     }));
+    const target = successfulContent(await handler.handleRequest('add_activity', {
+      activityType: 'task',
+      name: 'Target'
+    }));
+    const connected = successfulContent(await handler.handleRequest('connect', {
+      sourceId: added.elementId,
+      targetId: target.elementId
+    }));
     const before = await storedFiles(directory);
     const saveSpy = jest.spyOn(FileManager.prototype, 'saveBpmnFile');
     const deleteSpy = jest.spyOn(FileManager.prototype, 'deleteBpmnFile');
@@ -139,10 +159,14 @@ describe('MCP tool behavior annotations', () => {
       ['current', {}],
       ['list_elements', {}],
       ['get_element', { elementId: added.elementId }],
+      ['list_connections', {}],
+      ['get_connection', { connectionId: connected.connectionId }],
       ['export', { format: 'xml' }],
       ['validate', { level: 'full' }],
+      ['analyze_geometry', {}],
       ['list_diagrams', {}],
-      ['get_diagrams_path', {}]
+      ['get_diagrams_path', {}],
+      ['get_workspace', {}]
     ];
     for (const [name, args] of probes) {
       successfulContent(await handler.handleRequest(name, args));

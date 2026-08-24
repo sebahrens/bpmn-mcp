@@ -1,0 +1,25 @@
+{
+  "reviewer": "maintainability",
+  "findings": [
+    {
+      "title": "Remove overwritten rollback-test snapshots",
+      "severity": "P3",
+      "file": "tests/install-agent-integrations.test.sh",
+      "line": 724,
+      "why_it_matters": "The initial Codex and Claude registration snapshots are immediately overwritten at lines 758-759 before any assertion reads them. Retaining dead setup makes the already long lifecycle test harder to scan and misleadingly suggests the interrupted-snapshot scenarios validate registrations.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": false,
+      "suggested_fix": "Delete the assignments to old_codex_registration and old_claude_registration at lines 724-725; retain the later snapshots immediately before the failure scenario that asserts them.",
+      "confidence": 0.99,
+      "evidence": [
+        "old_codex_registration and old_claude_registration are assigned at lines 724-725.",
+        "Neither variable is read before both are reassigned at lines 758-759.",
+        "The only subsequent assertions use the later values at lines 769-770."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": []
+}

@@ -138,6 +138,8 @@ export interface BpmnConnectOptions {
   isDefault?: boolean;
   /** BPMN association arrow direction. Associations default to None. */
   associationDirection?: AssociationDirection;
+  /** Optimistic document revision expected by the caller. */
+  expectedRevision?: string;
 }
 
 export interface BpmnElementUpdate {
@@ -160,6 +162,37 @@ export interface BpmnDocumentConnection {
   associationDirection?: AssociationDirection;
   waypoints: Position[];
   properties: Record<string, unknown>;
+}
+
+export interface ConnectionSemanticState {
+  connectionId: string;
+  type: BpmnConnectionType;
+  ownerId: string;
+  scopeId: string;
+  sourceId: string;
+  targetId: string;
+  label?: string;
+  condition?: BpmnConditionExpression;
+  isDefault: boolean;
+  defaultOwnerId?: string;
+  associationDirection?: AssociationDirection;
+  semanticRevision: string;
+}
+
+export interface ConnectionSemanticUpdate {
+  sourceId?: string;
+  targetId?: string;
+  /** Replace the label, clear it with null, or preserve it when omitted. */
+  label?: string | null;
+  /** Replace the condition, clear it with null, or preserve it when omitted. */
+  condition?: { body: string; language?: string | null } | null;
+  isDefault?: boolean;
+  associationDirection?: AssociationDirection;
+  expectedSemanticRevision?: string;
+  expectedRevision?: string;
+  /** Required whenever either endpoint changes. */
+  endpointPolicy?: 'snap-to-boundary';
+  collisionPolicy: ConnectionGeometryCollisionPolicy;
 }
 
 export interface BpmnProcessRoot {
@@ -208,9 +241,115 @@ export interface BpmnShapeModel {
   bounds: Position & Size;
   /** Optional BPMNLabel bounds emitted by an external layout engine. */
   labelBounds?: Position & Size;
+  /** Internal retained-XML signal that an existing BPMNLabel was explicitly removed. */
+  labelBoundsCleared?: boolean;
   isHorizontal?: boolean;
   /** Whether a subprocess or transaction is rendered with its contents visible. */
   isExpanded?: boolean;
+}
+
+export type GeometryCollisionPolicy = 'reject' | 'allow';
+export type IncidentConnectionPolicy = 'reject' | 'snap-endpoints';
+export type ConnectionGeometryCollisionPolicy = 'reject-new' | 'warn' | 'allow';
+export type ConnectionEndpointPolicy = 'exact' | 'snap-to-boundary';
+
+export interface ElementGeometryState {
+  elementId: string;
+  shapeId: string;
+  bounds: Position & Size;
+  labelBounds?: Position & Size;
+}
+
+export interface ElementGeometryUpdate {
+  bounds: Position & Size;
+  /** Set BPMNLabel bounds, clear them with null, or preserve them when omitted. */
+  labelBounds?: (Position & Size) | null;
+  /** Compare-and-set guard for callers that do not have a document revision. */
+  expectedBounds?: Position & Size;
+  expectedRevision?: string;
+  dryRun: boolean;
+  collisionPolicy: GeometryCollisionPolicy;
+  incidentConnectionPolicy?: IncidentConnectionPolicy;
+}
+
+export interface ConnectionGeometryState {
+  connectionId: string;
+  edgeId: string;
+  waypoints: Position[];
+  labelBounds?: Position & Size;
+  geometryRevision: string;
+}
+
+export interface ConnectionGeometryUpdate {
+  waypoints: Position[];
+  /** Set BPMNLabel bounds, clear them with null, or preserve them when omitted. */
+  labelBounds?: (Position & Size) | null;
+  /** Compare-and-set guard for callers that retained the prior route. */
+  expectedWaypoints?: Position[];
+  /** Opaque geometry revision returned by get_connection. */
+  expectedGeometryRevision?: string;
+  expectedRevision?: string;
+  endpointPolicy: ConnectionEndpointPolicy;
+  collisionPolicy: ConnectionGeometryCollisionPolicy;
+  dryRun: boolean;
+}
+
+export interface GeometryPatchElementUpdate {
+  elementId: string;
+  /** Replace BPMNShape bounds; omission preserves them. */
+  bounds?: Position & Size;
+  /** Set BPMNLabel bounds, clear them with null, or preserve them when omitted. */
+  labelBounds?: (Position & Size) | null;
+  /** Compare-and-set guard for the current BPMNShape bounds. */
+  expectedBounds?: Position & Size;
+  /** Compare-and-set guard for the current BPMNLabel bounds; null expects no bounds. */
+  expectedLabelBounds?: (Position & Size) | null;
+}
+
+export interface GeometryPatchConnectionUpdate {
+  connectionId: string;
+  /** Replace BPMNEdge waypoints; omission preserves them. */
+  waypoints?: Position[];
+  /** Set BPMNLabel bounds, clear them with null, or preserve them when omitted. */
+  labelBounds?: (Position & Size) | null;
+  /** Compare-and-set guard for callers that retained the prior route. */
+  expectedWaypoints?: Position[];
+  /** Opaque geometry revision returned by get_connection. */
+  expectedGeometryRevision?: string;
+  endpointPolicy: ConnectionEndpointPolicy;
+}
+
+export interface GeometryPatchUpdate {
+  elementUpdates: GeometryPatchElementUpdate[];
+  connectionUpdates: GeometryPatchConnectionUpdate[];
+  expectedRevision?: string;
+  collisionPolicy: ConnectionGeometryCollisionPolicy;
+  dryRun: boolean;
+}
+
+export interface ConnectionRouteUpdate {
+  avoidElementIds: string[];
+  avoidConnectionIds: string[];
+  clearance: number;
+  /** Routing is intentionally local; unrelated DI may never be rewritten. */
+  preserveOtherGeometry: true;
+  /** Compare-and-set guard for the current target BPMNEdge geometry. */
+  expectedGeometryRevision?: string;
+  /** False returns an apply_geometry_patch-compatible proposal. */
+  apply: boolean;
+}
+
+export interface GeometryPatchElementResult {
+  elementId: string;
+  before: ElementGeometryState;
+  after: ElementGeometryState;
+}
+
+export interface GeometryPatchConnectionResult {
+  connectionId: string;
+  before: ConnectionGeometryState;
+  after: ConnectionGeometryState;
+  endpointPolicy: ConnectionEndpointPolicy;
 }
 
 export interface BpmnEdgeModel {
@@ -219,6 +358,8 @@ export interface BpmnEdgeModel {
   waypoints: Position[];
   /** Optional BPMNLabel bounds emitted by an external layout engine. */
   labelBounds?: Position & Size;
+  /** Internal retained-XML signal that an existing BPMNLabel was explicitly removed. */
+  labelBoundsCleared?: boolean;
 }
 
 export interface BpmnDiagramModel {
@@ -262,6 +403,12 @@ export interface ProcessContext {
   elements: Map<string, BpmnDocumentElement>;
   connections: Map<string, BpmnDocumentConnection>;
   xml?: string;
+  /** Exact bytes read from or last committed to the active file. */
+  persistedXml?: string;
+  /** Successful in-memory commit count used to distinguish local revisions. */
+  mutationVersion: number;
+  /** Opaque optimistic-concurrency token for the current document state. */
+  revision: string;
 }
 
 export interface BpmnElement {

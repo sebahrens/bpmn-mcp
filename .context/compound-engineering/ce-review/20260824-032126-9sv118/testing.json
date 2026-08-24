@@ -1,0 +1,48 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Assert all unrelated DI remains unchanged",
+      "severity": "P2",
+      "file": "scripts/package-smoke.mjs",
+      "line": 1070,
+      "why_it_matters": "The new smoke workflow promises preservation of unrelated DI, but it snapshots only one unrelated shape in the process fixture and one shape plus one edge in the collaboration fixture. A regression that moves, resizes, relabels, or reroutes any other unaffected participant, shape, label, or edge can still leave validation and geometry diagnostics clean, so this test would pass while violating the workflow guarantee.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Before the first mutation, collect the DI fields for every fixture element and connection outside the explicit repair set; after close/reopen, compare each unchanged shapeId/bounds/labelBounds and edgeId/waypoints/labelBounds by ID. Keep separate assertions for the semantic fields intentionally changed.",
+      "confidence": 0.98,
+      "evidence": [
+        "scripts/package-smoke.mjs:1070-1075 compares only Annotation_Unrelated in the process fixture, although Start_Process and End_Process DI are also unrelated to the requested repair.",
+        "scripts/package-smoke.mjs:1267-1275 compares only Upper_End and Upper_Flow_2 in the collaboration fixture; the participant shapes and remaining unrelated lower-process shapes and edges are never snapshotted.",
+        "scripts/package-smoke.mjs:1060-1061 and 1236-1242 only establish that final validation and geometry diagnostics are clean; they do not establish byte- or field-level preservation of unrelated DI."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Validate exported SVG is actually renderable",
+      "severity": "P2",
+      "file": "scripts/package-smoke.mjs",
+      "line": 1105,
+      "why_it_matters": "The smoke test claims to prove SVG rendering from the packed server, but its only content assertion is that the resource text starts with '<svg'. A truncated, malformed, or empty SVG beginning with that prefix passes both fixture workflows, leaving a broken release renderer undetected.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Use the already-resolved Chromium runtime to parse each exported SVG as image/svg+xml and load it as an image or document, then assert no parser error, a nonzero rendered intrinsic size, and the expected SVG root. Apply the same helper to both process and collaboration exports.",
+      "confidence": 0.95,
+      "evidence": [
+        "scripts/package-smoke.mjs:1102-1106 accepts any string matching /^<svg\\b/u for the corrected process export.",
+        "scripts/package-smoke.mjs:1305-1309 applies the same prefix-only assertion to the corrected collaboration export.",
+        "puppeteer is available in this test at scripts/package-smoke.mjs:910, but the SVG resource is not independently parsed or rendered."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The packed-artifact schema fingerprints cover the workflow-used tools; inventory is fully pinned, while schemas for the remaining advertised tools rely on the source e2e suite rather than an installed-artifact assertion."
+  ],
+  "testing_gaps": [
+    "No exhaustive before/after DI snapshot covers every object outside each repair set after persistence and reopen.",
+    "No independent XML parse and browser-load assertion proves that the returned SVG resources render successfully."
+  ]
+}

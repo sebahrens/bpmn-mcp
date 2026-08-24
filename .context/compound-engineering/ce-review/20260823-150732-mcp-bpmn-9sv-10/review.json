@@ -1,0 +1,47 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "src/core/BpmnSvgRenderer.ts",
+    "tests/integration/svg-export.test.ts"
+  ],
+  "intent": "Lazily reuse one Puppeteer browser process for sequential SVG exports, retain per-render page isolation, and close all browser resources at renderer shutdown.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "performance",
+    "reliability",
+    "adversarial",
+    "security",
+    "kieran-typescript"
+  ],
+  "findings": [
+    {
+      "title": "Timeout cleanup was no longer awaited",
+      "severity": "P2",
+      "file": "src/core/BpmnSvgRenderer.ts",
+      "line": 102,
+      "confidence": 0.9,
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "status": "fixed",
+      "fix": "Retain and await the browser close promise when a render times out."
+    }
+  ],
+  "applied_fixes": [
+    "Restored awaited browser-process cleanup on render timeout."
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [],
+  "learnings": {
+    "relevant_matches": [],
+    "note": "No docs/solutions knowledge base was present in this repository."
+  },
+  "agent_native_gaps": [],
+  "verdict": "Ready to merge"
+}

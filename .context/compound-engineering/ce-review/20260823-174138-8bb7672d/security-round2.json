@@ -1,0 +1,8 @@
+{
+  "reviewer": "security",
+  "findings": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "No targeted test creates a regular skill directory whose .mcp-bpmn-installer-owned marker is a symlink and proves install/uninstall treat it as non-owned; the guard is present in skill_is_owned, but only the dangling destination-symlink case is exercised."
+  ]
+}

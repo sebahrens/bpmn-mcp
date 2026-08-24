@@ -35,14 +35,26 @@ const TOOL_CONTRACTS: Record<string, ToolContract> = {
   add_lane: { owner: 'engine', caseId: 'G1' },
   list_elements: { owner: 'handler', caseId: 'C6' },
   get_element: { owner: 'handler', caseId: 'C6' },
+  list_connections: { owner: 'handler', caseId: 'C6' },
+  get_connection: { owner: 'handler', caseId: 'C6' },
   update_element: { owner: 'engine', caseId: 'C4' },
+  update_connection: { owner: 'engine', caseId: 'C4' },
+  update_element_geometry: { owner: 'engine', caseId: 'C4' },
+  update_connection_geometry: { owner: 'engine', caseId: 'C4' },
+  apply_geometry_patch: { owner: 'engine', caseId: 'C4' },
+  route_connection: { owner: 'engine', caseId: 'C4' },
   delete_element: { owner: 'engine', caseId: 'C4' },
   export: { owner: 'engine', caseId: 'C2/G2' },
+  save_svg: { owner: 'handler', caseId: 'G2' },
+  save_png: { owner: 'handler', caseId: 'G2' },
   validate: { owner: 'handler', caseId: 'C6/G5' },
+  analyze_geometry: { owner: 'handler', caseId: 'C6' },
   auto_layout: { owner: 'engine', caseId: 'C4/C6/G4' },
   list_diagrams: { owner: 'engine', caseId: 'C5' },
   delete_diagram_file: { owner: 'engine', caseId: 'C5' },
-  get_diagrams_path: { owner: 'engine', caseId: 'C5' }
+  get_diagrams_path: { owner: 'engine', caseId: 'C5' },
+  get_workspace: { owner: 'handler', caseId: 'C6' },
+  select_workspace: { owner: 'handler', caseId: 'C6' }
 };
 
 const fixtureDirectory = join(process.cwd(), 'tests', 'fixtures', 'engine-contract');
@@ -324,6 +336,11 @@ describe('live engine contract', () => {
       'bpmn:StartEvent',
       'bpmn:Task'
     ]);
+    const connections = JSON.parse(textOf(await handler.handleRequest('list_connections', {})));
+    expect(connections.connections).toHaveLength(3);
+    expect(JSON.parse(textOf(await handler.handleRequest('get_connection', {
+      connectionId: connections.connections[0].id
+    })))).toMatchObject(connections.connections[0]);
 
     await handler.handleRequest('update_element', {
       elementId: 'Task_1',

@@ -1,0 +1,63 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "mcp.json",
+    "package.json",
+    "scripts/package-smoke.mjs",
+    "src/core/BpmnSvgRenderer.ts"
+  ],
+  "intent": "Make the npm tarball a stable, self-contained installation unit with future skill/plugin release roots, isolated package inspection, private-prefix production installation, and explicit XML-only behavior when Chrome is unavailable.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings",
+    "reliability",
+    "adversarial",
+    "cli-readiness"
+  ],
+  "findings": [
+    {
+      "title": "Exact size snapshot blocks legitimate artifact additions",
+      "severity": "P2",
+      "file": "scripts/package-smoke.mjs",
+      "line": 199,
+      "confidence": 0.95,
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "status": "fixed",
+      "fix": "Removed the exact README byte-count gate while retaining npm pack file-contract inspection."
+    },
+    {
+      "title": "Successful startup did not prove private-prefix resolution",
+      "severity": "P2",
+      "file": "scripts/package-smoke.mjs",
+      "line": 514,
+      "confidence": 0.9,
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "status": "fixed",
+      "fix": "Asserted every direct production dependency exists under the empty prefix and the installed bin resolves into the installed package."
+    }
+  ],
+  "applied_fixes": [
+    "Decoupled the artifact contract from a dated documentation size snapshot.",
+    "Added direct production-dependency and installed-bin containment checks."
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [
+    "The canonical skill and client plugin manifests are intentionally created by sibling beads; this package contract reserves and validates their release paths when they appear."
+  ],
+  "learnings": {
+    "relevant_matches": [],
+    "note": "No docs/solutions knowledge base or critical-patterns file was present in this repository."
+  },
+  "agent_native_gaps": [],
+  "verdict": "Ready to merge"
+}

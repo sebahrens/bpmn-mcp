@@ -1,0 +1,36 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "src/core/layout/CollaborationLayoutPolicy.ts",
+    "tests/unit/core/CollaborationAutoLayout.test.ts"
+  ],
+  "intent": "Prevent labels on peer message flows from overlapping by treating each placed label as an obstacle and making fallback placement collision-aware.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings-researcher",
+    "kieran-typescript"
+  ],
+  "findings": [],
+  "applied_fixes": [],
+  "residual_actionable_work": [],
+  "advisory_outputs": [],
+  "coverage": {
+    "untracked_files_excluded": [
+      ".context/compound-engineering/ce-review/20260823-143150-683f510c/"
+    ],
+    "unrelated_tracked_changes_excluded": [
+      ".beads/interactions.jsonl",
+      "tests/helpers/bpmnGeometry.test.ts",
+      "tests/helpers/bpmnGeometry.ts"
+    ],
+    "failed_reviewers": [],
+    "suppressed_findings": 0,
+    "testing_gaps": [],
+    "residual_risks": []
+  },
+  "verdict": "Ready to merge"
+}

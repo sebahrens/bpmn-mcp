@@ -331,6 +331,15 @@ describe('resource exhaustion guards', () => {
 
     expect(() => parseToolRequest('list_elements', { limit: MAX_PAGE_LIMIT, offset: 0 }))
       .not.toThrow();
+    expect(() => parseToolRequest('list_connections', {
+      connectionType: 'bpmn:SequenceFlow',
+      sourceId: 'Task_1',
+      targetId: 'Task_2',
+      ownerId: 'Process_1',
+      scopeId: 'Process_1',
+      limit: MAX_PAGE_LIMIT,
+      offset: 0
+    })).not.toThrow();
     expect(() => parseToolRequest('list_diagrams', { limit: MAX_PAGE_LIMIT + 1, offset: 0 }))
       .toThrow(`Number must be less than or equal to ${MAX_PAGE_LIMIT}`);
   });
@@ -443,6 +452,91 @@ describe('resource exhaustion guards', () => {
     expect(textOf(excessDiagrams)).toContain('scan limit 2 exceeded');
   });
 
+  it('caps geometry patch size at the request boundary and diagnostic work in the engine', async () => {
+    const revision = `sha256:${'a'.repeat(64)}:v1`;
+    expect(() => parseToolRequest('apply_geometry_patch', {
+      expectedRevision: revision,
+      elementUpdates: Array.from({ length: 256 }, (_, index) => ({
+        elementId: `Task_${index}`,
+        bounds: { x: index, y: 0, width: 1, height: 1 }
+      }))
+    })).not.toThrow();
+    expect(() => parseToolRequest('apply_geometry_patch', {
+      expectedRevision: revision,
+      elementUpdates: Array.from({ length: 257 }, (_, index) => ({
+        elementId: `Task_${index}`,
+        bounds: { x: index, y: 0, width: 1, height: 1 }
+      }))
+    })).toThrow('Array must contain at most 256 element(s)');
+
+    const resourceLimits = limits({ maxListingItems: 1 });
+    const handler = new BpmnRequestHandler(
+      new SimpleBpmnEngine(directory, undefined, passthroughLayout, resourceLimits),
+      undefined,
+      resourceLimits
+    );
+    await handler.handleRequest('new_bpmn', { name: 'Bounded patch diagnostics' });
+    for (const [name, x] of [['One', 100], ['Two', 400], ['Three', 700]] as const) {
+      await handler.handleRequest('add_activity', {
+        activityType: 'task', name, position: { x, y: 100 }
+      });
+    }
+    const context = diagramContext.getCurrent();
+    const beforeXml = context.xml;
+    const rejected = await handler.handleRequest('apply_geometry_patch', {
+      expectedRevision: context.revision,
+      elementUpdates: [{
+        elementId: 'Task_1',
+        bounds: { x: 350, y: 100, width: 500, height: 80 }
+      }],
+      collisionPolicy: 'allow'
+    });
+    expect(rejected.isError).toBe(true);
+    expect(textOf(rejected)).toContain('resource limit exceeded');
+    expect(context.xml).toBe(beforeXml);
+  });
+
+  it('bounds route candidate validation and returns ranked resource diagnostics', async () => {
+    const resourceLimits = limits({ maxLayoutElements: 1 });
+    const handler = new BpmnRequestHandler(
+      new SimpleBpmnEngine(directory, undefined, passthroughLayout, resourceLimits),
+      undefined,
+      resourceLimits
+    );
+    await handler.handleRequest('new_bpmn', { name: 'Bounded connection routing' });
+    await handler.handleRequest('add_activity', {
+      activityType: 'task', name: 'Source', position: { x: 100, y: 100 }
+    });
+    await handler.handleRequest('add_activity', {
+      activityType: 'task', name: 'Target', position: { x: 500, y: 100 }
+    });
+    const connection = await handler.handleRequest('connect', {
+      sourceId: 'Task_1', targetId: 'Task_2'
+    });
+    const connectionId = (connection.structuredContent as any).connectionId as string;
+    const context = diagramContext.getCurrent();
+    const beforeXml = context.xml;
+    const beforeRevision = context.revision;
+
+    const rejected = await handler.handleRequest('route_connection', { connectionId });
+
+    expect(rejected).toMatchObject({
+      isError: true,
+      structuredContent: {
+        code: 'routing_failed',
+        mutated: false,
+        rankedDiagnostics: [expect.objectContaining({
+          rank: 1,
+          diagnostics: expect.arrayContaining([
+            expect.objectContaining({ code: 'RESOURCE_LIMIT_EXCEEDED' })
+          ])
+        })]
+      }
+    });
+    expect(context.xml).toBe(beforeXml);
+    expect(context.revision).toBe(beforeRevision);
+  });
+
   it('caps diagram directory scans even when entries are not BPMN files', async () => {
     const scanDirectory = join(directory, 'scan-cap');
     await fs.mkdir(scanDirectory);
@@ -480,5 +574,39 @@ describe('resource exhaustion guards', () => {
     const rejected = await handler.handleRequest('list_elements', {});
     expect(rejected.isError).toBe(true);
     expect(textOf(rejected)).toContain('connection scan limit 2 exceeded');
+  });
+
+  it('stably paginates filtered connections and enforces the connection scan cap', async () => {
+    const resourceLimits = limits({ maxListingItems: 3 });
+    const handler = new BpmnRequestHandler(
+      new SimpleBpmnEngine(directory, undefined, passthroughLayout, resourceLimits),
+      undefined,
+      resourceLimits
+    );
+    await handler.handleRequest('new_bpmn', { name: 'Connection pages' });
+    for (let index = 1; index <= 3; index++) {
+      await handler.handleRequest('add_activity', { activityType: 'task', name: `Task ${index}` });
+    }
+    await handler.handleRequest('connect', { sourceId: 'Task_1', targetId: 'Task_2' });
+    await handler.handleRequest('connect', { sourceId: 'Task_1', targetId: 'Task_3' });
+
+    const first = JSON.parse(textOf(await handler.handleRequest('list_connections', {
+      sourceId: 'Task_1', limit: 1, offset: 0
+    })));
+    const final = JSON.parse(textOf(await handler.handleRequest('list_connections', {
+      sourceId: 'Task_1', limit: 1, offset: 1
+    })));
+    expect(first.connections.map((connection: { id: string }) => connection.id))
+      .toEqual(['Flow_1']);
+    expect(final.connections.map((connection: { id: string }) => connection.id))
+      .toEqual(['Flow_2']);
+    expect([first.hasMore, final.hasMore]).toEqual([true, false]);
+
+    await handler.handleRequest('connect', { sourceId: 'Task_2', targetId: 'Task_3' });
+    expect((await handler.handleRequest('list_connections', {})).isError).toBeUndefined();
+    await handler.handleRequest('connect', { sourceId: 'Task_2', targetId: 'Task_3' });
+    const rejected = await handler.handleRequest('list_connections', {});
+    expect(rejected.isError).toBe(true);
+    expect(textOf(rejected)).toContain('Connection listing rejected: scan limit 3 exceeded');
   });
 });

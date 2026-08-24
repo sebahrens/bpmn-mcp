@@ -1,0 +1,27 @@
+{
+  "reviewer": "reliability",
+  "findings": [
+    {
+      "title": "Semantic updates reject no-DI documents",
+      "severity": "P2",
+      "file": "src/core/SimpleBpmnEngine.ts",
+      "line": 1260,
+      "why_it_matters": "A label, condition, default-flow, or association-direction update on an otherwise valid imported BPMN document without DI always fails before persistence. Geometry validation reports MISSING_DI with no object IDs, and assertSafeConnectionGeometry treats any global invariant diagnostic as fatal even when it was already present and the requested semantic update does not touch geometry. This makes the new mutation endpoint unavailable for common semantic-only BPMN files.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "For semantic-only updates, skip geometry validation or compare against the before diagnostics so pre-existing MISSING_DI/MISSING_EDGE diagnostics do not block the mutation; keep the explicit rendered edge/shape requirement for endpoint rewiring.",
+      "confidence": 0.94,
+      "evidence": [
+        "updateConnection unconditionally validates beforeXml and afterXml, then calls assertSafeConnectionGeometry at src/core/SimpleBpmnEngine.ts:1249-1264.",
+        "validateBpmnGeometry returns MISSING_DI with an empty ids array for a document without a DI plane (src/core/BpmnGeometry.ts:224-227).",
+        "assertSafeConnectionGeometry rejects MISSING_DI whenever ids is empty, irrespective of whether the diagnostic existed before the update (src/core/SimpleBpmnEngine.ts:2307-2320)."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "No update_connection test imports a BPMN model containing supported source and target flow nodes plus a sequence flow but no DI, then verifies a semantic-only update persists while endpoint rewiring still rejects without rendered DI."
+  ]
+}

@@ -34,14 +34,42 @@ const validArguments = {
   add_lane: { poolId: 'Participant_1', name: 'Lane', flowNodeIds: ['Task_1'] },
   list_elements: {},
   get_element: { elementId: 'Task_1' },
+  list_connections: {},
+  get_connection: { connectionId: 'Flow_1' },
   update_element: { elementId: 'Task_1' },
+  update_connection: {
+    connectionId: 'Flow_1',
+    label: 'Updated',
+    expectedSemanticRevision: `sha256:${'a'.repeat(64)}`
+  },
+  update_element_geometry: {
+    elementId: 'Task_1',
+    bounds: { x: 100, y: 100, width: 100, height: 80 }
+  },
+  update_connection_geometry: {
+    connectionId: 'Flow_1',
+    waypoints: [{ x: 100, y: 100 }, { x: 200, y: 100 }]
+  },
+  apply_geometry_patch: {
+    elementUpdates: [{
+      elementId: 'Task_1',
+      bounds: { x: 200, y: 200, width: 100, height: 80 },
+      expectedBounds: { x: 100, y: 100, width: 100, height: 80 }
+    }]
+  },
+  route_connection: { connectionId: 'Flow_1' },
   delete_element: { elementId: 'Task_1' },
   export: {},
+  save_svg: { filename: 'diagram.svg' },
+  save_png: { filename: 'diagram.png' },
   validate: {},
+  analyze_geometry: {},
   auto_layout: {},
   list_diagrams: {},
   delete_diagram_file: { filename: 'diagram.bpmn' },
-  get_diagrams_path: {}
+  get_diagrams_path: {},
+  get_workspace: {},
+  select_workspace: { path: 'wiki/processes/assets' }
 } satisfies Record<ToolName, unknown>;
 
 describe('MCP request validation boundary', () => {
@@ -118,6 +146,56 @@ describe('MCP request validation boundary', () => {
     expect(addActivitySchema.properties.properties.properties.candidateGroups.maxItems)
       .toBe(TOOL_INPUT_LIMITS.candidateGroups.maxItems);
 
+    const analyzeGeometrySchema = tools.find(tool => tool.name === 'analyze_geometry')!
+      .inputSchema as any;
+    expect(analyzeGeometrySchema.properties.elementIds).toMatchObject({
+      maxItems: 256,
+      uniqueItems: true
+    });
+    expect(analyzeGeometrySchema.properties.connectionIds).toMatchObject({
+      maxItems: 256,
+      uniqueItems: true
+    });
+    expect(analyzeGeometrySchema.properties.clearance).toMatchObject({
+      minimum: 0,
+      maximum: TOOL_INPUT_LIMITS.coordinate.max,
+      default: 5
+    });
+    expect(analyzeGeometrySchema.properties.tolerance).toMatchObject({
+      exclusiveMinimum: 0,
+      maximum: TOOL_INPUT_LIMITS.coordinate.max,
+      default: 1
+    });
+
+    const updateGeometrySchema = tools.find(tool => tool.name === 'update_element_geometry')!
+      .inputSchema as any;
+    expect(updateGeometrySchema.properties.bounds.required).toEqual([
+      'x', 'y', 'width', 'height'
+    ]);
+    expect(updateGeometrySchema.properties.bounds.additionalProperties).toBe(false);
+    expect(updateGeometrySchema.properties.bounds.properties.x).toMatchObject({
+      minimum: TOOL_INPUT_LIMITS.coordinate.min,
+      maximum: TOOL_INPUT_LIMITS.coordinate.max
+    });
+    expect(updateGeometrySchema.properties.bounds.properties.width).toMatchObject({
+      minimum: TOOL_INPUT_LIMITS.dimension.min,
+      maximum: TOOL_INPUT_LIMITS.dimension.max
+    });
+    const updateConnectionGeometrySchema = tools.find(
+      tool => tool.name === 'update_connection_geometry'
+    )!.inputSchema as any;
+    expect(updateConnectionGeometrySchema.properties.waypoints).toMatchObject({
+      minItems: 2,
+      maxItems: 256
+    });
+    expect(updateConnectionGeometrySchema.properties.waypoints.items.properties.x)
+      .toMatchObject({
+        minimum: TOOL_INPUT_LIMITS.coordinate.min,
+        maximum: TOOL_INPUT_LIMITS.coordinate.max
+      });
+    expect(updateConnectionGeometrySchema.properties.expectedGeometryRevision.pattern)
+      .toBe('^sha256:[a-f0-9]{64}$');
+
     const defaultCases: Array<[ToolName, unknown, Record<string, unknown>]> = [
       ['new_bpmn', { name: 'Defaults' }, { type: 'process' }],
       ['connect', { sourceId: 'a', targetId: 'b' }, { isDefault: false }],
@@ -126,9 +204,41 @@ describe('MCP request validation boundary', () => {
       ['add_pool', { name: 'Pool' }, { blackBox: false }],
       ['add_lane', { poolId: 'p', name: 'Lane', flowNodeIds: ['n'] }, { position: 'bottom' }],
       ['export', {}, { format: 'xml', formatted: true }],
+      ['save_svg', { filename: 'diagram.svg' }, { overwrite: false }],
+      ['save_png', { filename: 'diagram.png' }, { overwrite: false }],
       ['validate', {}, { level: 'full' }],
+      ['analyze_geometry', {}, {
+        elementIds: [],
+        connectionIds: [],
+        clearance: 5,
+        tolerance: 1,
+        requireOrthogonal: false
+      }],
+      ['update_element_geometry', {
+        elementId: 'Task_1',
+        bounds: { x: 100, y: 100, width: 100, height: 80 }
+      }, { collisionPolicy: 'reject', dryRun: false }],
+      ['update_connection_geometry', {
+        connectionId: 'Flow_1',
+        waypoints: [{ x: 100, y: 100 }, { x: 200, y: 100 }]
+      }, { endpointPolicy: 'exact', collisionPolicy: 'reject-new', dryRun: false }],
+      ['apply_geometry_patch', {
+        expectedRevision: `sha256:${'a'.repeat(64)}:v1`,
+        elementUpdates: [{
+          elementId: 'Task_1',
+          bounds: { x: 100, y: 100, width: 100, height: 80 }
+        }]
+      }, { connectionUpdates: [], collisionPolicy: 'reject-new', dryRun: false }],
+      ['route_connection', { connectionId: 'Flow_1' }, {
+        avoidElementIds: [],
+        avoidConnectionIds: [],
+        clearance: 20,
+        preserveOtherGeometry: true,
+        apply: false
+      }],
       ['auto_layout', {}, { algorithm: 'horizontal' }],
       ['list_elements', {}, { limit: 100, offset: 0 }],
+      ['list_connections', {}, { limit: 100, offset: 0 }],
       ['list_diagrams', {}, { limit: 100, offset: 0 }]
     ];
 
@@ -239,6 +349,13 @@ describe('MCP request validation boundary', () => {
         (_, index) => `Task_${index}`
       )
     })).not.toThrow();
+    expect(() => parseToolRequest('update_connection_geometry', {
+      connectionId: 'Flow_1',
+      waypoints: Array.from({ length: 256 }, (_, index) => ({
+        x: index + 0.5,
+        y: TOOL_INPUT_LIMITS.coordinate.max
+      }))
+    })).not.toThrow();
   });
 
   it.each([
@@ -251,6 +368,75 @@ describe('MCP request validation boundary', () => {
       activityType: 'task', name: 'Injected', position: { x: 10 }
     }],
     ['partial size', 'add_pool', { name: 'Injected', size: { width: 100 } }],
+    ['partial geometry bounds', 'update_element_geometry', {
+      elementId: 'Task_1', bounds: { x: 10, y: 20, width: 100 }
+    }],
+    ['non-finite geometry bounds', 'update_element_geometry', {
+      elementId: 'Task_1',
+      bounds: { x: Number.POSITIVE_INFINITY, y: 20, width: 100, height: 80 }
+    }],
+    ['invalid incident geometry policy', 'update_element_geometry', {
+      elementId: 'Task_1',
+      bounds: { x: 10, y: 20, width: 100, height: 80 },
+      incidentConnectionPolicy: 'detach'
+    }],
+    ['too few connection waypoints', 'update_connection_geometry', {
+      connectionId: 'Flow_1', waypoints: [{ x: 10, y: 20 }]
+    }],
+    ['too many connection waypoints', 'update_connection_geometry', {
+      connectionId: 'Flow_1',
+      waypoints: Array.from({ length: 257 }, (_, index) => ({ x: index, y: 20 }))
+    }],
+    ['non-finite connection waypoint', 'update_connection_geometry', {
+      connectionId: 'Flow_1',
+      waypoints: [{ x: 10, y: 20 }, { x: Number.POSITIVE_INFINITY, y: 20 }]
+    }],
+    ['invalid connection endpoint policy', 'update_connection_geometry', {
+      connectionId: 'Flow_1',
+      waypoints: [{ x: 10, y: 20 }, { x: 30, y: 20 }],
+      endpointPolicy: 'detach'
+    }],
+    ['unguarded semantic connection update', 'update_connection', {
+      connectionId: 'Flow_1', label: 'Updated'
+    }],
+    ['endpoint semantic update without snapping', 'update_connection', {
+      connectionId: 'Flow_1', targetId: 'Task_2',
+      expectedSemanticRevision: `sha256:${'a'.repeat(64)}`
+    }],
+    ['empty geometry patch', 'apply_geometry_patch', {}],
+    ['unguarded geometry patch element', 'apply_geometry_patch', {
+      elementUpdates: [{
+        elementId: 'Task_1',
+        bounds: { x: 10, y: 20, width: 100, height: 80 }
+      }]
+    }],
+    ['duplicate geometry patch element', 'apply_geometry_patch', {
+      expectedRevision: `sha256:${'a'.repeat(64)}:v1`,
+      elementUpdates: [0, 1].map(() => ({
+        elementId: 'Task_1',
+        bounds: { x: 10, y: 20, width: 100, height: 80 }
+      }))
+    }],
+    ['geometry patch over total item limit', 'apply_geometry_patch', {
+      expectedRevision: `sha256:${'a'.repeat(64)}:v1`,
+      elementUpdates: Array.from({ length: 128 }, (_, index) => ({
+        elementId: `Task_${index}`,
+        bounds: { x: index, y: 20, width: 100, height: 80 }
+      })),
+      connectionUpdates: Array.from({ length: 129 }, (_, index) => ({
+        connectionId: `Flow_${index}`,
+        labelBounds: null
+      }))
+    }],
+    ['duplicate route avoid elements', 'route_connection', {
+      connectionId: 'Flow_1', avoidElementIds: ['Task_1', 'Task_1']
+    }],
+    ['route cannot disable unrelated geometry preservation', 'route_connection', {
+      connectionId: 'Flow_1', preserveOtherGeometry: false
+    }],
+    ['negative route clearance', 'route_connection', {
+      connectionId: 'Flow_1', clearance: -1
+    }],
     ['position below minimum', 'add_activity', {
       activityType: 'task',
       name: 'Injected',
@@ -344,6 +530,17 @@ describe('MCP request validation boundary', () => {
       poolId: 'Participant_1',
       name: 'Lane',
       flowNodeIds: ['Task_1', 'Task_1']
+    }],
+    ['duplicate geometry element IDs', 'analyze_geometry', {
+      elementIds: ['Task_1', 'Task_1']
+    }],
+    ['too many geometry connection IDs', 'analyze_geometry', {
+      connectionIds: Array.from({ length: 257 }, (_, index) => `Flow_${index}`)
+    }],
+    ['negative geometry clearance', 'analyze_geometry', { clearance: -1 }],
+    ['zero geometry tolerance', 'analyze_geometry', { tolerance: 0 }],
+    ['non-finite geometry tolerance', 'analyze_geometry', {
+      tolerance: Number.POSITIVE_INFINITY
     }],
     ['too many candidate groups', 'add_activity', {
       activityType: 'userTask',

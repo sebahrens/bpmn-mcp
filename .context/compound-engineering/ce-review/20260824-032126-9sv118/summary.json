@@ -1,0 +1,32 @@
+{
+  "bead": "mcp-bpmn-9sv.11.8",
+  "mode": "autofix",
+  "status": "passed",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "reliability",
+    "adversarial",
+    "agent-native",
+    "learnings"
+  ],
+  "resolved_findings": [
+    "Replaced numeric MCP workflow result coupling with named step maps",
+    "Compared every unrelated BPMNShape and BPMNEdge before and after reopen",
+    "Browser-loaded both exported SVGs and asserted nonempty rendered geometry",
+    "Pinned the complete ordered packed-tool input/output schema contract",
+    "Added an explicit 20-unit MINIMUM_CLEARANCE baseline and repair",
+    "Compared complete semantic XML before and after each repair, allowing only intended changes",
+    "Added analyze_geometry to the README capability matrix"
+  ],
+  "remaining_findings": [],
+  "verification": [
+    "node --check scripts/package-smoke.mjs",
+    "npx eslint scripts/package-smoke.mjs",
+    "git diff --check",
+    "npm run test:package",
+    "npm run test:all"
+  ]
+}

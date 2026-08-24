@@ -1,0 +1,30 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Symlinked ownership marker guard remains untested",
+      "severity": "P2",
+      "file": "tests/install-agent-integrations.test.sh",
+      "line": 341,
+      "why_it_matters": "The safe fix closes two independent symlink paths, but the regression test exercises only a dangling skill-directory symlink. A future removal of the marker-level `! -L` check would let a third-party skill directory point its ownership marker at installer-owned text and be replaced or deleted without force while this suite still passes.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add a fixture with a regular third-party skill directory whose `.mcp-bpmn-installer-owned` file is a symlink to a file containing the ownership marker. Assert install without FORCE rejects it and leaves the directory byte-for-byte intact; also assert uninstall preserves it if removal behavior is in scope.",
+      "confidence": 0.99,
+      "evidence": [
+        "scripts/install-agent-integrations.sh:188-192 adds a distinct `[ ! -L \"$1/.mcp-bpmn-installer-owned\" ]` ownership condition.",
+        "tests/install-agent-integrations.test.sh:341-354 covers only a dangling symlink at the skill destination and never creates a symlinked ownership-marker file.",
+        "The original security fix explicitly required cases for both dangling destination symlinks and symlinked marker files; only the first case is present."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The WSL checks are automated through lexical `/mnt/<drive>` path simulation and documented for a real WSL2 smoke, but this re-review did not execute the manual smoke in a genuine WSL2 kernel environment."
+  ],
+  "testing_gaps": [
+    "The rollback scenarios prove configuration contents are restored, but the fake `cp` wrapper does not record or assert that both snapshot and restore invocations include `-f`; the `cp -pf` policy fix is verified statically rather than by a regression assertion.",
+    "The Claude no-force conflict test compares command-substitution strings rather than files with `cmp` and clears the Claude argv log before checking that the refusal made only the read-only `mcp get` call, so its stated byte-for-byte/no-mutation guarantee is slightly stronger than its assertions. The success/failure and final-state regression are covered."
+  ]
+}

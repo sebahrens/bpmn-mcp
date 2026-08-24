@@ -1,0 +1,68 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "Rollback resurrects deleted registrations",
+      "severity": "P1",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 633,
+      "why_it_matters": "If another process deletes the just-installed Codex or Claude registration after this installer has made it but before a later failure triggers rollback, rollback treats the missing registration as safe and restores the pre-install snapshot. That recreates state an external actor deliberately removed, which is the same client-state clobbering this change is intended to prevent.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "When an installed-registration snapshot exists, require the current registration to match it before either removing or restoring; a missing/unreadable current registration must warn and preserve it. Keep restoration after a failed add as an explicit, separately recorded installer intermediate state.",
+      "confidence": 0.94,
+      "evidence": [
+        "rollback_codex_registration only compares when `codex mcp get` succeeds (lines 621-627); when it fails, lines 629-634 restore the original snapshot.",
+        "rollback_claude_registration has the equivalent path: a failed `claude_user_registration_json` skips the comparison at lines 639-646 and lines 648-651 restore the snapshot.",
+        "The installed JSON snapshot exists after a successful add (lines 774-775 and 790-791), so an external deletion after that point is distinguishable from the installer's expected state but is not guarded."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Codex rollback does not restore exact config",
+      "severity": "P1",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 596,
+      "why_it_matters": "A forced replacement can destroy valid Codex registration settings when a later step fails. The code snapshots the whole JSON object but rebuilds only command/args/env or URL/bearer-token fields, dropping supported OAuth settings and any future or currently unhandled fields instead of restoring the exact prior registration.",
+      "autofix_class": "gated_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Use a Codex-supported exact registration import/update mechanism, or extend restore_codex_json to round-trip every field Codex exposes (including OAuth client ID, registration strategy, and resource) and add a preservation test using a non-basic HTTP registration.",
+      "confidence": 0.9,
+      "evidence": [
+        "snapshot_client_registrations stores the complete `codex mcp get --json` response at lines 552-557.",
+        "restore_codex_json reads only `transport.type`, `command`, `args`, `env`, `url`, and `bearer_token_env_var` at lines 602-610.",
+        "The installed Codex CLI's `mcp add --help` exposes OAuth client ID, client-registration strategy, and OAuth resource options, none of which are restored by this function."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Unavailable client bypasses path coherence",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 440,
+      "why_it_matters": "A targeted path change can leave the unselected client's still-installed registration pointing at the old diagrams directory when that client executable is temporarily unavailable and its skill has been removed. The guard then has no positive ownership signal and permits the change, despite the old registration remaining in the client's configuration for when the executable returns.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "For an unselected unavailable client, inspect its persisted registration where possible or conservatively reject a diagrams-path change when ownership cannot be disproved; cover the case with a missing unselected CLI, absent skill, and retained old registration.",
+      "confidence": 0.86,
+      "evidence": [
+        "For a targeted Codex install, the Claude registration is checked only in the `command -v claude` branch at lines 440-445; an absent Claude CLI leaves `other_owned=0` when the skill is absent.",
+        "The Claude registration itself persists in `CLAUDE_USER_CONFIG_FILE` and is not removed by losing the CLI binary, so it can remain at the old path.",
+        "The Claude-targeted/Codex-unavailable branch has the same structure at lines 454-459."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The compare-then-remove/add sequences are not atomic with respect to external client-config writers. A process can replace a registration after `*_registration_unchanged` returns and before the subsequent remove command; per-PREFIX locking does not serialize installers using different prefixes or other config writers.",
+    "The focused test suite uses simplified fake Codex and Claude CLIs, so it does not establish that all real CLI JSON shapes and failure modes round-trip safely."
+  ],
+  "testing_gaps": [
+    "No deterministic rollback test deletes the newly installed Codex or Claude registration after a later client failure; the current late-replacement test covers only replacement with another registration.",
+    "No test snapshots and restores a Codex HTTP/OAuth registration containing fields beyond URL and bearer token.",
+    "No targeted diagrams-path test removes the unselected client's executable and skill while retaining its old registration."
+  ]
+}

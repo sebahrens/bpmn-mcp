@@ -1,0 +1,30 @@
+{
+  "mode": "autofix",
+  "scope": [
+    "src/core/layout/BpmnLayoutAdapter.ts",
+    "scripts/package-smoke.mjs (auto_layout packed-runtime additions only)"
+  ],
+  "intent": "Resolve bpmn-auto-layout from the installed server package and prove packed auto_layout works from an unrelated caller directory.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings-researcher",
+    "reliability",
+    "kieran-typescript"
+  ],
+  "dispatch": "Reviewer sub-agent dispatch was unavailable; the ce:review sequential fallback ran in the main thread.",
+  "findings": [],
+  "applied_fixes": [
+    "Changed the package smoke runtime cwd so it reproduces caller-directory module resolution.",
+    "Resolved the layout dependency relative to the installed executable before starting the isolated eval subprocess.",
+    "Guarded the missing layout result diagnostic with optional chaining."
+  ],
+  "residual_actionable_work": [],
+  "advisory_outputs": [],
+  "learnings": "No docs/solutions directory or critical-patterns file exists in this repository.",
+  "agent_native_gaps": [],
+  "verdict": "Ready to merge"
+}

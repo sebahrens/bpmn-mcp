@@ -1,0 +1,69 @@
+{
+  "reviewer": "reliability",
+  "findings": [
+    {
+      "title": "Snapshot marker can strand the original path",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 330,
+      "why_it_matters": "If the shell is interrupted, or marker creation fails, after an existing app, state file, or third-party skill has been moved into the rollback directory but before the snapshotted marker is written, rollback treats that path as never captured. Cleanup then deletes the rollback directory, permanently removing the prior active install or third-party skill instead of restoring it.",
+      "autofix_class": "gated_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Make restore_moved_path restore whenever both the present marker and snapshot payload exist, even when the final snapshotted marker is absent; only use snapshotted to represent the originally-absent case. Add a fault-injection test for interruption/failure immediately after mv.",
+      "confidence": 0.94,
+      "evidence": [
+        "Lines 323-330 create the present marker, move source_path into ROLLBACK_DIR, and only then create the snapshotted marker.",
+        "Line 350 returns without restoring unless the snapshotted marker exists, even if the present marker and moved snapshot payload already exist.",
+        "Lines 89-90 delete TEMP_DIR, including the only remaining copy in ROLLBACK_DIR, after rollback returns success without seeing the missing marker."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Uninstall failure leaves clients partially unregistered",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 631,
+      "why_it_matters": "When both clients are installed, Codex registration is removed first. If the subsequent Claude removal fails, fail exits immediately with no uninstall transaction, leaving Codex deregistered while the app, skills, ownership state, and Claude registration remain. The user gets a half-uninstalled integration and must diagnose and repair it manually.",
+      "autofix_class": "gated_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Snapshot both client config files before the first unregister operation and restore them when either unregister step fails, or otherwise make uninstall explicitly transactional through completion of all registration removals. Add failure injection for each remove command.",
+      "confidence": 0.96,
+      "evidence": [
+        "Lines 612-618 remove the Codex registration before attempting the Claude operation.",
+        "Lines 628-633 perform Claude removal and call fail on error.",
+        "The install transaction functions are never activated by run_uninstall, so the EXIT trap has no state to roll back after the second removal fails."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Failed skill staging leaks partial directories",
+      "severity": "P3",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 468,
+      "why_it_matters": "A copy failure, ownership-marker write failure, or failed final move leaves a hidden .mcp-bpmn-skill.* directory under the user's client skill directory. Repeated low-space or permission failures can accumulate partial package contents outside the transaction cleanup area even though the installer reports that it rolled back.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Track the staged skill path globally and remove it from cleanup until the final move succeeds, then clear the tracked path. Add a copy or marker-write failure test that asserts no staging directory remains.",
+      "confidence": 0.92,
+      "evidence": [
+        "Lines 464-468 create staged_skill beneath the destination parent, outside TEMP_DIR, and copy package contents into it.",
+        "Lines 469-481 have several failure points before or during the move to destination, with no local cleanup of staged_skill.",
+        "Lines 89-90 only remove TEMP_DIR, which cannot remove this destination-adjacent staging directory."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Client configuration rollback uses cp -p directly onto the live file. If rollback itself encounters low space or an I/O error, it can leave a partially restored config; the installer warns that rollback was incomplete but has no atomic fallback.",
+    "npm pack/install and client CLI calls have no installer-level timeout. Their own timeout behavior was not established in this review, so a stalled subprocess may require manual interruption."
+  ],
+  "testing_gaps": [
+    "The rollback scenario starts from no installer-owned active app or state; there is no injected downstream failure during update that proves the previous app version, ownership state, skills, and registrations are all restored.",
+    "The fakes define FAKE_FAIL_NPM_INSTALL and FAKE_FAIL_CODEX_ADD, but the test never invokes those failure modes; npm pack failure, Codex add failure, and failures at individual filesystem snapshot/staging boundaries are also uncovered.",
+    "Client remove commands cannot be failed by the fakes, so neither install replacement rollback after a failed remove nor partial uninstall behavior is tested.",
+    "The WSL2 smoke validates rejection of Windows Node.js but does not exercise a successful isolated install/doctor/uninstall lifecycle using native Linux Node.js under the real WSL2 kernel."
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "reviewer": "testing",
+  "findings": [],
+  "residual_risks": [
+    "The final suite deterministically covers: rejection of disabled and legacy HTTP Codex snapshots before replacement; physical-prefix alias lock contention; recorded unselected-client ownership with that CLI and skill unavailable; Claude replacement/deletion/unreadable rollback outcomes.",
+    "Client-state mutation tests occur at explicit fake-client command boundaries. They do not simulate an uncoordinated write in the narrow interval after rollback has compared a registration and before it removes it."
+  ],
+  "testing_gaps": []
+}

@@ -434,7 +434,9 @@ export function createProcessContext(
     document,
     elements: document.elements,
     connections: document.connections,
-    xml: ''
+    xml: '',
+    mutationVersion: 0,
+    revision: ''
   };
 }
 
@@ -526,6 +528,7 @@ export function synchronizeDiagramInterchange(
         height: element.size.height
       },
       labelBounds: existing?.labelBounds ? { ...existing.labelBounds } : undefined,
+      labelBoundsCleared: existing?.labelBoundsCleared,
       isHorizontal: existing?.isHorizontal
         ?? ('kind' in element && element.kind === 'participant' ? true : undefined),
       isExpanded: 'kind' in element && isFlowContainerType(element.type)
@@ -565,12 +568,19 @@ export function synchronizeDiagramInterchange(
       id: edgeId,
       connectionId: connection.id,
       waypoints: connection.waypoints.map(point => ({ ...point })),
-      labelBounds: existing?.labelBounds ? { ...existing.labelBounds } : undefined
+      labelBounds: existing?.labelBounds ? { ...existing.labelBounds } : undefined,
+      ...(existing?.labelBoundsCleared !== undefined
+        ? { labelBoundsCleared: existing.labelBoundsCleared }
+        : {})
     });
   }
 
-  for (const edgeId of document.diagram.edges.keys()) {
+  for (const [edgeId, edge] of document.diagram.edges) {
     if (!edgeIds.has(edgeId)) {
+      if (document.sourceIds?.has(edge.connectionId)
+        && document.managedIds?.has(edge.connectionId) !== true) {
+        continue;
+      }
       document.diagram.edges.delete(edgeId);
     }
   }
@@ -991,9 +1001,20 @@ export class BpmnDocumentSerializer {
       if (!sourceRef || !targetRef) {
         throw new Error(`Connection ${connection.id} references a missing source or target`);
       }
+      const previousSourceRef = semantic.sourceRef;
+      const previousTargetRef = semantic.targetRef;
       semantic.name = connection.label;
       semantic.sourceRef = sourceRef;
       semantic.targetRef = targetRef;
+      if (!isNew) {
+        this.reconcileConnectionReferences(
+          connection,
+          semantic,
+          semanticById,
+          previousSourceRef,
+          previousTargetRef
+        );
+      }
       this.applyConnectionProperties(connection, semantic, semanticById);
       if (isNew) {
         this.attachConnection(connection, semantic, semanticById);
@@ -1184,6 +1205,52 @@ export class BpmnDocumentSerializer {
     }
   }
 
+  private reconcileConnectionReferences(
+    connection: BpmnDocumentConnection,
+    semantic: any,
+    semanticById: Map<string, any>,
+    previousSourceRef: any,
+    previousTargetRef: any
+  ): void {
+    const containerProperty = connection.type === 'bpmn:MessageFlow'
+      ? 'messageFlows'
+      : connection.type === 'bpmn:Association'
+        ? 'artifacts'
+        : 'flowElements';
+    const containerId = connection.type === 'bpmn:MessageFlow'
+      ? connection.ownerId
+      : connection.scopeId;
+    const container = semanticById.get(containerId);
+    if (!container) throw new Error(`Connection ${connection.id} has invalid scope ${containerId}`);
+
+    const alreadyAttached = Array.isArray(container[containerProperty])
+      && container[containerProperty].includes(semantic);
+    if (!alreadyAttached) {
+      for (const candidate of semanticById.values()) {
+        for (const property of ['flowElements', 'artifacts', 'messageFlows']) {
+          this.removeFromCollection(candidate, property, semantic);
+        }
+      }
+      container[containerProperty] = container[containerProperty] || [];
+      container[containerProperty].push(semantic);
+    }
+
+    if (connection.type === 'bpmn:SequenceFlow') {
+      const source = semanticById.get(connection.source);
+      const target = semanticById.get(connection.target);
+      if (previousSourceRef !== source && previousSourceRef?.outgoing?.includes(semantic)) {
+        this.removeFromCollection(previousSourceRef, 'outgoing', semantic);
+        source.outgoing = source.outgoing || [];
+        if (!source.outgoing.includes(semantic)) source.outgoing.push(semantic);
+      }
+      if (previousTargetRef !== target && previousTargetRef?.incoming?.includes(semantic)) {
+        this.removeFromCollection(previousTargetRef, 'incoming', semantic);
+        target.incoming = target.incoming || [];
+        if (!target.incoming.includes(semantic)) target.incoming.push(semantic);
+      }
+    }
+  }
+
   private applyRetainedProperties(
     element: BpmnDocumentElement,
     semantic: any,
@@ -1333,7 +1400,10 @@ export class BpmnDocumentSerializer {
     } else if (connection.associationDirection !== undefined) {
       throw new Error(`Connection ${connection.id} cannot have an association direction`);
     }
-    if (!connection.condition) return;
+    if (!connection.condition) {
+      semantic.conditionExpression = undefined;
+      return;
+    }
     if (connection.type !== 'bpmn:SequenceFlow') {
       throw new Error(`Connection ${connection.id} cannot have a condition`);
     }
@@ -1439,8 +1509,7 @@ export class BpmnDocumentSerializer {
           || document.managedIds?.has(referenced.id) !== true;
       }
       if (item.$type === 'bpmndi:BPMNEdge' && isBpmnConnectionType(referenced?.$type)) {
-        return document.connections.has(referenced.id)
-          || document.managedIds?.has(referenced.id) !== true;
+        return this.retainedConnectionIsActive(document, referenced);
       }
       return true;
     });
@@ -1466,28 +1535,46 @@ export class BpmnDocumentSerializer {
         semantic.label = semantic.label || this.moddle.create('bpmndi:BPMNLabel');
         semantic.label.bounds = semantic.label.bounds || this.moddle.create('dc:Bounds');
         Object.assign(semantic.label.bounds, shape.labelBounds);
+      } else if (shape.labelBoundsCleared) {
+        semantic.label = undefined;
       }
       if (shape.isHorizontal !== undefined) semantic.isHorizontal = shape.isHorizontal;
       if (shape.isExpanded !== undefined) semantic.isExpanded = shape.isExpanded;
     }
 
     for (const edge of document.diagram.edges.values()) {
+      const bpmnElement = semanticById.get(edge.connectionId);
+      if (!bpmnElement || !this.retainedConnectionIsActive(document, bpmnElement)) {
+        document.diagram.edges.delete(edge.id);
+        continue;
+      }
       let semantic = planeElementsById.get(edge.id);
       if (!semantic) {
         semantic = this.moddle.create('bpmndi:BPMNEdge', { id: edge.id });
         plane.planeElement.push(semantic);
         planeElementsById.set(edge.id, semantic);
       }
-      const bpmnElement = semanticById.get(edge.connectionId);
-      if (!bpmnElement) continue;
       semantic.bpmnElement = bpmnElement;
       semantic.waypoint = edge.waypoints.map(point => this.moddle.create('dc:Point', point));
       if (edge.labelBounds) {
         semantic.label = semantic.label || this.moddle.create('bpmndi:BPMNLabel');
         semantic.label.bounds = semantic.label.bounds || this.moddle.create('dc:Bounds');
         Object.assign(semantic.label.bounds, edge.labelBounds);
+      } else if (edge.labelBoundsCleared) {
+        semantic.label = undefined;
       }
     }
+  }
+
+  private retainedConnectionIsActive(document: BpmnDocument, semantic: any): boolean {
+    if (document.connections.has(semantic.id)) return true;
+    if (document.managedIds?.has(semantic.id) === true) return false;
+    return [semantic.sourceRef, semantic.targetRef].every((endpoint: any) =>
+      typeof endpoint?.id === 'string'
+      && (document.managedIds?.has(endpoint.id) !== true
+        || document.elements.has(endpoint.id)
+        || document.lanes.has(endpoint.id))
+    );
   }
 
   private rememberDocumentIds(document: BpmnDocument): void {
@@ -1707,7 +1794,10 @@ export class BpmnDocumentSerializer {
       document,
       elements: document.elements,
       connections: document.connections,
-      xml
+      xml,
+      persistedXml: xml,
+      mutationVersion: 0,
+      revision: ''
     };
   }
 

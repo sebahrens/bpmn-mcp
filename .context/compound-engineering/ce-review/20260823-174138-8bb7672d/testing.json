@@ -1,0 +1,49 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Claude conflict refusal is untested",
+      "severity": "P2",
+      "file": "tests/install-agent-integrations.test.sh",
+      "line": 282,
+      "why_it_matters": "A regression in the Claude-specific no-force preflight could silently replace a third-party user-scope registration while this suite still passes. The Codex conflict test cannot cover Claude's distinct output parser and registration branch, and the rollback fixture sets FORCE=1, which deliberately bypasses the refusal path.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add a Claude counterpart to the Codex conflict case: write a conflicting CLAUDE_STATE, run `install claude` without force, assert the conflict error and byte-for-byte unchanged state, then verify FORCE=1 performs the exact user-scope remove/add argv.",
+      "confidence": 0.98,
+      "evidence": [
+        "tests/install-agent-integrations.test.sh:282-309 creates and rejects conflicting registrations only through CODEX_STATE and `install codex`.",
+        "scripts/install-agent-integrations.sh:307-315 contains a separate Claude conflict-refusal branch driven by claude_registration_state().",
+        "tests/install-agent-integrations.test.sh:419-441 reaches a Claude conflict only with FORCE=1, so `conflict && ! is_true \"$FORCE_INSTALL\"` is never true for Claude."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Windows npm rejection branch is untested",
+      "severity": "P2",
+      "file": "tests/install-agent-integrations.test.sh",
+      "line": 385,
+      "why_it_matters": "A WSL setup with native Linux Node.js but Windows npm on PATH could bypass the intended safety rejection without any automated or manual check catching the regression. Both existing scenarios place Windows-path node first, so installation exits before inspecting npm.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Add a second WSL case with `node` resolved from a non-/mnt directory and `npm` resolved from `/mnt/c/...`, then assert the exact `WSL is using Windows npm` failure and that no install, skill, registration, or diagram state changed; mirror it in the manual checklist if that checklist is intended to cover both runtime binaries.",
+      "confidence": 0.99,
+      "evidence": [
+        "scripts/install-agent-integrations.sh:165-169 has independent rejection checks for NODE_BIN and NPM_BIN.",
+        "tests/install-agent-integrations.test.sh:378-389 copies both node and npm under the simulated /mnt path, but asserts only the earlier Windows Node.js failure.",
+        "docs/testing/wsl2-installer-smoke.md:27-29 and 44-50 likewise put both shims on the mounted path and expect the Node.js diagnostic, so the npm-only mixed-PATH case is absent there too."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The client fakes intentionally model current Codex JSON and Claude text output plus assumed config-file locations; real-client output or storage-format drift remains outside this isolated harness.",
+    "Only the current host run was executed locally; the new macOS/Ubuntu matrix is the evidence for the second platform once CI runs."
+  ],
+  "testing_gaps": [
+    "No failure is injected during update of an existing installer-owned app/state, so rollback is not shown to preserve the previously active package version after a failed upgrade.",
+    "Targeted Codex and Claude installs reuse a prior all-client installation and assert only whether logs are nonempty; fresh targeted installs do not independently assert their full exact argv and resulting absence of the unselected client's skill/registration."
+  ]
+}

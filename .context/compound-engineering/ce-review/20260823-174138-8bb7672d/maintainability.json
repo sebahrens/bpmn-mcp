@@ -1,0 +1,47 @@
+{
+  "reviewer": "maintainability",
+  "findings": [
+    {
+      "title": "Rollback hard-codes client configuration internals",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 69,
+      "why_it_matters": "The install path otherwise treats Codex and Claude as external tools, but rollback reaches behind both CLIs and replaces their entire configuration files. Any client change to its storage location, file split, or write semantics now requires an installer change, and the failure will appear only during rollback; whole-file replacement also makes unrelated client configuration part of this installer's transaction boundary.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Keep rollback at the same abstraction boundary as registration: capture the prior registration from each client's get command and restore that registration with the supported remove/add CLI operations. If exact restoration is not supported, narrow and document the rollback guarantee rather than copying client-owned files wholesale.",
+      "confidence": 0.89,
+      "evidence": [
+        "Lines 69-74 encode Codex and Claude's presumed private configuration-file locations even though registration is performed through their CLIs.",
+        "Lines 333-370 implement generic byte-copy snapshot and restoration of those client-owned files.",
+        "Lines 376-377 restore both complete configuration files when any later installation step fails, coupling rollback to unrelated settings stored in the same files."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Harness couples cases through mutable global state",
+      "severity": "P2",
+      "file": "tests/install-agent-integrations.test.sh",
+      "line": 204,
+      "why_it_matters": "Fresh install, update, conflict, targeted install, doctor, uninstall, missing-client, version, WSL, and rollback checks run as one ordered scenario over repeatedly mutated shell globals and filesystem state. A new assertion or setup change in one case can silently change the preconditions or log offsets of later cases, producing cascading failures that are difficult to localize and making individual safety cases impossible to run in isolation.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Extract a fixture helper that creates and exports a fresh case root, then place each lifecycle or failure case in a named function with its own state and one TAP result. Keep only scenarios that intentionally exercise a lifecycle together in the same fixture.",
+      "confidence": 0.94,
+      "evidence": [
+        "Lines 204-389 execute numerous logically separate cases against one CASE_ROOT, reusing and mutating PATH, registrations, skills, logs, package version, and diagram state.",
+        "Lines 263-280 make update assertions depend on the preceding fresh installation, while lines 282-389 continue mutating that same fixture for conflict, targeting, uninstall, missing-client, runtime-version, and WSL checks.",
+        "Lines 391-417 manually repeat most of the environment setup for the rollback fixture instead of centralizing case initialization, and line 443 emits only one aggregate success result for the entire 443-line harness."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "The fake clients intentionally reproduce the same configuration locations assumed by rollback, so the harness cannot expose drift in real Codex or Claude storage behavior."
+  ],
+  "testing_gaps": [
+    "The safety cases are not independently runnable or independently reported, so CI cannot identify which lifecycle contract regressed without replaying the full shared-state sequence."
+  ]
+}

@@ -22,6 +22,8 @@ const SYSTEM_BROWSER_PATHS = [
 
 const DEFAULT_RENDER_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_CONCURRENT_RENDERS = 1;
+const MAX_PNG_DIMENSION = 4_096;
+const MAX_PNG_PIXELS = 16_000_000;
 
 const RENDERER_DOCUMENT = `<!doctype html>
 <html>
@@ -55,6 +57,20 @@ export class BpmnSvgRenderer {
   }
 
   async render(xml: string): Promise<string> {
+    return this.runRender(browser => this.renderWithBrowser(
+      browser,
+      () => this.renderPage(browser, xml)
+    ));
+  }
+
+  async renderPng(xml: string): Promise<Buffer> {
+    return this.runRender(browser => this.renderWithBrowser(browser, async () => {
+      const svg = await this.renderPage(browser, xml);
+      return this.rasterizeSvg(browser, svg);
+    }));
+  }
+
+  private async runRender<T>(operation: (browser: Browser) => Promise<T>): Promise<T> {
     if (this.closed) {
       throw new Error('SVG renderer is closed');
     }
@@ -65,7 +81,7 @@ export class BpmnSvgRenderer {
 
     try {
       const browser = await this.getBrowser();
-      return await this.renderWithBrowser(browser, xml);
+      return await operation(browser);
     } finally {
       this.activeRenders -= 1;
     }
@@ -90,7 +106,7 @@ export class BpmnSvgRenderer {
     this.browserLaunch = undefined;
   }
 
-  private async renderWithBrowser(browser: Browser, xml: string): Promise<string> {
+  private async renderWithBrowser<T>(browser: Browser, operation: () => Promise<T>): Promise<T> {
     let renderTimeout: NodeJS.Timeout | undefined;
     let browserClose: Promise<void> | undefined;
 
@@ -103,7 +119,7 @@ export class BpmnSvgRenderer {
         }, this.renderTimeoutMs);
       });
 
-      return await Promise.race([this.renderPage(browser, xml), timeout]);
+      return await Promise.race([operation(), timeout]);
     } finally {
       if (renderTimeout) clearTimeout(renderTimeout);
       await browserClose;
@@ -271,6 +287,57 @@ export class BpmnSvgRenderer {
       }
 
       return normalizeMarkerIds(renderedSvg);
+    } finally {
+      await page.close().catch(() => undefined);
+    }
+  }
+
+  private async rasterizeSvg(browser: Browser, svg: string): Promise<Buffer> {
+    const page = await browser.newPage();
+
+    try {
+      let blockedExternalRequest = false;
+      await page.setRequestInterception(true);
+      page.on('request', request => {
+        blockedExternalRequest = true;
+        void request.abort('blockedbyclient').catch(() => undefined);
+      });
+      await page.setContent(`<!doctype html>
+<html><head><meta http-equiv="Content-Security-Policy"
+content="default-src 'none'; style-src 'unsafe-inline'">
+<style>html,body{margin:0;overflow:hidden;background:#fff}svg{display:block}</style></head>
+<body>${svg}</body></html>`);
+
+      const dimensions = await page.$eval('svg', (element, limits) => {
+        const width = Number(element.getAttribute('width'));
+        const height = Number(element.getAttribute('height'));
+        if (!Number.isFinite(width) || width <= 0
+          || !Number.isFinite(height) || height <= 0) {
+          throw new Error('Invalid SVG raster dimensions');
+        }
+        const scale = Math.min(
+          1,
+          limits.maxDimension / width,
+          limits.maxDimension / height,
+          Math.sqrt(limits.maxPixels / (width * height))
+        );
+        const renderedWidth = Math.max(1, Math.ceil(width * scale));
+        const renderedHeight = Math.max(1, Math.ceil(height * scale));
+        element.setAttribute('width', String(renderedWidth));
+        element.setAttribute('height', String(renderedHeight));
+        return { width: renderedWidth, height: renderedHeight };
+      }, { maxDimension: MAX_PNG_DIMENSION, maxPixels: MAX_PNG_PIXELS });
+      await page.setViewport(dimensions);
+
+      const screenshot = await page.screenshot({
+        type: 'png',
+        captureBeyondViewport: false,
+        omitBackground: false
+      });
+      if (blockedExternalRequest) {
+        throw new Error('PNG rendering attempted to load an external resource');
+      }
+      return Buffer.from(screenshot);
     } finally {
       await page.close().catch(() => undefined);
     }

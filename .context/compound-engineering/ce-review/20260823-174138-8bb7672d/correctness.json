@@ -1,0 +1,67 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "Purged nested diagrams leave installation active",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 601,
+      "why_it_matters": "For an existing installation whose recorded diagrams directory is the app directory or a descendant, an explicitly confirmed purge still sets preserve_app_for_diagrams=1. The uninstall then skips removing the app and ownership state; even when safe_purge_diagrams deletes the app itself, the ownership marker remains, so a command reported as uninstall leaves the installation recorded and future update/doctor behavior treats it as installer-owned.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Only preserve the app for nested diagrams when PURGE_DIAGRAMS is empty; for a confirmed purge, remove the app and state as part of the normal uninstall path (and tolerate the subsequent purge target already being absent).",
+      "confidence": 0.93,
+      "evidence": [
+        "Lines 601-605 set preserve_app_for_diagrams whenever diagrams_within_app succeeds, without considering whether the user explicitly requested a purge.",
+        "Lines 647-655 skip both app and state removal whenever preserve_app_for_diagrams is 1, while lines 660-664 purge only the diagram target afterward.",
+        "A recorded DIAGRAMS_DIR equal to APP_DIR causes safe_purge_diagrams to delete APP_DIR but leaves STATE_FILE intact because the state-removal branch was skipped."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Failed skill staging leaves hidden directories",
+      "severity": "P3",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 466,
+      "why_it_matters": "If copying the packaged skill or writing its marker fails after mktemp succeeds, set -e exits into rollback but the client-local staging directory is outside TEMP_DIR and is not removed. Failed installs therefore are not fully transactional and can accumulate hidden, installer-created skill copies under the client configuration directory.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "suggested_fix": "Track the current staged skill path and remove it from cleanup when it still exists, clearing the variable after the directory is moved into place.",
+      "confidence": 0.9,
+      "evidence": [
+        "Line 466 creates staged_skill under destination_parent rather than under TEMP_DIR.",
+        "Lines 468-473 can terminate under set -e before staged_skill is moved to destination.",
+        "Cleanup at lines 89-91 removes only TEMP_DIR, and rollback_install restores registered destination snapshots but has no record of staged_skill."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "WSL smoke assumes C:\\Temp already exists",
+      "severity": "P2",
+      "file": "docs/testing/wsl2-installer-smoke.md",
+      "line": 24,
+      "why_it_matters": "C:\\Temp is not a standard directory guaranteed to exist on Windows. On a normal WSL2 machine without /mnt/c/Temp, mktemp fails before the mounted-Windows executable shims are created, so the documented release smoke never tests the intended WSL rejection path.",
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": false,
+      "suggested_fix": "Create and validate the mounted-Windows parent first, or have the operator select an existing writable directory under /mnt/<drive> before running mktemp.",
+      "confidence": 0.94,
+      "evidence": [
+        "Line 24 calls mktemp with /mnt/c/Temp as the parent.",
+        "The preceding commands create only directories below smoke_root; no step creates or verifies /mnt/c/Temp."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "Registration discovery treats any nonzero `mcp get` result as `missing`; whether a transient client/config error could make `mcp add` overwrite an existing registration depends on each external CLI's duplicate-name behavior.",
+    "Rollback restores whole client config files, so concurrent client config writes during installation would be lost; the reviewed code has no locking or merge mechanism."
+  ],
+  "testing_gaps": [
+    "The rollback scenario starts with no existing installer-owned app or state, so it does not verify that a failed update restores the previous app tree, ownership marker, package version, and client skills.",
+    "No fault-injection test fails during skill copying/marker creation, so client-local staging-directory cleanup is unverified.",
+    "The nested-diagrams uninstall branch is not tested for either preservation without purge or complete removal with an explicitly confirmed purge."
+  ]
+}

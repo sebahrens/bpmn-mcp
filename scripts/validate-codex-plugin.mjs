@@ -1,17 +1,18 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import {
   copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  readdirSync,
   realpathSync,
-  rmSync
+  readdirSync,
+  rmSync,
+  writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
+import { snapshotReleaseArtifact } from './release-artifact.mjs';
 
 const projectRoot = process.cwd();
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'mcp-bpmn-codex-plugin-'));
@@ -26,10 +27,10 @@ const environment = {
   ...process.env,
   CODEX_HOME: isolatedCodexHome,
   XDG_DATA_HOME: dataHome,
-  MCP_BPMN_DIAGRAMS_PATH: join(temporaryRoot, 'diagrams'),
   PUPPETEER_SKIP_DOWNLOAD: 'true',
   npm_config_cache: join(temporaryRoot, 'npm-cache')
 };
+delete environment.MCP_BPMN_DIAGRAMS_PATH;
 
 process.once('exit', () => {
   rmSync(temporaryRoot, { recursive: true, force: true });
@@ -274,28 +275,13 @@ try {
 
   mkdirSync(isolatedCodexHome, { recursive: true });
   mkdirSync(marketplaceRoot, { recursive: true });
-  const suppliedTarballSource = process.env.MCP_BPMN_PACKAGE_TARBALL
-    ? realpathSync(resolve(projectRoot, process.env.MCP_BPMN_PACKAGE_TARBALL))
-    : undefined;
-  const tarballPath = suppliedTarballSource
-    ? join(temporaryRoot, 'release-candidate.tgz')
-    : join(temporaryRoot, runJson('npm', [
+  const suppliedTarball = snapshotReleaseArtifact(projectRoot, temporaryRoot);
+  const tarballPath = suppliedTarball ?? join(temporaryRoot, runJson('npm', [
       'pack',
       '--json',
       '--pack-destination',
       temporaryRoot
     ])[0].filename);
-  if (suppliedTarballSource) {
-    copyFileSync(suppliedTarballSource, tarballPath);
-    const expectedDigest = process.env.MCP_BPMN_PACKAGE_SHA256?.toLowerCase();
-    const actualDigest = createHash('sha256')
-      .update(readFileSync(tarballPath))
-      .digest('hex');
-    if (!expectedDigest || !/^[a-f0-9]{64}$/.test(expectedDigest)
-      || actualDigest !== expectedDigest) {
-      throw new Error('Supplied release tarball does not match MCP_BPMN_PACKAGE_SHA256');
-    }
-  }
   run('npm', [
     'install',
     '--omit=dev',
@@ -398,17 +384,49 @@ try {
     || !existsSync(cachedCommand)) {
     throw new Error('Codex MCP launcher is missing from the installed plugin cache');
   }
+  let firstRepository = join(temporaryRoot, 'first-repository');
+  let secondRepository = join(temporaryRoot, 'second-repository');
+  mkdirSync(firstRepository);
+  mkdirSync(secondRepository);
+  firstRepository = realpathSync(firstRepository);
+  secondRepository = realpathSync(secondRepository);
+  writeFileSync(
+    join(secondRepository, '.mcp-bpmn.json'),
+    JSON.stringify({ path: 'wiki/processes/assets' })
+  );
   const mcpResults = await runMcpSession(
     cachedCommand,
     cachedServer.args,
-    cachedPluginRoot,
+    firstRepository,
     [
       { method: 'tools/list', params: {} },
+      {
+        method: 'tools/call',
+        params: { name: 'get_workspace', arguments: {} }
+      },
       {
         method: 'tools/call',
         params: {
           name: 'new_bpmn',
           arguments: { name: 'Codex plugin lifecycle safety' }
+        }
+      }
+    ]
+  );
+  const secondMcpResults = await runMcpSession(
+    cachedCommand,
+    cachedServer.args,
+    secondRepository,
+    [
+      {
+        method: 'tools/call',
+        params: { name: 'get_workspace', arguments: {} }
+      },
+      {
+        method: 'tools/call',
+        params: {
+          name: 'new_bpmn',
+          arguments: { name: 'Codex second repository' }
         }
       }
     ]
@@ -421,10 +439,11 @@ try {
     'export',
     'validate',
     'list_diagrams',
-    'get_diagrams_path'
+    'get_diagrams_path',
+    'get_workspace'
   ]);
-  if (!Array.isArray(tools) || tools.length !== 27) {
-    throw new Error(`Cached plugin MCP server advertised ${tools?.length ?? 0} tools, expected 27`);
+  if (!Array.isArray(tools) || tools.length !== 29) {
+    throw new Error(`Cached plugin MCP server advertised ${tools?.length ?? 0} tools, expected 29`);
   }
   for (const tool of tools) {
     const annotations = tool.annotations;
@@ -436,15 +455,17 @@ try {
       throw new Error(`Tool ${tool.name} has approval-incompatible annotations`);
     }
   }
-  const createdDiagramFiles = existsSync(environment.MCP_BPMN_DIAGRAMS_PATH)
-    ? readdirSync(environment.MCP_BPMN_DIAGRAMS_PATH)
-      .filter(file => file.endsWith('.bpmn'))
-    : [];
-  if (!mcpResults[1]
-    || mcpResults[1].isError
-    || !Array.isArray(mcpResults[1].content)
-    || createdDiagramFiles.length !== 1) {
-    throw new Error('Cached Codex plugin MCP server could not execute a BPMN workflow');
+  const secondWorkspace = join(secondRepository, 'wiki', 'processes', 'assets');
+  if (mcpResults[1]?.structuredContent?.workspace !== firstRepository
+    || mcpResults[1]?.structuredContent?.source !== 'launch_cwd'
+    || mcpResults[2]?.isError
+    || !Array.isArray(mcpResults[2]?.content)
+    || readdirSync(firstRepository).filter(file => file.endsWith('.bpmn')).length !== 1
+    || secondMcpResults[0]?.structuredContent?.workspace !== secondWorkspace
+    || secondMcpResults[0]?.structuredContent?.source !== 'repository_config'
+    || secondMcpResults[1]?.isError
+    || readdirSync(secondWorkspace).filter(file => file.endsWith('.bpmn')).length !== 1) {
+    throw new Error('One cached Codex MCP registration did not isolate two repository workspaces');
   }
 
   runJson('codex', ['plugin', 'remove', pluginId, '--json']);

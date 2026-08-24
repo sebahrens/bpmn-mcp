@@ -1,0 +1,106 @@
+{
+  "reviewer": "adversarial",
+  "findings": [
+    {
+      "title": "Verification failure strands new registration",
+      "severity": "P1",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 774,
+      "why_it_matters": "A successful client add followed by a transient verification failure rolls back the app but deliberately preserves the newly added client entry because no installed-registration snapshot was written. The client is then left pointing at a removed or reverted executable instead of its pre-install registration.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Record a rollback identity immediately after a successful add (or retry verification before failing), and make the failure path restore the prior registration only when the current registration still matches that identity. Apply the same state machine to Codex and Claude.",
+      "confidence": 0.94,
+      "evidence": [
+        "Codex marks the registration touched at line 766, performs a successful add at lines 771-773, and only creates codex-registration.installed.json at lines 774-775.",
+        "If that get fails after the add succeeded, rollback_codex_registration sees the missing installed JSON at lines 621-625 and returns after warning, leaving the newly added registration while lines 662-663 restore the old app/state.",
+        "Claude has the same sequence at lines 782 and 787-791, with the same missing-installed-snapshot branch at lines 639-644."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Late deletion resurrects old registration",
+      "severity": "P1",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 633,
+      "why_it_matters": "The late-change guard treats a missing registration as safe to restore. If another client intentionally deletes the entry after this installer has added its own value but before rollback, rollback recreates the stale pre-install entry and undoes that outside deletion.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Distinguish a registration missing after this transaction's successful add from the transaction's own failed remove/add path. For a late missing value, preserve the external deletion rather than restoring the snapshot; use an explicit operation-state marker plus a conditional client-side update mechanism if available.",
+      "confidence": 0.92,
+      "evidence": [
+        "Scenario: an existing third-party registration is snapshotted; this installer replaces it; a later Claude registration failure starts rollback; another process runs `codex mcp remove mcp-bpmn` after the installer's add.",
+        "At lines 621-632 both Codex gets fail for the now-missing entry, then line 633 sees the original state was not missing and line 634 restores the old third-party snapshot.",
+        "For Claude, a missing current JSON skips the guard at lines 639-647 and lines 648-650 unconditionally add the old snapshot back."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Guard races with replacement removal",
+      "severity": "P1",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 628,
+      "why_it_matters": "The rollback comparison and destructive remove are separate client commands. A third party can replace the registration after the equality check but before remove, so the rollback removes third-party state despite reporting that it has a late-replacement guard.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Use a client API that supports compare-and-delete/versioning, or serialize all writers through a shared client-config lock and document that external writers must use it. A second read alone reduces but cannot eliminate this check-then-remove race.",
+      "confidence": 0.89,
+      "evidence": [
+        "Codex reads and validates current_json against the installed snapshot at lines 621-627, then invokes the independent destructive `codex mcp remove` at line 628.",
+        "Claude performs the equivalent read/compare at lines 639-645 and independent remove at line 646.",
+        "Concrete sequence: current registration equals this transaction's installed value during the comparison; another process writes `/late/third-party/server`; this rollback then removes that value without another condition check. The existing test mutates before the guard, not in this interval."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Cross-prefix rollback erases newer skill",
+      "severity": "P1",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 534,
+      "why_it_matters": "Locks are scoped to PREFIX but Codex and Claude skill destinations are shared per user. A rollback from one prefix removes the destination unconditionally and can erase a skill successfully installed by another prefix, leaving the second installation's registration/app out of sync with client discovery.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Add an ordered shared lock for each selected client skill destination, or persist and compare a per-transaction installed skill identity/content digest before deleting during rollback. Preserve a destination whose identity belongs to a later transaction.",
+      "confidence": 0.93,
+      "evidence": [
+        "Process A with PREFIX A snapshots the shared Codex skill, installs its staged skill, then fails while registering Claude. Process B with PREFIX B obtains a different `PREFIX.mcp-bpmn-install.lock`, snapshots A's skill, installs its own Codex skill, and commits.",
+        "A's rollback reaches restore_moved_path and lines 534-536 recursively remove the shared destination before moving A's snapshot back, deleting B's completed skill.",
+        "The per-prefix lock is derived from INSTALL_ROOT at lines 79 and 372-382, while CODEX_SKILL_DIR and CLAUDE_SKILL_DIR derive only from the user config directories at lines 67-72."
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Prefix aliases bypass transaction lock",
+      "severity": "P2",
+      "file": "scripts/install-agent-integrations.sh",
+      "line": 79,
+      "why_it_matters": "Two symlinked PREFIX names for the same physical installation produce different sidecar lock paths while APP_DIR and STATE_FILE resolve into the same physical tree. Concurrent updates can therefore each snapshot and restore the same app/state without serialization.",
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": true,
+      "suggested_fix": "Resolve an existing PREFIX through its physical path before deriving the lock and all installation paths, or reject a symbolic-link PREFIX. Cover two alias paths to one installed root.",
+      "confidence": 0.86,
+      "evidence": [
+        "INSTALL_ROOT only normalizes relative paths and trailing slashes at lines 42-50; it does not reject or canonicalize a symbolic-link PREFIX.",
+        "The lock is a sibling named from the lexical prefix (`$INSTALL_ROOT.mcp-bpmn-install.lock`) at line 79, so `/aliases/a` and `/aliases/b` can have separate locks even when both symlink to `/real/install`.",
+        "Their descendant APP_DIR and STATE_FILE operations follow the symlinks and mutate the same physical targets."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [
+    "SIGKILL or host failure after taking the mkdir lock leaves a stale lock that requires manual removal; this is documented but prevents unattended recovery.",
+    "Targeted diagrams-path coherence is rechecked before the transaction begins, not at commit; an external writer can reintroduce an unselected client's old-path registration after that check and before the new state marker is committed."
+  ],
+  "testing_gaps": [
+    "Inject a failure of `mcp get`/Claude JSON extraction after a successful add and verify the previous registration is restored with the app.",
+    "Replace or delete a client registration after rollback has performed its equality read but before its remove command; assert the third-party value remains untouched.",
+    "Run two installers with different PREFIX values sharing CODEX_HOME/CLAUDE_CONFIG_DIR, make the first fail after the second commits, and assert the second skill survives.",
+    "Run two updates through distinct symlink aliases of one physical PREFIX and assert one transaction is rejected before artifact or client mutation.",
+    "Re-add an unselected client registration using the old diagrams path after targeted-install preflight and before commit, then assert the operation refuses or restores coherent state."
+  ]
+}

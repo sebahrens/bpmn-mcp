@@ -1,0 +1,30 @@
+{
+  "mode": "autofix",
+  "scope": "mcp-bpmn-9sv.12 managed SVG and PNG artifact persistence",
+  "intent": "Add explicit server-rendered SVG and PNG persistence in the managed workspace with overwrite, size, and traversal safeguards while leaving BPMN XML state independent.",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "project-standards",
+    "agent-native",
+    "learnings-researcher",
+    "security",
+    "performance",
+    "api-contract",
+    "reliability",
+    "adversarial",
+    "typescript"
+  ],
+  "findings": [],
+  "applied_fixes": [],
+  "residual_actionable_work": [],
+  "advisory_outputs": [],
+  "coverage": {
+    "institutional_learnings": "No docs/solutions directory was present.",
+    "agent_native": "Both operations are fully advertised, schema-validated, dispatched, documented for agents, and return verification metadata.",
+    "testing": "Lint, clean build, 809 source tests, 17 compiled e2e tests, 3 real-browser renderer tests, and installer lifecycle all passed.",
+    "residual_risk": "PNG output is intentionally rasterized to at most 4096 pixels per dimension and 16 million pixels before the configured encoded-output byte limit is enforced."
+  },
+  "verdict": "ready"
+}

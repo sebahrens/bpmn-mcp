@@ -1,0 +1,1 @@
+{"reviewer":"correctness","findings":[],"residual_risks":["External client registration replacement cannot be atomic across remove/add CLI calls."],"testing_gaps":[]}

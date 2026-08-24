@@ -1,4 +1,13 @@
 import { spawn } from 'node:child_process';
+import { existsSync, realpathSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const moduleAnchor = process.argv[1] && existsSync(process.argv[1])
+  ? realpathSync(process.argv[1])
+  : resolve(process.cwd(), 'package.json');
+const requireFromHere = createRequire(moduleAnchor);
 
 export const BPMN_AUTO_LAYOUT_VERSION = '2.0.0-alpha.2' as const;
 
@@ -185,12 +194,16 @@ async function loadSelectedLayoutInSubprocess(
   xml: string,
   timeoutMs: number
 ): Promise<unknown> {
+  // Eval modules resolve bare imports from the caller's cwd, not this package.
+  const layoutModuleUrl = pathToFileURL(
+    requireFromHere.resolve('bpmn-auto-layout')
+  ).href;
   const runner = `
     let source = '';
     process.stdin.setEncoding('utf8');
     for await (const chunk of process.stdin) source += chunk;
     try {
-      const { layoutProcess } = await import('bpmn-auto-layout');
+      const { layoutProcess } = await import(process.argv[1]);
       const output = await layoutProcess(source);
       process.stdout.write(JSON.stringify({
         result: {
@@ -215,9 +228,13 @@ async function loadSelectedLayoutInSubprocess(
     }
   `;
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['--input-type=module', '--eval', runner], {
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
+    const child = spawn(
+      process.execPath,
+      ['--input-type=module', '--eval', runner, layoutModuleUrl],
+      {
+        stdio: ['pipe', 'pipe', 'pipe']
+      }
+    );
     layoutSubprocesses.add(child);
     let stdout = '';
     let stderr = '';
