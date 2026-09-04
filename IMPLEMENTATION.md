@@ -20,15 +20,17 @@ MCP client
 ```
 
 `DiagramContext` holds one current diagram per server process. Creating or
-opening a diagram replaces that context. New diagrams receive an active
-filename, and successful model mutations serialize and atomically save the
-active file. `save_as` changes the active filename; `close` clears the current
-context.
+opening a diagram replaces that context. Every diagram has an active filename —
+either the one the caller passed to the creating or opening tool, or a
+server-generated placeholder — and successful model mutations serialize and
+atomically save it. `save_as` changes the active filename and deletes the
+placeholder it replaced; `close` clears the current context.
 
 The engine uses `BpmnDocument` as its internal representation. XML import and
 serialization use `bpmn-moddle`. SVG export is rendered by `bpmn-js` through
-`BpmnSvgRenderer`. Mermaid input is parsed into the project's AST, converted to
-the shared layout model, and then serialized as BPMN.
+`BpmnSvgRenderer`. Mermaid input is parsed into the project's AST, generated as
+a `BpmnDocument` by `SimpleBpmnGenerator`, serialized to XML, and then laid out
+through the same adapter as `auto_layout`.
 
 `BpmnSvgRenderer.launchBrowser` resolves its Chrome command line through
 `resolveBrowserLaunchArgs` in [`src/config/index.ts`](src/config/index.ts):
@@ -83,9 +85,11 @@ truth instead:
   and `tests/integration/tool-inventory.test.ts` fail if that inventory drifts
   from `tools/list`.
 
-A hand-maintained table here previously listed 27 of the 39 advertised tools and
-none of their revision arguments, which is exactly the drift the rule below
-warns about.
+A hand-maintained table here previously listed 27 tools and none of their
+revision arguments, while the server advertised 39 — and the count has since
+moved again. That drift is exactly what the rule below warns about, which is why
+no count is repeated here: read it from `tools/list` or
+`scripts/tool-contract.json`.
 
 The exact enums, nested event-definition fields, string limits, geometry
 limits, and typed property schemas belong in `toolDefinitions`; do not copy
@@ -133,13 +137,16 @@ default sequence flows. A default flow cannot also have a condition.
 
 ## Layout
 
-There are two layout paths:
+There is one layout path. Both the `auto_layout` tool and Mermaid conversion
+serialize the BPMN document and call `BpmnAutoLayoutV2Adapter` in
+[`src/core/layout/BpmnLayoutAdapter.ts`](src/core/layout/BpmnLayoutAdapter.ts);
+`MermaidConverter` constructs the same adapter. The selected production package
+is `bpmn-auto-layout@2.0.0-alpha.2`.
 
-- Mermaid conversion uses `LayoutEngine` and the adapters under
-  `src/core/layout/adapters/` to create the shared `LayoutModel`.
-- The `auto_layout` tool serializes the current BPMN document and calls
-  `BpmnAutoLayoutV2Adapter` in `src/core/layout/BpmnLayoutAdapter.ts`. The
-  selected production package is `bpmn-auto-layout@2.0.0-alpha.2`.
+`src/core/layout/LayoutModel.ts` and `BpmnDocumentLayoutAdapter` remain as the
+engine's typed view of placement (`getLayoutModel` / `applyLayoutModel`); they
+are not a second layout algorithm. The earlier `LayoutEngine` and `AutoLayout`
+prototypes were deleted because nothing imported them (`mcp-bpmn-iqa.4`).
 
 The production adapter runs synchronous third-party layout in a subprocess so
 it can enforce a timeout. `SimpleBpmnEngine` then imports the returned XML,
@@ -228,7 +235,9 @@ npm run start:bundle
 ```
 
 There is no fixed bundle-size contract. Dependencies and their versions are
-defined by `package.json` and `package-lock.json`; the project does not claim a
+defined by `package.json` and the two byte-identical lockfiles,
+`package-lock.json` and `npm-shrinkwrap.json` (see
+[CONTRIBUTING.md](CONTRIBUTING.md#the-two-lockfiles)); the project does not claim a
 "minimal dependency" set. No Dockerfile is maintained in this repository, so
 deployment images must be tested separately and must honor the declared Node.js
 version.
@@ -243,7 +252,8 @@ npm run check
 ```
 
 `npm run check` cleans output, type-checks, lints, rebuilds, runs all Jest suites
-including e2e, and runs the renderer suite. It is intentionally valid when
+with coverage including e2e, and runs the renderer, installer, ralph-loop,
+package-smoke, and production-audit checks. It is intentionally valid when
 `dist/` does not exist before the command.
 
 Focused commands are:
@@ -253,12 +263,26 @@ npm test                  # source Jest suites except e2e, then renderer tests
 npm run test:unit         # unit tests
 npm run test:integration  # integration tests, then renderer tests
 npm run test:e2e          # clean build, then e2e tests
-npm run test:all          # clean build, all Jest suites, then renderer tests
+npm run test:all          # clean build, every suite, then renderer/installer/ralph
 npm run test:coverage     # coverage for non-e2e Jest suites, then renderer tests
 npm run test:package      # clean build and package/entrypoint smoke test
 npm run type-check
 npm run lint
 ```
+
+Two suites are opt-in because they are slow or shell-based, and `npm run
+test:all` runs both:
+
+```bash
+npm run test:layout-candidates  # third-party layout comparison matrix
+npm run test:ralph              # ralph-loop/tests/loop_test.sh
+```
+
+`npm run test:layout-candidates` sets `MCP_BPMN_LAYOUT_CANDIDATES=1`, which is
+what un-skips the comparison describe in
+`tests/integration/layout-candidates.test.ts`. Without it that file still
+exercises the shipped layout path over the whole fixture corpus; only the
+dev-only alternative packages are skipped.
 
 No test-count or coverage-percentage claim is maintained here because both
 change as the suite evolves. The current structure is:
@@ -277,20 +301,40 @@ tests/
 
 ## Configuration
 
-Diagram storage defaults to `~/mcp-bpmn`. Override it with:
+There is no fixed home-directory store. `WorkspaceSession.fromLaunch()` in
+[`src/config/WorkspaceSession.ts`](src/config/WorkspaceSession.ts) resolves the
+diagram workspace once at startup, in this order:
+
+1. `MCP_BPMN_DIAGRAMS_PATH`, if set. It must be an absolute path with no `.` or
+   `..` segment; the directory is created if missing (mode `0700`). Source:
+   `environment`.
+2. A `.mcp-bpmn.json` file in the launch cwd containing exactly
+   `{ "path": "relative/path" }`. The path must be a relative descendant with no
+   dot segment and no symlinked component. Source: `repository_config`.
+3. Otherwise the canonical (realpath-resolved) launch cwd — the directory the
+   MCP client started the stdio child in. Source: `launch_cwd`.
 
 ```bash
 MCP_BPMN_DIAGRAMS_PATH=/var/bpmn/diagrams npm start
 ```
 
-`src/config/index.ts` also defines the supported resource-limit environment
-variables and their defaults:
+Startup also fixes an immutable containment boundary for the session.
+`select_workspace` may move the session to a strict descendant of that boundary
+(source `selection`) and nothing may escape it; `get_workspace` reports the
+launch cwd, the boundary, the active workspace, and the resolution source, so
+read the boundary from there rather than assuming a directory. Resolving a
+workspace never changes `process.cwd()`, so package imports stay anchored to the
+installed executable.
+
+`src/config/index.ts` defines the remaining environment variables and their
+defaults. The complete set is:
 
 - `MCP_BPMN_MAX_IMPORT_BYTES`
 - `MCP_BPMN_MAX_IMPORT_ELEMENTS`
 - `MCP_BPMN_MAX_IMPORT_FLOWS`
 - `MCP_BPMN_MAX_IMPORT_DI_ELEMENTS`
 - `MCP_BPMN_MAX_MERMAID_BYTES`
+- `MCP_BPMN_MAX_ARTIFACT_BYTES`
 - `MCP_BPMN_MAX_LAYOUT_ELEMENTS`
 - `MCP_BPMN_MAX_LAYOUT_CONNECTIONS`
 - `MCP_BPMN_MAX_LAYOUT_DENSITY`
@@ -300,10 +344,12 @@ variables and their defaults:
 - `MCP_BPMN_MAX_LISTING_METADATA_BYTES`
 - `MCP_BPMN_LAYOUT_TIMEOUT_MS`
 - `MCP_BPMN_SHUTDOWN_TIMEOUT_MS`
+- `MCP_BPMN_BROWSER_ARGS` (described under runtime architecture above)
 
 Invalid, non-positive overrides fall back to source defaults. Consult the
 configuration module instead of duplicating numeric defaults in deployment
-documentation.
+documentation. The [README](README.md#-file-storage) carries the same list with
+each variable's effect and default.
 
 The stdio executable handles SIGINT, SIGTERM, and stdin EOF through one
 idempotent shutdown coordinator. It stops accepting tool calls, drains accepted

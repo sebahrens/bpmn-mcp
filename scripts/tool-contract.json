@@ -42,7 +42,7 @@
     "get_workspace",
     "select_workspace"
   ],
-  "contractFingerprint": "5d76ff4a540f05fda84459f2b10258ef2d06d3f6573a36027604a6d23debee7c",
+  "contractFingerprint": "bcc6201fdae7358358e88ed72c68025f0126ddaf8e65c0232f8859084728e924",
   "schemaFingerprints": {
     "new_bpmn": {
       "input": "7e7d0607064fe25f15a494cadd85375c728be12777672e2d3f780a82e1961875",
@@ -65,7 +65,7 @@
       "output": "6389cc5856075924972ab67ae2505e0f10afcceb815022d33668f3890b43d707"
     },
     "save_as": {
-      "input": "7776d32d4d8f27f75d90dda36f7a2dd6da991820c4444499965176e47b34a9e5",
+      "input": "81b21acc870ae19dbea7b2933dc14ba9607058aa5ccf38d29865c45bce475b9d",
       "output": "6aadf17e59df222cd95706071d89a5223bc8732eb376b553873c8e5e0efbac8e"
     },
     "close": {
@@ -77,15 +77,15 @@
       "output": "2a0a6eb0164a9307a455bfd9632180284dddd86d046dfd39234b266decb3608c"
     },
     "add_event": {
-      "input": "b2aaebd9d3f803ed7f95073684e904bda3cba0db3dc6bdaf1d3f13d5437485ff",
+      "input": "d32c29bbc6c913b09d914bbacd44a48d3dbbbe025a729daba81cd1fa41fea510",
       "output": "3b4dcecc1932d841928ee7442279d32ba299823cf47faed6a6074ffb4cdcdcf3"
     },
     "add_activity": {
-      "input": "c353137821a56d723dee44e532b4b98b6947b7f05b7232320b38f7b67086c04a",
+      "input": "eeb0109555323f24f86f904aa1c4af25f0156bde0ebd7be1983db22a5e05e660",
       "output": "3b4dcecc1932d841928ee7442279d32ba299823cf47faed6a6074ffb4cdcdcf3"
     },
     "add_gateway": {
-      "input": "84a5fd071d335ee64c9798b95418467e89ff8156e5990ef0c1b7312fe0b5ca23",
+      "input": "2a16a590f0eae8854a171e4631936e6cf57c745f5388872d4378e1e0afe7c74f",
       "output": "3b4dcecc1932d841928ee7442279d32ba299823cf47faed6a6074ffb4cdcdcf3"
     },
     "add_data_object": {
@@ -97,7 +97,7 @@
       "output": "473837b09f16a561e3037cf3b86a0ecb24ae4a421e03f328a3a6953db67167a0"
     },
     "connect": {
-      "input": "03e6fb1698229f610377ffefe3e00178f5c2e894ec5bc27a2034a2cd63d80abf",
+      "input": "490c33e4a923f428c7ca797935d4f24486bd5f2d017c2b756cfa04c355db0896",
       "output": "3b6df08ebb6d560137dc7d22cf6aca065a71cc880769d4f273ff9368fe403895"
     },
     "add_association": {
@@ -129,7 +129,7 @@
       "output": "ad0aa5295ba56335fefd1e11c883ad3e8bba727759378fc6b48d5270ee846821"
     },
     "update_element": {
-      "input": "fad9a376c725a6a01d6c45c3240a17a2ed9465c4dfde6d1766cd50a5b3cadb00",
+      "input": "bf6f76f01f8188227ffb36867148610f2dabea4a72c4aa66ecb22341c667d3e7",
       "output": "e3102812690314826dd9e07c1729271c766bf074458e5c7d6ce3e674a3095a80"
     },
     "update_connection": {
@@ -169,8 +169,8 @@
       "output": "7c05a6d145581486e6bd66464b9adb9278f9fdcb73fc48e17a83f3f5045193cc"
     },
     "save_png": {
-      "input": "128f014b187ac80c6dfab3977a267fc3f0aabac2194ec689c42b03888496c5b1",
-      "output": "1722def08dc4791529f95531cf7a2eef223ed8f2431bd9385675ceb8d344b52b"
+      "input": "66850ea7eb116e3511a4af8711913c3b8d62c4ea47ec3c9c4ef357eb4a289688",
+      "output": "f5eb232449b98ee91c7a2158e37f875420d966f8792661830c86a2f65250ff58"
     },
     "validate": {
       "input": "7480ee2efa429395b7cd39c1cc63b6323354ab4200eb9a2135ddbf9d6b9f07b8",
@@ -181,8 +181,8 @@
       "output": "eafd694c7dd594ce2d13a59c224fe00479e4deb53213a7f370b63dcaf3f0cfa0"
     },
     "auto_layout": {
-      "input": "e102744408602f685882544dd368cef68f410c2545bae815796aa50ad91dee43",
-      "output": "d3643d9344859e7966e69963f9c7de0d822119caebb3f83d65b05733cb7f6162"
+      "input": "18dc4437eb2d19484a36d6e13478c2390f8ca24f01f5ccf62cdb830c8ba5080f",
+      "output": "6d56ea32d3e5de46aeaaf5118feb15b545378ec3fd15d622bc3c82bde761e543"
     },
     "list_diagrams": {
       "input": "7ee2be8c2aa4cf5ee19648606709df5d0bd35de2cc3d489dbbc34ee69d81b294",
@@ -201,7 +201,7 @@
       "output": "ee6493cf26152c01f1ab929520d4323f890a56e97de8f6ac595c364381b72858"
     },
     "select_workspace": {
-      "input": "cb23e8b6c4dfad30db9a249668a70d3b7eb18e21f1299adb2dbcfa0f15090fd9",
+      "input": "d6e42e48b2ce5cc16694b99722cb2f507acbd4307f2f96d6507b4c1b8ebf18f5",
       "output": "075857e0eb7df414524e5606566cf0f1408637a4656fc92bf2178991b61e9530"
     }
   }

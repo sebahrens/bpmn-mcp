@@ -98,6 +98,50 @@ describe('FileManager behavior matrix', () => {
       .rejects.toThrow('Invalid file import byte limit');
   });
 
+  it('recovers when the workspace directory is deleted and recreated', async () => {
+    const first = await fileManager.saveBpmnFile('<xml />', { filename: 'kept.bpmn' });
+    expect(first).toMatchObject({ success: true });
+
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.mkdir(root, { recursive: true });
+
+    // The pinned root is gone, so the store re-pins the recreated directory
+    // instead of failing every later save until the process is restarted.
+    await expect(fileManager.saveBpmnFile('<xml />', { filename: 'after.bpmn' }))
+      .resolves.toMatchObject({ success: true, filename: 'after.bpmn' });
+    await expect(fs.readFile(path.join(root, 'after.bpmn'), 'utf8')).resolves.toBe('<xml />');
+  });
+
+  it('names the workspace and a coarse cause when the workspace is not a directory', async () => {
+    const filePath = path.join(root, 'not-a-directory');
+    await fs.writeFile(filePath, 'occupied', 'utf8');
+    const blocked = new FileManager(filePath);
+
+    const result = await blocked.saveBpmnFile('<xml />', { filename: 'diagram.bpmn' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe(
+      `Unable to save BPMN file "diagram.bpmn" in workspace ${filePath}`
+      + ': the workspace path is not a directory'
+    );
+  });
+
+  it('names the workspace and the errno when it cannot be created or written', async () => {
+    const unwritable = path.join(root, 'unwritable');
+    const blocked = new FileManager(unwritable);
+    const denied = Object.assign(new Error('denied'), { code: 'EACCES' });
+    jest.spyOn(fs, 'access').mockRejectedValue(denied);
+    jest.spyOn(fs, 'mkdir').mockRejectedValue(denied);
+
+    const result = await blocked.saveBpmnFile('<xml />', { filename: 'diagram.bpmn' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe(
+      `Unable to save BPMN file "diagram.bpmn" in workspace ${unwritable}`
+      + ': permission denied (EACCES)'
+    );
+  });
+
   it('filters and deterministically orders directory listings', async () => {
     await Promise.all([
       fs.writeFile(path.join(root, 'a.bpmn'), 'a'),

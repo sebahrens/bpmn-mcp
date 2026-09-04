@@ -117,19 +117,83 @@ describe('SVG export integration', () => {
     expect(resource.text).not.toMatch(/url\(\s*['"]?(?:https?:|data:|file:|javascript:)/i);
   }, 25_000);
 
-  it('should reject overlapping SVG exports at the renderer boundary', async () => {
+  it('queues overlapping SVG exports instead of failing the second one', async () => {
+    // Two exports issued back to back is the ordinary agent pattern; the second
+    // one used to come back as "SVG renderer concurrency limit reached".
     const concurrent = await Promise.all([
       handler.handleRequest('export', { format: 'svg' }),
       handler.handleRequest('export', { format: 'svg' })
     ]);
 
-    expect(concurrent.filter(item => item.isError)).toHaveLength(1);
-    expect(concurrent.find(item => item.isError)?.content[0]).toMatchObject({
-      type: 'text',
-      text: 'Error: SVG renderer concurrency limit reached'
+    expect(concurrent.filter(item => item.isError)).toHaveLength(0);
+    for (const result of concurrent) {
+      expect(result.content[0].type).toBe('resource');
+    }
+    expect(concurrent[1].content[0]).toEqual(concurrent[0].content[0]);
+  }, 25_000);
+
+  it('rejects a queued render once the wait list is full', async () => {
+    const renderer = new BpmnSvgRenderer(20_000, 1, 0);
+    const xml = '<invalid';
+
+    const first = renderer.render(xml).catch(() => 'settled');
+    await expect(renderer.render(xml)).rejects.toThrow(
+      'SVG renderer queue limit of 0 pending renders exceeded'
+    );
+    await first;
+    await renderer.close();
+  }, 30_000);
+
+  it('fails a queued render when the renderer closes while it waits', async () => {
+    const renderer = new BpmnSvgRenderer(20_000, 1, 4);
+    const xml = '<invalid';
+
+    const first = renderer.render(xml).catch(() => 'settled');
+    const queued = renderer.render(xml);
+    const closing = renderer.close();
+
+    await expect(queued).rejects.toThrow('SVG renderer is closed');
+    await first;
+    await closing;
+  }, 30_000);
+
+  it('reports PNG pixel geometry and honours the requested scale', async () => {
+    const single = await handler.handleRequest('save_png', {
+      filename: 'scale-one.png',
+      overwrite: true,
+      scale: 1
     });
-    expect(concurrent.find(item => !item.isError)?.content[0].type).toBe('resource');
-  }, 15_000);
+    expect(single.isError).toBeUndefined();
+    const singleContent = single.structuredContent as {
+      width: number;
+      height: number;
+      scale: number;
+      downscaled: boolean;
+      byteLength: number;
+    };
+    expect(singleContent.scale).toBe(1);
+    expect(singleContent.downscaled).toBe(false);
+    expect(singleContent.width).toBeGreaterThan(0);
+    expect(singleContent.height).toBeGreaterThan(0);
+
+    const doubled = await handler.handleRequest('save_png', {
+      filename: 'scale-two.png',
+      overwrite: true,
+      scale: 2
+    });
+    expect(doubled.isError).toBeUndefined();
+    const doubledContent = doubled.structuredContent as {
+      width: number;
+      height: number;
+      scale: number;
+      downscaled: boolean;
+      byteLength: number;
+    };
+    expect(doubledContent.scale).toBe(2);
+    expect(doubledContent.width).toBe(singleContent.width * 2);
+    expect(doubledContent.height).toBe(singleContent.height * 2);
+    expect(doubledContent.byteLength).toBeGreaterThan(singleContent.byteLength);
+  }, 40_000);
 
   it('reuses one browser without leaking render pages until shutdown', async () => {
     const launchBrowser = jest.spyOn(

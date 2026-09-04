@@ -69,6 +69,8 @@ export type ParseErrorCode =
   | 'MALFORMED_NODE'
   | 'MALFORMED_EDGE'
   | 'MALFORMED_SUBGRAPH'
+  | 'UNSUPPORTED_SHAPE'
+  | 'UNSUPPORTED_CONNECTOR'
   | 'UNEXPECTED_SUBGRAPH_END'
   | 'UNCLOSED_SUBGRAPH'
   | 'UNSUPPORTED_NESTED_SUBGRAPH'
@@ -85,7 +87,8 @@ export type ParseWarningCode =
   | 'DUPLICATE_NODE'
   | 'MISSING_START'
   | 'MISSING_END'
-  | 'DISCONNECTED_NODE';
+  | 'DISCONNECTED_NODE'
+  | 'IMPLICIT_PARALLEL_SPLIT';
 
 export type ParseDiagnosticCode = ParseErrorCode | ParseWarningCode;
 

@@ -3,6 +3,7 @@ import path from 'path';
 import os from 'os';
 import {
   assertSafeFilename,
+  errnoDetail,
   isPathContained,
   SafeFileStore,
   SafeFilePathError
@@ -37,6 +38,24 @@ export class MermaidFileTooLargeError extends Error {
   constructor() {
     super('Mermaid import exceeds the configured byte limit');
     this.name = 'MermaidFileTooLargeError';
+  }
+}
+
+/** Fallback cause when the failure carries no filesystem detail of its own. */
+function storageFailureCause(code: SafeFilePathError['code']): string | undefined {
+  switch (code) {
+    case 'access':
+      return 'the workspace is not accessible';
+    case 'changed':
+      return 'the workspace directory changed since it was resolved';
+    case 'busy':
+      return 'another writer holds the compare-and-write lock for this diagram';
+    case 'not_found':
+      return 'the workspace directory does not exist';
+    case 'not_file':
+      return 'the workspace path is not a directory';
+    default:
+      return undefined;
   }
 }
 
@@ -218,14 +237,36 @@ export class FileManager {
             ? 'Document revision conflict'
             : error.code === 'exists' && filename
             ? `File already exists: ${filename}. Use overwrite option to replace.`
-            : error.code === 'access' || error.code === 'changed'
-              ? 'Unable to save BPMN file'
+            : error.code === 'access'
+              || error.code === 'changed'
+              || error.code === 'busy'
+              || error.code === 'not_found'
+              || error.code === 'not_file'
+              ? this.describeStorageFailure('Unable to save BPMN file', filename, error)
               : error.message
           : (error as NodeJS.ErrnoException).code === 'EEXIST' && filename
             ? `File already exists: ${filename}. Use overwrite option to replace.`
-            : 'Unable to save BPMN file'
+            : this.describeStorageFailure('Unable to save BPMN file', filename, error)
       };
     }
+  }
+
+  /**
+   * Persistence failures name the managed workspace and one coarse cause, so an
+   * agent can tell a permission problem from a workspace that disappeared
+   * without another round trip. The workspace path is already disclosed by
+   * get_diagrams_path and get_workspace; file contents never are.
+   */
+  private describeStorageFailure(
+    action: string,
+    filename: string | undefined,
+    error: unknown
+  ): string {
+    const cause = error instanceof SafeFilePathError
+      ? error.detail ?? storageFailureCause(error.code)
+      : errnoDetail(error);
+    return `${action}${filename ? ` "${filename}"` : ''}`
+      + ` in workspace ${this.defaultDirectory}${cause ? `: ${cause}` : ''}`;
   }
 
   async deleteBpmnFile(filename: string): Promise<void> {
@@ -274,12 +315,16 @@ export class FileManager {
         error: error instanceof SafeFilePathError
           ? error.code === 'exists'
             ? `File already exists: ${filename}. Use overwrite option to replace.`
-            : error.code === 'access' || error.code === 'changed'
-              ? 'Unable to save rendered artifact'
+            : error.code === 'access'
+              || error.code === 'changed'
+              || error.code === 'busy'
+              || error.code === 'not_found'
+              || error.code === 'not_file'
+              ? this.describeStorageFailure('Unable to save rendered artifact', filename, error)
               : error.message
           : (error as NodeJS.ErrnoException).code === 'EEXIST'
             ? `File already exists: ${filename}. Use overwrite option to replace.`
-            : 'Unable to save rendered artifact'
+            : this.describeStorageFailure('Unable to save rendered artifact', filename, error)
       };
     }
   }

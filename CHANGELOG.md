@@ -7,7 +7,113 @@ pre-1.0 policy described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning-changel
 
 ## Unreleased
 
-No changes since 0.3.0.
+### Added
+
+- `auto_layout` takes a `direction`: `left-to-right` (the default) or
+  `top-to-bottom`. A vertical layout reflects the ranked result across the
+  diagonal, so pools become vertical bands, containers keep their contents, and
+  edge endpoints are re-docked onto the borders they now face.
+- Mermaid conversion honours the declared direction. `TD`, `TB` and `BT` are
+  laid out top to bottom, `LR` and `RL` left to right; `BT` and `RL` read back
+  to front, which BPMN cannot express, so they are laid out forwards and say so
+  in the conversion warnings.
+- `save_png` takes a `scale` from 1 to 4, applied as the browser's device pixel
+  ratio, and reports `width`, `height`, `scale` and `downscaled` so a diagram
+  reduced to stay inside the renderer pixel limits no longer shrinks silently.
+- `documentation` is a first-class field on `add_event`, `add_activity`,
+  `add_gateway`, `connect` and `update_element`, written as `bpmn:Documentation`
+  and read back on import.
+- `update_element` accepts `text` and `textFormat`, so a text annotation's body
+  can be edited.
+- `build_process` creates a whole process, nodes and flows together, in one
+  transaction: one lock, one serialization, one file write, and nothing left
+  behind if a later step fails.
+- `save_as` takes `overwrite`, and reports `previousFilename` and
+  `removedPreviousFile`.
+- Every failed tool call carries a machine-readable `code` from a closed set and,
+  where one exists, a `recovery` sentence naming the next action.
+- `npm run test:ralph` runs `ralph-loop/tests/loop_test.sh`, which no script or
+  workflow previously invoked; `npm run test:all` now includes it.
+- `npm run test:package` fails if `package-lock.json` and `npm-shrinkwrap.json`
+  are not byte-identical.
+- `npm run test:layout-candidates` runs the third-party layout comparison
+  matrix, which is otherwise skipped.
+
+### Changed
+
+- Overlapping SVG or PNG exports queue instead of failing. Only a wait list
+  longer than the renderer's queue limit is rejected.
+- `update_connection` no longer requires a revision, so a label change is one
+  call instead of a `get_connection` round trip. The optimistic guards remain
+  available.
+- The Mermaid subset is much wider: quoted labels, the `---`, `==>`, `===`,
+  `-.-` and inline-label edge forms, `&` endpoint lists, and all four `subgraph`
+  declaration forms. Shapes and connectors outside the subset are now rejected
+  by name with the supported replacement, instead of being approximated.
+- The configured workspace, not the launch directory, is the containment
+  boundary. `select_workspace` no longer creates directory trees; the directory
+  must already exist.
+- Persistence failures name the file, the workspace and the cause instead of a
+  bare "Unable to save BPMN file". Read failures stay path-free by design.
+- Message flows are routed out of their own pool rather than across a foreign
+  pool's interior.
+- Documentation now matches the code it describes: the real default diagram
+  filename scheme and the optional `filename` argument on the creation tools,
+  the workspace resolution order (there is no `~/mcp-bpmn` default), the
+  complete `MCP_BPMN_*` variable list including `MCP_BPMN_MAX_ARTIFACT_BYTES`,
+  the current project layout, and re-measured `npm pack` figures.
+- `README.md` documents Puppeteer's roughly 650 MB browser download,
+  `PUPPETEER_SKIP_DOWNLOAD`, `PUPPETEER_EXECUTABLE_PATH`, and the fact that
+  `make install` never downloads a browser of its own.
+- `docs/architecture/engine-contract.md` covers all advertised tools and records
+  G1-G6 as resolved with the assertion that covers each, instead of listing
+  shipped lane, condition, and validation-level behavior as gaps.
+- `CONTRIBUTING.md` documents why `package-lock.json` and `npm-shrinkwrap.json`
+  are both tracked and how to update them safely.
+
+### Fixed
+
+- `auto_layout` that reproduces the geometry a diagram already has is no longer
+  committed. It returns `changed: false`, leaves the revision alone, and does
+  not rewrite the file.
+- A stale compare-and-write lock no longer blocks a diagram's autosave forever.
+  A lock whose recorded holder is a dead process on this host, or older than
+  30 seconds, is reclaimed through a serialized claim, and a writer that lost
+  its lock can never publish.
+- A workspace deleted and recreated under a running server is picked up again
+  instead of needing a restart, and a symbolic link that replaces it is still
+  never adopted.
+- Import errors keep the message that says what is actually wrong. The generic
+  "malformed or invalid input" text is used only for a genuine XML parse fault.
+- Renaming a start event inside an imported event subprocess succeeds, as do
+  edits to imported compensation boundary events.
+- The validator no longer flags every mainstream-tool compensation boundary
+  event that omits `cancelActivity`, no longer reports a cross-scope sequence
+  flow for every subprocess, and no longer reports an association outside its
+  owner for lanes.
+- The validator enforces the condition and default-flow rules the engine already
+  enforced, and rejects illegal event-based gateway targets.
+- `bpmn:incoming` and `bpmn:outgoing` lists are maintained for flows added to
+  imported documents that use them.
+- A label on an association is rejected instead of being reported as saved and
+  then dropped.
+- Deleting an element clears compensation and multi-instance references to it,
+  and drops the diagram-interchange entries that referenced it.
+- `connect` says which endpoint is missing, and `save_as` no longer leaves an
+  orphaned placeholder file behind.
+- Chrome starts under uid 0, where every containerised agent runtime lost SVG
+  and PNG output, and the browser process is reused across exports.
+
+### Removed
+
+- The duplicate `bpmn-auto-layout-alpha` dev alias of the production
+  `bpmn-auto-layout` dependency. The comparison matrix no longer spawns its 54
+  extra subprocesses on every `npm test`; the shipped layout path is still
+  exercised over the whole fixture corpus.
+- Dead code with no production caller: the layout barrels and unused layout-model
+  converters, and the uncalled property-payload limit helpers whose limits were
+  never enforced.
+- Stale `jest.config.js` coverage-ignore entries for files that no longer exist.
 
 ## 0.3.0 - 2026-09-04
 

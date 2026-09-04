@@ -10,7 +10,13 @@ type FileAccess = 'read' | 'write' | 'delete';
 export class SafeFilePathError extends Error {
   constructor(
     message: string,
-    readonly code: SafeFilePathErrorCode = 'access'
+    readonly code: SafeFilePathErrorCode = 'access',
+    /**
+     * Coarse, path-free cause an agent can act on ("permission denied
+     * (EACCES)"). Never carries file contents; callers that are allowed to
+     * disclose the managed workspace path add it to their own message.
+     */
+    readonly detail?: string
   ) {
     super(message);
     this.name = 'SafeFilePathError';
@@ -47,6 +53,19 @@ type AnchoredOperation = 'read' | 'write' | 'compare-write' | 'delete';
 
 const ANCHORED_FILE_WORKER_IDLE_TIMEOUT_MS = 5_000;
 
+/**
+ * A compare-and-write lock older than this — or one whose recorded holder is a
+ * dead process on this host — is reclaimed instead of blocking every later
+ * mutation of that diagram. Reclaiming is serialized through an O_EXCL claim
+ * file named after the exact holder record being reclaimed, so two reclaimers
+ * can never both decide they own the lock.
+ */
+const COMPARE_WRITE_LOCK_STALE_MS = 30_000;
+const COMPARE_WRITE_LOCK_ATTEMPTS = 500;
+const COMPARE_WRITE_LOCK_RETRY_MS = 10;
+/** Public name of the lock directory, documented for operators. */
+export const COMPARE_WRITE_LOCK_PREFIX = '.mcp-bpmn-lock-';
+
 /*
  * Node does not expose openat(2), renameat(2), or unlinkat(2). This worker
  * obtains the equivalent directory anchor by starting with the validated root
@@ -57,18 +76,20 @@ const ANCHORED_FILE_WORKER_IDLE_TIMEOUT_MS = 5_000;
 const ANCHORED_FILE_WORKER = String.raw`
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
+import { hostname } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 
 class OperationFailure extends Error {
-  constructor(code) {
+  constructor(code, detail) {
     super(code);
     this.code = code;
+    this.detail = detail;
   }
 }
 
-function fail(code) {
-  throw new OperationFailure(code);
+function fail(code, detail) {
+  throw new OperationFailure(code, detail);
 }
 
 function sameIdentity(left, right) {
@@ -114,18 +135,142 @@ async function readExactFile(filename, expectedSize) {
   }
 }
 
+const LOCK_PREFIX = '${COMPARE_WRITE_LOCK_PREFIX}';
+const LOCK_STALE_MS = ${COMPARE_WRITE_LOCK_STALE_MS};
+const LOCK_ATTEMPTS = ${COMPARE_WRITE_LOCK_ATTEMPTS};
+const LOCK_RETRY_MS = ${COMPARE_WRITE_LOCK_RETRY_MS};
+const LOCK_OWNER_FILE = 'owner';
+
+function lockPathFor(filename) {
+  return LOCK_PREFIX + createHash('sha256').update(filename).digest('hex');
+}
+
+function pause(milliseconds) {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+/**
+ * Identity of the current holder: its recorded owner document, or, during the
+ * sub-millisecond window between mkdir and the owner record being written, the
+ * directory's own mtime.
+ */
+async function lockHolder(lock) {
+  let record;
+  try {
+    const raw = await fs.readFile(path.join(lock, LOCK_OWNER_FILE), 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed
+      && typeof parsed.uuid === 'string'
+      && typeof parsed.time === 'number'
+      && Number.isFinite(parsed.time)) {
+      record = parsed;
+    }
+  } catch {
+    record = undefined;
+  }
+  if (record) return { token: 'owner.' + record.uuid, record, time: record.time };
+  const stats = await fs.stat(lock);
+  return { token: 'anonymous', record: undefined, time: stats.mtimeMs };
+}
+
+function holderIsRunning(record) {
+  if (!record || record.host !== hostname() || !Number.isInteger(record.pid)) return true;
+  try {
+    process.kill(record.pid, 0);
+    return true;
+  } catch (error) {
+    return !error || error.code !== 'ESRCH';
+  }
+}
+
+function holderIsStale(holder) {
+  return !holderIsRunning(holder.record) || Date.now() - holder.time > LOCK_STALE_MS;
+}
+
+/**
+ * Remove one abandoned lock. The claim file is named after the exact holder
+ * record observed, so O_EXCL admits a single reclaimer per abandoned holder,
+ * and the holder is re-read afterwards so a lock that was released and
+ * re-taken in the meantime is never removed from its new owner.
+ */
+async function reclaimAbandonedLock(lock, holder) {
+  const claim = path.join(lock, 'reclaim.' + holder.token);
+  try {
+    await fs.writeFile(claim, String(process.pid), { flag: 'wx', mode: 0o600 });
+  } catch {
+    return false;
+  }
+  let current;
+  try {
+    current = await lockHolder(lock);
+  } catch {
+    return false;
+  }
+  if (current.token !== holder.token) {
+    await fs.unlink(claim).catch(() => undefined);
+    return false;
+  }
+  await fs.rm(lock, { recursive: true, force: true });
+  return true;
+}
+
 async function acquireLock(filename) {
-  const lock = '.mcp-bpmn-lock-' + createHash('sha256').update(filename).digest('hex');
-  for (let attempt = 0; attempt < 500; attempt += 1) {
+  const lock = lockPathFor(filename);
+  const uuid = randomUUID();
+  for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt += 1) {
     try {
       await fs.mkdir(lock, { mode: 0o700 });
-      return lock;
     } catch (error) {
       if (!error || error.code !== 'EEXIST') throw error;
-      await new Promise(resolve => setTimeout(resolve, 10));
+      let holder;
+      try {
+        holder = await lockHolder(lock);
+      } catch (holderError) {
+        if (holderError && holderError.code === 'ENOENT') continue;
+        throw holderError;
+      }
+      if (holderIsStale(holder) && await reclaimAbandonedLock(lock, holder)) continue;
+      await pause(LOCK_RETRY_MS);
+      continue;
     }
+    const acquiredAt = Date.now();
+    await fs.writeFile(
+      path.join(lock, LOCK_OWNER_FILE),
+      JSON.stringify({ uuid, pid: process.pid, host: hostname(), time: acquiredAt }),
+      { flag: 'wx', mode: 0o600 }
+    );
+    return { lock, uuid, acquiredAt };
   }
-  fail('busy');
+  fail('busy', 'lock directory ' + lock + ' is held by another writer');
+}
+
+/**
+ * Guard the destructive step: a holder that has itself aged into the stale
+ * window, or whose lock was reclaimed, must never publish its temporary file.
+ */
+async function assertLockHeld(held) {
+  if (Date.now() - held.acquiredAt > LOCK_STALE_MS / 2) {
+    fail('busy', 'lock directory ' + held.lock + ' expired while the write was in progress');
+  }
+  let holder;
+  try {
+    holder = await lockHolder(held.lock);
+  } catch {
+    fail('busy', 'lock directory ' + held.lock + ' disappeared while the write was in progress');
+  }
+  if (!holder.record || holder.record.uuid !== held.uuid) {
+    fail('busy', 'lock directory ' + held.lock + ' was taken over by another writer');
+  }
+}
+
+async function releaseLock(held) {
+  try {
+    const holder = await lockHolder(held.lock);
+    if (holder.record && holder.record.uuid !== held.uuid) return;
+  } catch {
+    return;
+  }
+  await fs.rm(held.lock, { recursive: true, force: true }).catch(() => undefined);
 }
 
 async function perform(request) {
@@ -196,11 +341,11 @@ async function perform(request) {
 
   if (operation === 'compare-write') {
     const temporary = '.' + filename + '.' + process.pid + '.' + randomUUID() + '.tmp';
-    let lock;
+    let held;
     try {
       const content = Buffer.from(request.input || '', 'base64');
       await fs.writeFile(temporary, content, { flag: 'wx', mode: 0o600 });
-      lock = await acquireLock(filename);
+      held = await acquireLock(filename);
       if (request.expected === null) {
         try {
           await existingFile(filename);
@@ -208,6 +353,7 @@ async function perform(request) {
         } catch (error) {
           if (!(error instanceof OperationFailure) || error.code !== 'not_found') throw error;
         }
+        await assertLockHeld(held);
         await fs.link(temporary, filename);
       } else {
         const expected = Buffer.from(request.expected || '', 'base64');
@@ -219,11 +365,12 @@ async function perform(request) {
           throw error;
         }
         if (!actual.equals(expected)) fail('conflict');
+        await assertLockHeld(held);
         await fs.rename(temporary, filename);
       }
       return Buffer.alloc(0);
     } finally {
-      if (lock) await fs.rmdir(lock).catch(() => undefined);
+      if (held) await releaseLock(held);
       await fs.unlink(temporary).catch(() => undefined);
     }
   }
@@ -244,6 +391,48 @@ function errorCode(error) {
   return 'access';
 }
 
+/**
+ * A coarse, actionable cause built only from the errno symbol. Node's own
+ * message embeds the failing path and is never forwarded.
+ */
+function errorDetail(error) {
+  if (error instanceof OperationFailure) return error.detail;
+  const code = error && typeof error.code === 'string' ? error.code : undefined;
+  switch (code) {
+    case 'EACCES':
+    case 'EPERM':
+      return 'permission denied (' + code + ')';
+    case 'EROFS':
+      return 'read-only filesystem (EROFS)';
+    case 'ENOSPC':
+      return 'no space left on device (ENOSPC)';
+    case 'EDQUOT':
+      return 'disk quota exceeded (EDQUOT)';
+    case 'ENOENT':
+      return 'the workspace directory or file no longer exists (ENOENT)';
+    case 'ENOTDIR':
+      return 'the workspace path is not a directory (ENOTDIR)';
+    case 'EXDEV':
+      return 'the temporary file and the target are on different filesystems (EXDEV)';
+    case 'ENOSYS':
+    case 'EOPNOTSUPP':
+    case 'ENOTSUP':
+    case 'EINVAL':
+      return 'the filesystem does not support this operation (' + code + ')';
+    case 'EMFILE':
+    case 'ENFILE':
+      return 'too many open files (' + code + ')';
+    case 'EIO':
+      return 'a device I/O error occurred (EIO)';
+    case 'ELOOP':
+      return 'too many symbolic links (ELOOP)';
+    case 'ENAMETOOLONG':
+      return 'the filename is too long for this filesystem (ENAMETOOLONG)';
+    default:
+      return code;
+  }
+}
+
 async function respond(value) {
   await new Promise((resolve, reject) => {
     process.stdout.write(JSON.stringify(value) + '\n', error => {
@@ -255,18 +444,20 @@ async function respond(value) {
 
 const [expectedDevice, expectedInode] = process.argv.slice(1);
 let rootError;
+let rootDetail;
 try {
   const rootStats = await fs.stat('.', { bigint: true });
   if (!rootStats.isDirectory()
     || rootStats.dev.toString() !== expectedDevice
     || rootStats.ino.toString() !== expectedInode) {
-    fail('changed');
+    fail('changed', 'the workspace directory pinned at startup was replaced or removed');
   }
 } catch (error) {
   rootError = errorCode(error);
+  rootDetail = errorDetail(error);
 }
 
-await respond({ ready: rootError === undefined, error: rootError });
+await respond({ ready: rootError === undefined, error: rootError, detail: rootDetail });
 if (rootError) process.exit(1);
 
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -286,7 +477,7 @@ for await (const line of input) {
     const result = await perform(JSON.parse(line));
     await respond({ ok: true, data: result.toString('base64') });
   } catch (error) {
-    await respond({ ok: false, error: errorCode(error) });
+    await respond({ ok: false, error: errorCode(error), detail: errorDetail(error) });
   }
   armIdleExit();
 }
@@ -307,8 +498,11 @@ export function isPathContained(target: string, root: string): boolean {
 }
 
 /**
- * Basename-only file access pinned to one directory identity for this store's
- * lifetime. A replaced root path is never adopted by a later operation.
+ * Basename-only file access pinned to one directory identity. The pin is
+ * revalidated before every operation: a root that was replaced by a symbolic
+ * link — the redirection this store exists to defeat — is never adopted, while
+ * a workspace that was deleted and recreated as a real directory at the same
+ * configured path is re-pinned so the process does not have to be restarted.
  */
 export class SafeFileStore {
   private rootResolution?: Promise<ResolvedSafeRoot>;
@@ -378,9 +572,11 @@ export class SafeFileStore {
       root = await this.resolveRoot();
     } catch (error) {
       if (error instanceof SafeFilePathError && error.code === 'not_found') {
-        throw new SafeFilePathError(access === 'write'
-          ? 'Diagram storage is unavailable'
-          : 'File not found', 'not_found');
+        throw new SafeFilePathError(
+          access === 'write' ? 'Diagram storage is unavailable' : 'File not found',
+          'not_found',
+          error.detail ?? 'the workspace directory does not exist'
+        );
       }
       throw error;
     }
@@ -394,7 +590,21 @@ export class SafeFileStore {
     return { ...root, candidatePath, filename };
   }
 
-  private resolveRoot(): Promise<ResolvedSafeRoot> {
+  private async resolveRoot(): Promise<ResolvedSafeRoot> {
+    const pinned = this.rootResolution;
+    if (pinned) {
+      // A cached failure is still reported as before; only a resolved pin is
+      // revalidated against the directory that is at the configured path now.
+      const root = await pinned;
+      if (await this.pinnedRootIsCurrent(root)) return root;
+      await this.assertReplacementIsNotRedirected();
+      // A concurrent caller may already have re-pinned while this one waited.
+      if (this.rootResolution === pinned) this.releasePinnedRoot();
+    }
+    return this.pinRoot();
+  }
+
+  private pinRoot(): Promise<ResolvedSafeRoot> {
     if (!this.rootResolution) {
       this.rootResolution = this.establishRoot().catch(error => {
         if (error instanceof SafeFilePathError && error.code === 'not_found') {
@@ -406,6 +616,49 @@ export class SafeFileStore {
     return this.rootResolution;
   }
 
+  /** True while the pinned directory is still the one at the configured path. */
+  private async pinnedRootIsCurrent(root: ResolvedSafeRoot): Promise<boolean> {
+    let stats: BigIntStats;
+    try {
+      stats = await fs.stat(root.canonicalRoot, { bigint: true });
+    } catch {
+      return false;
+    }
+    return stats.isDirectory()
+      && stats.dev.toString() === root.rootDevice
+      && stats.ino.toString() === root.rootInode;
+  }
+
+  /**
+   * A recreated workspace directory may be re-pinned; a symbolic link that
+   * appeared where the pinned directory used to be is the redirection attack
+   * this store exists to defeat and is refused for the life of the process.
+   */
+  private async assertReplacementIsNotRedirected(): Promise<void> {
+    for (const candidate of new Set([this.rootDirectory, path.resolve(this.rootDirectory)])) {
+      let link;
+      try {
+        link = await fs.lstat(candidate);
+      } catch {
+        continue;
+      }
+      if (link.isSymbolicLink()) {
+        throw new SafeFilePathError(
+          'File changed during operation',
+          'changed',
+          'the workspace path now resolves through a symbolic link that replaced the '
+            + 'directory pinned at startup'
+        );
+      }
+    }
+  }
+
+  private releasePinnedRoot(): void {
+    this.rootResolution = undefined;
+    this.worker?.dispose();
+    this.worker = undefined;
+  }
+
   private workerFor(target: ResolvedSafeTarget): AnchoredFileWorker {
     this.worker ??= new AnchoredFileWorker(target);
     return this.worker;
@@ -415,11 +668,19 @@ export class SafeFileStore {
     let initialRootStats: BigIntStats;
     try {
       initialRootStats = await fs.stat(this.rootDirectory, { bigint: true });
-    } catch {
-      throw new SafeFilePathError('File not found', 'not_found');
+    } catch (error) {
+      throw new SafeFilePathError(
+        'File not found',
+        'not_found',
+        errnoDetail(error) ?? 'the workspace directory does not exist'
+      );
     }
     if (!initialRootStats.isDirectory()) {
-      throw new SafeFilePathError('Diagram storage is unavailable', 'not_file');
+      throw new SafeFilePathError(
+        'Diagram storage is unavailable',
+        'not_file',
+        'the workspace path is not a directory'
+      );
     }
 
     let canonicalRoot: string;
@@ -427,13 +688,21 @@ export class SafeFileStore {
     try {
       canonicalRoot = await fs.realpath(this.rootDirectory);
       rootStats = await fs.stat(canonicalRoot, { bigint: true });
-    } catch {
-      throw new SafeFilePathError('File changed during operation', 'changed');
+    } catch (error) {
+      throw new SafeFilePathError(
+        'File changed during operation',
+        'changed',
+        errnoDetail(error) ?? 'the workspace directory changed while it was being resolved'
+      );
     }
     if (!rootStats.isDirectory()
       || initialRootStats.dev !== rootStats.dev
       || initialRootStats.ino !== rootStats.ino) {
-      throw new SafeFilePathError('File changed during operation', 'changed');
+      throw new SafeFilePathError(
+        'File changed during operation',
+        'changed',
+        'the workspace directory changed while it was being resolved'
+      );
     }
 
     return {
@@ -449,6 +718,7 @@ interface WorkerResponse {
   ok?: boolean;
   data?: string;
   error?: string;
+  detail?: string;
 }
 
 class WorkerTransportError extends Error {}
@@ -482,6 +752,15 @@ class AnchoredFileWorker {
     ));
     this.queue = result.then(() => undefined, () => undefined);
     return result;
+  }
+
+  /** Stop the child anchored to a root that is no longer the pinned one. */
+  dispose(): void {
+    const child = this.child;
+    this.child = undefined;
+    this.startup = undefined;
+    child?.kill();
+    this.failWaiters();
   }
 
   private async runWithRetry(
@@ -543,7 +822,7 @@ class AnchoredFileWorker {
       }
 
       const message = this.parseResponse(await this.nextLine());
-      if (!message.ok) throw workerError(message.error || 'access');
+      if (!message.ok) throw workerError(message.error || 'access', message.detail);
       return Buffer.from(message.data || '', 'base64');
     } finally {
       if (this.child === child && child.exitCode === null) {
@@ -588,7 +867,7 @@ class AnchoredFileWorker {
 
     this.startup = this.nextLine().then(line => {
       const response = this.parseResponse(line);
-      if (!response.ready) throw workerError(response.error || 'access');
+      if (!response.ready) throw workerError(response.error || 'access', response.detail);
     });
     return this.startup;
   }
@@ -637,28 +916,58 @@ class AnchoredFileWorker {
   }
 }
 
-function workerError(code: string): SafeFilePathError {
+function workerError(code: string, detail?: string): SafeFilePathError {
   switch (code) {
     case 'invalid':
-      return new SafeFilePathError('Invalid filename', 'invalid');
+      return new SafeFilePathError('Invalid filename', 'invalid', detail);
     case 'not_found':
-      return new SafeFilePathError('File not found', 'not_found');
+      return new SafeFilePathError('File not found', 'not_found', detail);
     case 'not_file':
-      return new SafeFilePathError('Diagram path is not a file', 'not_file');
+      return new SafeFilePathError('Diagram path is not a file', 'not_file', detail);
     case 'symlink':
-      return new SafeFilePathError('Symbolic links are not allowed', 'symlink');
+      return new SafeFilePathError('Symbolic links are not allowed', 'symlink', detail);
     case 'too_large':
-      return new SafeFilePathError('Diagram file exceeds the configured byte limit', 'too_large');
+      return new SafeFilePathError(
+        'Diagram file exceeds the configured byte limit',
+        'too_large',
+        detail
+      );
     case 'exists':
-      return new SafeFilePathError('File already exists', 'exists');
+      return new SafeFilePathError('File already exists', 'exists', detail);
     case 'changed':
-      return new SafeFilePathError('File changed during operation', 'changed');
+      return new SafeFilePathError('File changed during operation', 'changed', detail);
     case 'conflict':
-      return new SafeFilePathError('Document revision conflict', 'conflict');
+      return new SafeFilePathError('Document revision conflict', 'conflict', detail);
     case 'busy':
-      return new SafeFilePathError('Diagram file is busy', 'busy');
+      return new SafeFilePathError('Diagram file is busy', 'busy', detail);
     default:
-      return new SafeFilePathError('Unable to access diagram file');
+      return new SafeFilePathError('Unable to access diagram file', 'access', detail);
+  }
+}
+
+/** Coarse, path-free cause for an errno raised in this process. */
+export function errnoDetail(error: unknown): string | undefined {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  switch (code) {
+    case undefined:
+      return undefined;
+    case 'EACCES':
+    case 'EPERM':
+      return `permission denied (${code})`;
+    case 'EROFS':
+      return 'read-only filesystem (EROFS)';
+    case 'ENOSPC':
+      return 'no space left on device (ENOSPC)';
+    case 'ENOENT':
+      return 'the workspace directory does not exist (ENOENT)';
+    case 'ENOTDIR':
+      return 'the workspace path is not a directory (ENOTDIR)';
+    case 'EEXIST':
+      return 'the workspace path is already occupied by a file (EEXIST)';
+    case 'ELOOP':
+      return 'too many symbolic links (ELOOP)';
+    default:
+      return code;
   }
 }
 

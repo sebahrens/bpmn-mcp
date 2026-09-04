@@ -795,14 +795,7 @@ describe('BpmnValidator', () => {
       'agent-geometry/imperfect-process.bpmn': ['BPMN_START_EVENT_HAS_INCOMING_FLOW'],
       // Deliberately imperfect: its message flow is named "wrong sender" and
       // originates from a start event.
-      'agent-geometry/imperfect-collaboration.bpmn': ['BPMN_INVALID_MESSAGE_FLOW_DIRECTION'],
-      // Faithful Camunda Modeler output (mcp-bpmn-5e7.12). bpmn-js creates a
-      // compensation boundary event with cancelActivity true, which is the
-      // moddle default and so is never written to the file; this validator
-      // requires compensation boundaries to be non-interrupting. The fixture is
-      // correct for the tool that produced it, so the disagreement is recorded
-      // here rather than papered over by editing the fixture.
-      'real-tools/camunda-modeler-c7.bpmn': ['BPMN_INVALID_BOUNDARY_INTERRUPTION']
+      'agent-geometry/imperfect-collaboration.bpmn': ['BPMN_INVALID_MESSAGE_FLOW_DIRECTION']
     };
 
     const fixtureDirectories = [
@@ -833,6 +826,154 @@ describe('BpmnValidator', () => {
       }
 
       expect(actual).toEqual(expectedErrorCodes);
+    });
+  });
+
+  describe('sequence flow condition and default rules', () => {
+    const process = (body: string): string => definitions(`
+      <bpmn:process id="Process_Rules" isExecutable="true">${body}</bpmn:process>`);
+
+    it('rejects a conditional flow leaving a parallel gateway', async () => {
+      const result = await validator.validate(process(`
+        <bpmn:parallelGateway id="Gateway_Parallel" />
+        <bpmn:task id="Task_Branch" />
+        <bpmn:sequenceFlow id="Flow_Conditional"
+          sourceRef="Gateway_Parallel" targetRef="Task_Branch">
+          <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">\${ok}</bpmn:conditionExpression>
+        </bpmn:sequenceFlow>`), 'semantic');
+
+      expect(result.errors).toEqual([
+        expect.objectContaining({
+          code: 'BPMN_INVALID_FLOW_CONDITION',
+          elementId: 'Flow_Conditional'
+        })
+      ]);
+    });
+
+    it.each([
+      ['an exclusive gateway', '<bpmn:exclusiveGateway id="Source_Node" />'],
+      ['an inclusive gateway', '<bpmn:inclusiveGateway id="Source_Node" />'],
+      ['a task', '<bpmn:task id="Source_Node" />']
+    ])('accepts a conditional flow leaving %s', async (_label, source) => {
+      const result = await validator.validate(process(`
+        ${source}
+        <bpmn:task id="Task_Branch" />
+        <bpmn:sequenceFlow id="Flow_Conditional" sourceRef="Source_Node" targetRef="Task_Branch">
+          <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">\${ok}</bpmn:conditionExpression>
+        </bpmn:sequenceFlow>`), 'semantic');
+
+      expect(issueCodes(result)).not.toContain('BPMN_INVALID_FLOW_CONDITION');
+    });
+
+    it('rejects a default flow that belongs to another node', async () => {
+      const result = await validator.validate(process(`
+        <bpmn:startEvent id="Start_Other" />
+        <bpmn:exclusiveGateway id="Gateway_Default" default="Flow_Foreign" />
+        <bpmn:task id="Task_After" />
+        <bpmn:sequenceFlow id="Flow_Foreign" sourceRef="Start_Other" targetRef="Gateway_Default" />
+        <bpmn:sequenceFlow id="Flow_Own" sourceRef="Gateway_Default" targetRef="Task_After" />`),
+      'semantic');
+
+      expect(result.errors).toEqual([
+        expect.objectContaining({
+          code: 'BPMN_INVALID_DEFAULT_FLOW',
+          elementId: 'Gateway_Default'
+        })
+      ]);
+    });
+
+    it('rejects a default flow that also carries a condition', async () => {
+      const result = await validator.validate(process(`
+        <bpmn:exclusiveGateway id="Gateway_Default" default="Flow_Own" />
+        <bpmn:task id="Task_After" />
+        <bpmn:sequenceFlow id="Flow_Own" sourceRef="Gateway_Default" targetRef="Task_After">
+          <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">\${ok}</bpmn:conditionExpression>
+        </bpmn:sequenceFlow>`), 'semantic');
+
+      expect(result.errors).toEqual([
+        expect.objectContaining({
+          code: 'BPMN_INVALID_DEFAULT_FLOW',
+          elementId: 'Gateway_Default'
+        })
+      ]);
+    });
+
+    it('rejects a default flow on a parallel gateway', async () => {
+      const result = await validator.validate(process(`
+        <bpmn:parallelGateway id="Gateway_Parallel" default="Flow_Own" />
+        <bpmn:task id="Task_After" />
+        <bpmn:sequenceFlow id="Flow_Own" sourceRef="Gateway_Parallel" targetRef="Task_After" />`),
+      'semantic');
+
+      expect(result.errors).toEqual([
+        expect.objectContaining({
+          code: 'BPMN_INVALID_DEFAULT_FLOW',
+          elementId: 'Gateway_Parallel'
+        })
+      ]);
+    });
+
+    it('accepts a well-formed exclusive gateway with a default flow', async () => {
+      const result = await validator.validate(process(`
+        <bpmn:exclusiveGateway id="Gateway_Ok" default="Flow_Else" />
+        <bpmn:task id="Task_Yes" />
+        <bpmn:task id="Task_Else" />
+        <bpmn:sequenceFlow id="Flow_Yes" sourceRef="Gateway_Ok" targetRef="Task_Yes">
+          <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">\${ok}</bpmn:conditionExpression>
+        </bpmn:sequenceFlow>
+        <bpmn:sequenceFlow id="Flow_Else" sourceRef="Gateway_Ok" targetRef="Task_Else" />`),
+      'semantic');
+
+      expect(issueCodes(result)).not.toContain('BPMN_INVALID_DEFAULT_FLOW');
+      expect(issueCodes(result)).not.toContain('BPMN_INVALID_FLOW_CONDITION');
+    });
+  });
+
+  describe('event-based gateway targets', () => {
+    const gatewayTo = (target: string): string => definitions(`
+      <bpmn:process id="Process_EventGateway" isExecutable="true">
+        <bpmn:eventBasedGateway id="Gateway_Event" />
+        ${target}
+        <bpmn:sequenceFlow id="Flow_ToTarget" sourceRef="Gateway_Event" targetRef="Target_Node" />
+      </bpmn:process>`);
+
+    it('rejects a user task target', async () => {
+      const result = await validator.validate(
+        gatewayTo('<bpmn:userTask id="Target_Node" />'), 'semantic'
+      );
+
+      expect(result.errors).toEqual([
+        expect.objectContaining({
+          code: 'BPMN_INVALID_EVENT_GATEWAY_TARGET',
+          elementId: 'Flow_ToTarget'
+        })
+      ]);
+    });
+
+    it('rejects an intermediate catch event with no definition', async () => {
+      const result = await validator.validate(
+        gatewayTo('<bpmn:intermediateCatchEvent id="Target_Node" />'), 'semantic'
+      );
+
+      expect(issueCodes(result)).toContain('BPMN_INVALID_EVENT_GATEWAY_TARGET');
+    });
+
+    it.each([
+      ['a receive task', '<bpmn:receiveTask id="Target_Node" />'],
+      ['a message catch event', '<bpmn:intermediateCatchEvent id="Target_Node">'
+        + '<bpmn:messageEventDefinition id="Def_Message" /></bpmn:intermediateCatchEvent>'],
+      ['a timer catch event', '<bpmn:intermediateCatchEvent id="Target_Node">'
+        + '<bpmn:timerEventDefinition id="Def_Timer" /></bpmn:intermediateCatchEvent>'],
+      ['a signal catch event', '<bpmn:intermediateCatchEvent id="Target_Node">'
+        + '<bpmn:signalEventDefinition id="Def_Signal" /></bpmn:intermediateCatchEvent>']
+    ])('accepts %s', async (_label, target) => {
+      const result = await validator.validate(gatewayTo(target), 'semantic');
+
+      expect(issueCodes(result)).not.toContain('BPMN_INVALID_EVENT_GATEWAY_TARGET');
     });
   });
 });

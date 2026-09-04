@@ -590,6 +590,22 @@ describe('transactional diagram persistence', () => {
       .toMatchObject({ revision: afterRevision });
   });
 
+  it('reports the workspace and a coarse cause when autosave cannot reach the workspace', async () => {
+    await fs.rm(directory, { recursive: true, force: true });
+    await fs.writeFile(directory, 'the workspace path is now a file', 'utf8');
+
+    const failed = await handler.handleRequest('new_bpmn', { name: 'Unreachable workspace' });
+
+    expect(failed).toMatchObject({
+      isError: true,
+      structuredContent: { code: 'storage_unavailable' }
+    });
+    expect(textOf(failed)).toContain(directory);
+    expect(textOf(failed)).toMatch(/EEXIST|ENOTDIR|not a directory/);
+    await fs.rm(directory, { force: true });
+    await fs.mkdir(directory, { recursive: true });
+  });
+
   it('rejects external edits without changing memory and supports explicit revision recovery', async () => {
     await handler.handleRequest('new_bpmn', { name: 'External conflict' });
     const context = diagramContext.getCurrent();

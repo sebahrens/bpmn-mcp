@@ -209,6 +209,82 @@ describe('Mermaid conversion semantics', () => {
     await expect(converter.canConvert(source)).resolves.toMatchObject({ valid: false });
   });
 
+  it('names BPMN elements with the quoted label, not with the quotes (mcp-bpmn-j21.4)', async () => {
+    const source = [
+      'flowchart LR',
+      '  subgraph cust ["Customer Side"]',
+      '    S((Start)) --> T["Review (draft) [urgent]"]',
+      '    T --> E((End))',
+      '  end'
+    ].join('\n');
+    const result = await converter.convert(source, { autoLayout: false });
+    const parsed = await moddle.fromXML(result.xml);
+    const collaboration = parsed.rootElement.rootElements.find(
+      (root: any) => root.$type === 'bpmn:Collaboration'
+    );
+
+    expect(parsed.warnings).toEqual([]);
+    expect(result.xml).not.toContain('&#34;');
+    expect(parsed.elementsById.Task_T.name).toBe('Review (draft) [urgent]');
+    expect(collaboration.participants[0].name).toBe('Customer Side');
+  });
+
+  it('converts the primary Mermaid edge and subgraph forms end to end (mcp-bpmn-j21.6, j21.7)', async () => {
+    const source = [
+      'graph LR',
+      '  subgraph Customer Side',
+      '    S((Start)) -- submit --> T[Review]',
+      '    T ==> U[Approve]',
+      '    U --- E((End))',
+      '  end'
+    ].join('\n');
+    const result = await converter.convert(source, { autoLayout: false });
+    const parsed = await moddle.fromXML(result.xml);
+    const collaboration = parsed.rootElement.rootElements.find(
+      (root: any) => root.$type === 'bpmn:Collaboration'
+    );
+    const process = parsed.rootElement.rootElements.find(
+      (root: any) => root.$type === 'bpmn:Process'
+    );
+    const sequenceFlows = process.flowElements.filter(
+      (element: any) => element.$type === 'bpmn:SequenceFlow'
+    );
+
+    expect(parsed.warnings).toEqual([]);
+    expect(collaboration.participants[0].name).toBe('Customer Side');
+    expect(sequenceFlows).toHaveLength(3);
+    expect(sequenceFlows.map((flow: any) => flow.name)).toEqual(['submit', undefined, undefined]);
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('[UNSUPPORTED_EDGE_STYLE] Thick Mermaid edge T_to_U'),
+      expect.stringContaining('[UNSUPPORTED_EDGE_STYLE] Undirected Mermaid edge U_to_E')
+    ]));
+  });
+
+  it('reports an implicit parallel split without changing the conversion (mcp-bpmn-j21.8)', async () => {
+    const source = [
+      'flowchart TD',
+      '  A[Check] -->|ok| B[Ship]',
+      '  A -->|fail| C[Refund]'
+    ].join('\n');
+    const result = await converter.convert(source, { autoLayout: false });
+    const parsed = await moddle.fromXML(result.xml);
+    const process = parsed.rootElement.rootElements.find(
+      (root: any) => root.$type === 'bpmn:Process'
+    );
+    const sequenceFlows = process.flowElements.filter(
+      (element: any) => element.$type === 'bpmn:SequenceFlow'
+    );
+
+    expect(parsed.warnings).toEqual([]);
+    expect(sequenceFlows.map((flow: any) => [flow.sourceRef.id, flow.targetRef.id])).toEqual([
+      ['Task_A', 'Task_B'],
+      ['Task_A', 'Task_C']
+    ]);
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('2:3 [IMPLICIT_PARALLEL_SPLIT] Node "A" has 2 outgoing connections')
+    ]));
+  });
+
   it('preserves parallel edges and their labels in BPMN conversion', async () => {
     const source = [
       'flowchart TD',

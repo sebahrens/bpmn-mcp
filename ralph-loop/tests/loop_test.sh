@@ -1,4 +1,14 @@
 #!/bin/bash
+#
+# Integration tests for ralph-loop/loop.sh.
+#
+# Run with `npm run test:ralph`; `npm run test:all` (and therefore `npm run
+# check` and CI) runs it too. Every test builds a throwaway fixture with fake
+# `bd`, `codex` and `claude` executables on PATH, so no real Beads database,
+# agent or network is touched.
+#
+# Requires bash, jq and perl. `git` must be on PATH because loop.sh checks for
+# it, but no Git command is executed against this repository.
 
 set -eu
 
@@ -440,6 +450,11 @@ EOF
 }
 
 [ -f "$LOOP_SOURCE" ] || fail "ralph-loop/loop.sh does not exist"
+
+for required_command in jq perl git; do
+    command -v "$required_command" >/dev/null 2>&1 \
+        || fail "$required_command is required to run the loop tests"
+done
 
 test_default_executor_is_codex
 test_third_failure_runs_codex_and_returns_to_loop

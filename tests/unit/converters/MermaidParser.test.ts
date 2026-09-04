@@ -669,7 +669,8 @@ describe('MermaidParser semicolon statement terminators', () => {
 
     expect(result.errors).toEqual([]);
     expect(result.ast?.nodes).toEqual([
-      { id: 'A', type: 'process', label: '"Pause; resume"' },
+      // The quotes are Mermaid delimiters, not part of the author's name.
+      { id: 'A', type: 'process', label: 'Pause; resume' },
       { id: 'B', type: 'process', label: 'Ship &amp;#59; invoice' },
       { id: 'C', type: 'decision', label: 'Ready; set?' }
     ]);
@@ -780,5 +781,484 @@ describe('MermaidParser cross-subgraph edge endpoints', () => {
 
     expect(result.errors).toEqual([]);
     expect(result.ast?.edges.map(edge => edge.id)).toEqual(['S_to_T', 'T_to_G', 'G_to_E']);
+  });
+});
+
+describe('MermaidParser quoted labels (mcp-bpmn-j21.4)', () => {
+  const parser = new MermaidParser();
+
+  it.each([
+    ['parentheses', 'B["Review (draft)"]', 'Review (draft)'],
+    ['a closing bracket', 'B["Check [urgent]"]', 'Check [urgent]'],
+    ['an arrow', 'B["Ship --> invoice"]', 'Ship --> invoice'],
+    ['a pipe', 'B["Ship | invoice"]', 'Ship | invoice'],
+    ['an ampersand', 'B["Ship & invoice"]', 'Ship & invoice'],
+    ['surrounding whitespace', 'B[ "Review draft" ]', 'Review draft'],
+    ['markdown emphasis', 'B["`**Review** draft`"]', '**Review** draft']
+  ])('drops the delimiting quotes and keeps %s', (_name, definition, expectedLabel) => {
+    const result = parser.parse(`flowchart TD\n  ${definition}`);
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.nodes[0]).toEqual({ id: 'B', type: 'process', label: expectedLabel });
+  });
+
+  it.each([
+    ['decision', 'B{"Ready? }"}', 'decision', 'Ready? }'],
+    ['subprocess', 'B[/"Manual / review"/]', 'subprocess', 'Manual / review'],
+    ['terminator', 'B(("Done )"))', 'end', 'Done )']
+  ] as Array<[string, string, NodeType, string]>)(
+    'keeps a %s delimiter that lives inside the quoted label',
+    (_name, definition, expectedType, expectedLabel) => {
+      const result = parser.parse(`flowchart TD\n  A((Start)) --> ${definition}`);
+
+      expect(result.errors).toEqual([]);
+      expect(result.ast?.nodes.find(node => node.id === 'B')).toEqual({
+        id: 'B',
+        type: expectedType,
+        label: expectedLabel
+      });
+    }
+  );
+
+  it('keeps a data delimiter that lives inside the quoted label', () => {
+    const result = parser.parse('flowchart TD\n  B[["Record ]"]]');
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.nodes).toEqual([{ id: 'B', type: 'data', label: 'Record ]' }]);
+  });
+
+  it('decodes Mermaid entity codes inside a quoted label only', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      '  A["Cost #quot;net#quot; #35;1"] --> B[Cost #quot;net#quot;]'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.nodes.map(node => node.label)).toEqual([
+      'Cost "net" #1',
+      'Cost #quot;net#quot;'
+    ]);
+  });
+
+  it('keeps an unclosed unquoted shape a malformed node', () => {
+    const result = parser.parse('flowchart TD\n  B[Check [urgent');
+
+    expect(result.ast).toBeUndefined();
+    expect(result.errors).toEqual([
+      expect.objectContaining({ code: 'MALFORMED_NODE', line: 2, column: 4 })
+    ]);
+  });
+
+  it('strips the quotes from a quoted subgraph title', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      '  subgraph cust ["Customer Side"]',
+      '    A((Start)) --> B((End))',
+      '  end'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.subgraphs).toEqual([
+      { id: 'cust', title: 'Customer Side', nodes: ['A', 'B'] }
+    ]);
+  });
+});
+
+describe('MermaidParser unsupported node shapes (mcp-bpmn-j21.5)', () => {
+  const parser = new MermaidParser();
+
+  it.each([
+    ['database', 'B[(DB)]', 'database (cylinder)', 'ID[[Label]] for a data object'],
+    ['trapezoid', 'B[/Manual\\]', 'trapezoid', 'ID[Label] for a task'],
+    ['alternate trapezoid', 'B[\\Para/]', 'alternate trapezoid', 'ID[Label] for a task'],
+    ['alternate parallelogram', 'B[\\Para\\]', 'alternate parallelogram', 'ID[/Label/] for a subprocess'],
+    ['rounded rectangle', 'B(Do work)', 'rounded rectangle', 'ID[Label] for a task'],
+    ['stadium', 'B([Do work])', 'stadium', 'ID[Label] for a task'],
+    ['double circle', 'B(((Done)))', 'double circle', 'ID((Label)) for an event'],
+    ['hexagon', 'B{{Prep}}', 'hexagon', 'ID{Label} for an exclusive gateway'],
+    ['asymmetric', 'B>Notify]', 'asymmetric', 'ID[Label] for a task']
+  ])('rejects the %s shape instead of approximating it as a task', (
+    _name,
+    definition,
+    shapeName,
+    alternative
+  ) => {
+    const result = parser.parse(`flowchart TD\n  A((Start)) --> ${definition}`);
+
+    expect(result.ast).toBeUndefined();
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        severity: 'error',
+        code: 'UNSUPPORTED_SHAPE',
+        line: 2,
+        column: 19,
+        message: expect.stringContaining(shapeName)
+      })
+    ]);
+    expect(result.errors[0].message).toContain('is valid Mermaid but is not part of the supported BPMN subset');
+    expect(result.errors[0].message).toContain(alternative);
+  });
+
+  it.each([
+    ['data', 'B[[Record]]', 'data', 'Record'],
+    ['subprocess', 'B[/Manual review/]', 'subprocess', 'Manual review'],
+    ['process', 'B[Review]', 'process', 'Review'],
+    ['decision', 'B{Ready?}', 'decision', 'Ready?'],
+    ['terminator', 'B((Waiting))', 'terminator', 'Waiting']
+  ] as Array<[string, string, NodeType, string]>)(
+    'still accepts the supported %s shape beside them',
+    (_name, definition, expectedType, expectedLabel) => {
+      const result = parser.parse(`flowchart TD\n  ${definition}`);
+
+      expect(result.errors).toEqual([]);
+      expect(result.ast?.nodes[0]).toEqual({ id: 'B', type: expectedType, label: expectedLabel });
+    }
+  );
+
+  it('names Mermaid 11 typed-shape syntax instead of reporting unexpected content', () => {
+    const result = parser.parse('flowchart TD\n  A((Start)) --> B@{ shape: cyl, label: "DB" }');
+
+    expect(result.ast).toBeUndefined();
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        code: 'UNSUPPORTED_SHAPE',
+        line: 2,
+        column: 19,
+        message: expect.stringContaining('is valid Mermaid but is not part of the supported BPMN subset')
+      })
+    ]);
+  });
+
+  it('treats an unsupported delimiter inside a quoted label as text', () => {
+    const result = parser.parse('flowchart TD\n  B["Load (DB) {{now}}"]');
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.nodes[0].label).toBe('Load (DB) {{now}}');
+  });
+});
+
+describe('MermaidParser edge connectors (mcp-bpmn-j21.6)', () => {
+  const parser = new MermaidParser();
+
+  it.each([
+    ['arrow', 'A --> B', 'directed', undefined, []],
+    ['long arrow', 'A ---> B', 'directed', undefined, []],
+    ['open link', 'A --- B', 'directed', undefined, ['Undirected']],
+    ['thick arrow', 'A ==> B', 'directed', undefined, ['Thick']],
+    ['thick open link', 'A === B', 'directed', undefined, ['Thick', 'Undirected']],
+    ['dotted arrow', 'A -.-> B', 'dotted', undefined, ['Dotted']],
+    ['dotted open link', 'A -.- B', 'dotted', undefined, ['Undirected', 'Dotted']],
+    ['inline label', 'A -- yes --> B', 'labeled', 'yes', []],
+    ['inline label without a space', 'A--yes-->B', 'labeled', 'yes', []],
+    ['inline label on an open link', 'A -- yes --- B', 'labeled', 'yes', ['Undirected']],
+    ['inline dotted label', 'B-. retry .->A', 'dotted', 'retry', ['Dotted']],
+    ['inline thick label', 'A == ship ==> B', 'labeled', 'ship', ['Thick']],
+    ['pipe label', 'A -->|yes| B', 'labeled', 'yes', []]
+  ] as Array<[string, string, string, string | undefined, string[]]>)(
+    'accepts the %s form',
+    (_name, edge, expectedType, expectedLabel, droppedStyles) => {
+      const result = parser.parse(`flowchart TD\n  ${edge}`);
+
+      expect(result.errors).toEqual([]);
+      expect(result.ast?.edges).toEqual([
+        expect.objectContaining({ type: expectedType, label: expectedLabel })
+      ]);
+      expect(result.warnings
+        .filter(warning => warning.code === 'UNSUPPORTED_EDGE_STYLE')
+        .map(warning => warning.message.split(' ')[0])).toEqual(droppedStyles);
+    }
+  );
+
+  it.each([
+    ['a hyphen', 'A -- send e-mail --> B', 'send e-mail'],
+    ['a greater-than sign', 'A -- total > 100 --> B', 'total > 100'],
+    ['an ampersand', 'A -- ship & invoice --> B', 'ship & invoice'],
+    ['an arrow-like run before a later arrow', 'A -- a-b > c --> B', 'a-b > c']
+  ])('keeps an inline edge label containing %s', (_name, edge, expectedLabel) => {
+    const result = parser.parse(`flowchart TD\n  ${edge}`);
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.edges).toEqual([
+      expect.objectContaining({ source: 'A', target: 'B', label: expectedLabel })
+    ]);
+  });
+
+  it('takes the earliest terminator for each link in an inline-labeled chain', () => {
+    const result = parser.parse('flowchart TD\n  A -- yes --> B -- no --> C');
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.edges.map(edge => [edge.source, edge.target, edge.label])).toEqual([
+      ['A', 'B', 'yes'],
+      ['B', 'C', 'no']
+    ]);
+  });
+
+  it.each([
+    ['fan-out targets', 'A --> B & C', [['A', 'B'], ['A', 'C']]],
+    ['fan-in sources', 'A & B --> C', [['A', 'C'], ['B', 'C']]],
+    ['both sides', 'A & B --> C & D', [['A', 'C'], ['A', 'D'], ['B', 'C'], ['B', 'D']]],
+    ['a chained fan-out', 'A --> B & C --> D', [['A', 'B'], ['A', 'C'], ['B', 'D'], ['C', 'D']]],
+    ['shaped list members', 'A[Work] --> B[Ship] & C[Bill]', [['A', 'B'], ['A', 'C']]]
+  ])('expands the & list for %s', (_name, edge, expectedEdges) => {
+    const result = parser.parse(`flowchart TD\n  ${edge}`);
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.edges.map(edge => [edge.source, edge.target])).toEqual(expectedEdges);
+  });
+
+  it('copies the connector label onto every edge of a fan-out', () => {
+    const result = parser.parse('flowchart TD\n  A -- go --> B & C');
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.edges.map(edge => [edge.id, edge.label])).toEqual([
+      ['A_to_B', 'go'],
+      ['A_to_C', 'go']
+    ]);
+  });
+
+  it.each([
+    ['inside a node shape', 'A[Ship & invoice] --> B', 'A', 'Ship & invoice'],
+    ['inside a quoted node shape', 'A["Ship & invoice"] --> B', 'A', 'Ship & invoice']
+  ])('treats an ampersand %s as label text, not a fan-out separator', (
+    _name,
+    edge,
+    nodeId,
+    expectedLabel
+  ) => {
+    const result = parser.parse(`flowchart TD\n  ${edge}`);
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.nodes).toHaveLength(2);
+    expect(result.ast?.nodes.find(node => node.id === nodeId)?.label).toBe(expectedLabel);
+  });
+
+  it.each([
+    ['a pipe label', 'A -->|ship & invoice| B'],
+    ['an inline label', 'A -- ship & invoice --> B']
+  ])('treats an ampersand in %s as label text', (_name, edge) => {
+    const result = parser.parse(`flowchart TD\n  ${edge}`);
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.nodes.map(node => node.id)).toEqual(['A', 'B']);
+    expect(result.ast?.edges).toEqual([
+      expect.objectContaining({ source: 'A', target: 'B', label: 'ship & invoice' })
+    ]);
+  });
+
+  it.each([
+    ['invisible link', 'A ~~~ B', '~~~', 'invisible link'],
+    ['bidirectional arrow', 'A <--> B', '<-->', 'one-directional'],
+    ['bidirectional thick arrow', 'A <==> B', '<==>', 'one-directional'],
+    ['circle arrowhead', 'A --o B', '--o', 'circle and cross arrowheads'],
+    ['cross arrowhead', 'A --x B', '--x', 'circle and cross arrowheads']
+  ])('rejects the %s as unsupported rather than malformed', (_name, edge, text, alternative) => {
+    const result = parser.parse(`flowchart TD\n  ${edge}`);
+
+    expect(result.ast).toBeUndefined();
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        code: 'UNSUPPORTED_CONNECTOR',
+        line: 2,
+        column: 5,
+        message: expect.stringContaining(`"${text}"`)
+      })
+    ]);
+    expect(result.errors[0].message).toContain('is valid Mermaid but is not part of the supported BPMN subset');
+    expect(result.errors[0].message).toContain(alternative);
+  });
+
+  it('still reports a connector that is not Mermaid at all as malformed', () => {
+    const result = parser.parse('flowchart TD\n  A -> B');
+
+    expect(result.ast).toBeUndefined();
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        code: 'MALFORMED_EDGE',
+        line: 2,
+        column: 5,
+        message: expect.stringContaining('Expected a supported edge connector')
+      })
+    ]);
+  });
+
+  it('rejects an edge that carries both an inline and a pipe label', () => {
+    const result = parser.parse('flowchart TD\n  A -- yes -->|no| B');
+
+    expect(result.ast).toBeUndefined();
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        code: 'MALFORMED_EDGE',
+        message: 'Use either "-- text -->" or -->|text| to label an edge, not both'
+      })
+    ]);
+  });
+
+  it('reports a missing endpoint after an ampersand at the ampersand', () => {
+    const result = parser.parse('flowchart TD\n  A --> B &');
+
+    expect(result.ast).toBeUndefined();
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        code: 'MALFORMED_EDGE',
+        line: 2,
+        column: 11,
+        message: 'Expected another Mermaid node identifier after "&"'
+      })
+    ]);
+  });
+});
+
+describe('MermaidParser subgraph declarations (mcp-bpmn-j21.7)', () => {
+  const parser = new MermaidParser();
+  const diagram = (declaration: string): string => [
+    'graph LR',
+    ` ${declaration}`,
+    ' a1[Start] --> a2[Task A]',
+    ' end'
+  ].join('\n');
+
+  it.each([
+    ['an explicit ID and title', 'subgraph A[Alpha]', 'A', 'Alpha'],
+    ['an explicit ID and quoted title', 'subgraph A["Alpha team"]', 'A', 'Alpha team'],
+    ['a spaced ID and quoted title', 'subgraph cust ["Customer Side"]', 'cust', 'Customer Side'],
+    ['a bare single-word title', 'subgraph A', 'A', 'A'],
+    ['a quoted title', 'subgraph "Alpha team"', 'Alpha_team', 'Alpha team'],
+    ['a bare multi-word title', 'subgraph Alpha team', 'Alpha_team', 'Alpha team']
+  ])('accepts %s', (_name, declaration, expectedId, expectedTitle) => {
+    const result = parser.parse(diagram(declaration));
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.subgraphs).toEqual([
+      { id: expectedId, title: expectedTitle, nodes: ['a1', 'a2'] }
+    ]);
+  });
+
+  it('uniquifies IDs derived from repeated titles', () => {
+    const result = parser.parse([
+      'graph LR',
+      '  subgraph "Cust"',
+      '    A[Work] --> B[Ship]',
+      '  end',
+      '  subgraph "Cust"',
+      '    C[Bill] --> D[Close]',
+      '  end'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.subgraphs.map(subgraph => [subgraph.id, subgraph.title])).toEqual([
+      ['Cust', 'Cust'],
+      ['Cust_2', 'Cust']
+    ]);
+  });
+
+  it('still reports a duplicate explicit subgraph ID', () => {
+    const result = parser.parse([
+      'graph LR',
+      '  subgraph team[One]',
+      '    A((Start))',
+      '  end',
+      '  subgraph team[Two]',
+      '    B((End))',
+      '  end'
+    ].join('\n'));
+
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'DUPLICATE_SUBGRAPH', line: 5, column: 3 })
+    ]));
+  });
+
+  it('reports a malformed declaration exactly once, without a cascading end error', () => {
+    const result = parser.parse([
+      'graph LR',
+      '  subgraph a[Missing close',
+      '    A[Start] --> B[Task]',
+      '  end'
+    ].join('\n'));
+
+    expect(result.ast).toBeUndefined();
+    expect(result.errors.map(error => ({ code: error.code, line: error.line }))).toEqual([
+      { code: 'MALFORMED_SUBGRAPH', line: 2 }
+    ]);
+  });
+
+  it('still reports an "end" that closes nothing', () => {
+    const result = parser.parse('graph LR\n  A[Work]\n  end');
+
+    expect(result.errors).toEqual([
+      expect.objectContaining({ code: 'UNEXPECTED_SUBGRAPH_END', line: 3, column: 3 })
+    ]);
+  });
+});
+
+describe('MermaidParser implicit parallel splits (mcp-bpmn-j21.8)', () => {
+  const parser = new MermaidParser();
+
+  it('warns at the node when a non-gateway fans out to several branches', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      '  A[Check] -->|ok| B[Ship]',
+      '  A -->|fail| C[Refund]'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings.filter(warning => warning.code === 'IMPLICIT_PARALLEL_SPLIT')).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'IMPLICIT_PARALLEL_SPLIT',
+        line: 2,
+        column: 3,
+        source: '  A[Check] -->|ok| B[Ship]',
+        message: expect.stringContaining('parallel (AND) split')
+      })
+    ]);
+    expect(result.warnings.find(warning => warning.code === 'IMPLICIT_PARALLEL_SPLIT')?.message)
+      .toContain('A{...}');
+  });
+
+  it('keeps the conversion result unchanged beside the diagnostic', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      '  A[Check] -->|ok| B[Ship]',
+      '  A -->|fail| C[Refund]'
+    ].join('\n'));
+
+    expect(result.ast?.edges.map(edge => [edge.source, edge.target, edge.label])).toEqual([
+      ['A', 'B', 'ok'],
+      ['A', 'C', 'fail']
+    ]);
+  });
+
+  it('warns once for an "&" fan-out written on a single line', () => {
+    const result = parser.parse('flowchart TD\n  A[Check] --> B[Ship] & C[Refund]');
+
+    expect(result.warnings.filter(warning => warning.code === 'IMPLICIT_PARALLEL_SPLIT')).toEqual([
+      expect.objectContaining({ code: 'IMPLICIT_PARALLEL_SPLIT', line: 2, column: 3 })
+    ]);
+  });
+
+  it.each([
+    ['a decision node', 'flowchart TD\n  A{Check} -->|ok| B[Ship]\n  A -->|fail| C[Refund]'],
+    ['a single outgoing edge', 'flowchart TD\n  A[Check] --> B[Ship]\n  B --> C[Refund]'],
+    ['a join', 'flowchart TD\n  A[One] --> C[Ship]\n  B[Two] --> C']
+  ])('does not warn for %s', (_name, source) => {
+    const result = parser.parse(source);
+
+    expect(result.warnings.map(warning => warning.code)).not.toContain('IMPLICIT_PARALLEL_SPLIT');
+  });
+
+  it('does not count a cross-subgraph message flow as a branch of a split', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      'subgraph a[A]',
+      '  S((Start)) --> T[Task] --> E((End))',
+      'end',
+      'subgraph b[B]',
+      '  U[Work] --> F((Done))',
+      'end',
+      'T --> U'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings.map(warning => warning.code)).not.toContain('IMPLICIT_PARALLEL_SPLIT');
   });
 });

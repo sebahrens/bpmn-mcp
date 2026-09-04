@@ -422,11 +422,10 @@ describe('imported exports from real modeling tools', () => {
 
   it('flags the interrupting compensation boundary every bpmn.io tool emits', async () => {
     // bpmn-js creates a compensation boundary event with cancelActivity true,
-    // which is the moddle default and therefore never written to the file. This
-    // server's validator requires compensation boundaries to be
-    // non-interrupting, so an untouched Camunda Modeler export is reported
-    // invalid. Pinned deliberately: this is the behaviour on real files, and it
-    // should change only as a considered decision about the rule.
+    // which is the moddle default and therefore never written to the file
+    // (mcp-bpmn-a3j.19). The validator judges the attribute the author actually
+    // wrote, so an untouched export validates clean while a file that really
+    // does declare an interrupting compensation boundary is still rejected.
     const source = await fs.readFile(
       join(realToolFixtureDirectory, 'camunda-modeler-c7.bpmn'),
       'utf8'
@@ -437,7 +436,17 @@ describe('imported exports from real modeling tools', () => {
     expect(/id="Event_0compensate"[^>]*cancelActivity/u.test(source)).toBe(false);
     expect((parsed.elementsById as any).Event_0compensate.cancelActivity).toBe(true);
     const result = await new BpmnValidator().validate(source, 'semantic');
-    expect(result.errors).toEqual([
+    expect(result.errors).toEqual([]);
+
+    // Writing the attribute explicitly is a real authoring mistake and is
+    // still reported against the element that carries it.
+    const declared = source.replace(
+      '<bpmn:boundaryEvent id="Event_0compensate"',
+      '<bpmn:boundaryEvent id="Event_0compensate" cancelActivity="true"'
+    );
+    expect(declared).not.toBe(source);
+    const declaredResult = await new BpmnValidator().validate(declared, 'semantic');
+    expect(declaredResult.errors).toEqual([
       expect.objectContaining({
         code: 'BPMN_INVALID_BOUNDARY_INTERRUPTION',
         elementId: 'Event_0compensate'

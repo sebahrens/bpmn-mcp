@@ -1590,7 +1590,7 @@ describe('SimpleBpmnEngine schema-aware document model', () => {
     await expect(engine.addAssociation(context.id, nestedTask.id, sellerTask.id))
       .rejects.toThrow('cannot cross process ownership boundaries');
     await expect(engine.addAssociation(context.id, nestedTask.id, 'Missing_BaseElement'))
-      .rejects.toThrow('Source or target element not found');
+      .rejects.toThrow('Target element "Missing_BaseElement" not found');
     await expect(engine.addAssociation(
       context.id,
       nestedTask.id,
@@ -2223,8 +2223,12 @@ describe('SimpleBpmnEngine schema-aware document model', () => {
   </bpmn:process>
 </bpmn:definitions>`;
 
-    await expect(engine.importXml(invalidSource)).rejects.toThrow('Failed to parse BPMN XML');
-    await expect(engine.importXml(conditionalDefault)).rejects.toThrow('Failed to parse BPMN XML');
+    // The file parses fine; what is wrong is one flow. The rejection names it
+    // rather than calling the whole document malformed (mcp-bpmn-a3j.16).
+    await expect(engine.importXml(invalidSource))
+      .rejects.toThrow(/Flow_Invalid.*unsupported conditional source/);
+    await expect(engine.importXml(conditionalDefault))
+      .rejects.toThrow(/BPMN import rejected: /);
     expect(() => engine.getProcess('Process_InvalidSource')).toThrow('not found');
     expect(() => engine.getProcess('Process_InvalidDefault')).toThrow('not found');
   });
@@ -2674,5 +2678,83 @@ describe('SimpleBpmnEngine schema-aware document model', () => {
 
     const definitions = (await moddle.fromXML(xml)).rootElement;
     expect(findSemantic(definitions, thrower.id).eventDefinitions[0].waitForCompletion).toBe(true);
+  });
+
+  describe('imported documents with event subprocesses and derived flow lists', () => {
+    const eventSubprocessXml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  id="Definitions_EventSub" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:message id="Message_Arrived" name="Order arrived" />
+  <bpmn:process id="Process_EventSub" isExecutable="true">
+    <bpmn:startEvent id="Main_Start">
+      <bpmn:outgoing>Flow_Main</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:task id="Main_Task">
+      <bpmn:incoming>Flow_Main</bpmn:incoming>
+    </bpmn:task>
+    <bpmn:sequenceFlow id="Flow_Main" sourceRef="Main_Start" targetRef="Main_Task" />
+    <bpmn:subProcess id="EventSub" triggeredByEvent="true">
+      <bpmn:startEvent id="EventSub_Start">
+        <bpmn:messageEventDefinition id="EventSub_Message" messageRef="Message_Arrived" />
+      </bpmn:startEvent>
+    </bpmn:subProcess>
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="Diagram_EventSub">
+    <bpmndi:BPMNPlane id="Plane_EventSub" bpmnElement="Process_EventSub">
+      <bpmndi:BPMNShape id="Main_Start_di" bpmnElement="Main_Start">
+        <dc:Bounds x="100" y="100" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Main_Task_di" bpmnElement="Main_Task">
+        <dc:Bounds x="200" y="80" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSub_di" bpmnElement="EventSub" isExpanded="true">
+        <dc:Bounds x="100" y="220" width="300" height="160" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSub_Start_di" bpmnElement="EventSub_Start">
+        <dc:Bounds x="140" y="280" width="36" height="36" />
+      </bpmndi:BPMNShape>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>`;
+
+    it('renames the start event of an imported event subprocess', async () => {
+      const imported = await engine.importXml(eventSubprocessXml, 'Event subprocess');
+
+      await expect(engine.updateElement(imported.id, 'EventSub_Start', { name: 'Order arrived' }))
+        .resolves.toBeDefined();
+
+      expect(imported.elements.get('EventSub_Start')?.name).toBe('Order arrived');
+      const xml = await engine.exportXml(imported.id);
+      expect(xml).toContain('triggeredByEvent="true"');
+      expect(xml).toContain('messageEventDefinition');
+    });
+
+    it('still refuses an event definition on a start event in a regular subprocess', async () => {
+      const regular = eventSubprocessXml.replace(' triggeredByEvent="true"', '');
+      const imported = await engine.importXml(regular, 'Regular subprocess');
+
+      await expect(engine.updateElement(imported.id, 'EventSub_Start', { name: 'Nope' }))
+        .rejects.toThrow(/regular subprocesses/);
+    });
+
+    it('adds new flows to the derived incoming and outgoing lists of imported nodes', async () => {
+      const imported = await engine.importXml(eventSubprocessXml, 'Derived lists');
+      const end = await engine.createElement(imported.id, {
+        type: 'bpmn:EndEvent',
+        name: 'Done',
+        position: { x: 400, y: 100 }
+      });
+      const flow = await engine.connect(imported.id, 'Main_Task', end.id);
+
+      const xml = await engine.exportXml(imported.id);
+      const task = xml.slice(xml.indexOf('<bpmn:task id="Main_Task"'));
+      const taskElement = task.slice(0, task.indexOf('</bpmn:task>'));
+      // The imported task already used the derived lists, so the new flow has
+      // to appear in them or the file contradicts its own sourceRef/targetRef.
+      expect(taskElement).toContain(`<bpmn:outgoing>${flow.id}</bpmn:outgoing>`);
+      expect(taskElement).toContain('<bpmn:incoming>Flow_Main</bpmn:incoming>');
+    });
   });
 });

@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import puppeteer, { type Browser, type LaunchOptions } from 'puppeteer';
 import {
   BROWSER_ARGS_ENVIRONMENT_VARIABLE,
+  MAX_PNG_SCALE,
   resolveBrowserLaunchArgs
 } from '../config/index.js';
 
@@ -29,8 +30,23 @@ const SYSTEM_BROWSER_PATHS = [
 // first SVG export to finish on supported CI and installed environments.
 const DEFAULT_RENDER_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_CONCURRENT_RENDERS = 1;
+// Renders past the concurrency limit wait their turn rather than failing, but
+// the wait list itself is bounded so a runaway caller cannot pin memory.
+const DEFAULT_MAX_QUEUED_RENDERS = 32;
 const MAX_PNG_DIMENSION = 4_096;
 const MAX_PNG_PIXELS = 16_000_000;
+/** What a PNG render produced, including any downscale the limits forced. */
+export interface PngRenderResult {
+  image: Buffer;
+  /** Pixel width of the returned image. */
+  width: number;
+  /** Pixel height of the returned image. */
+  height: number;
+  /** Effective scale applied to the SVG's own dimensions. */
+  scale: number;
+  /** True when the requested scale was reduced to stay inside the pixel caps. */
+  downscaled: boolean;
+}
 
 const RENDERER_DOCUMENT = `<!doctype html>
 <html>
@@ -48,6 +64,10 @@ const RENDERER_DOCUMENT = `<!doctype html>
  */
 export class BpmnSvgRenderer {
   private activeRenders = 0;
+  private readonly renderQueue: Array<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+  }> = [];
   private readonly browsers = new Set<Browser>();
   private browser: Browser | undefined;
   private browserLaunch: Promise<Browser> | undefined;
@@ -55,10 +75,12 @@ export class BpmnSvgRenderer {
 
   constructor(
     private readonly renderTimeoutMs = DEFAULT_RENDER_TIMEOUT_MS,
-    private readonly maxConcurrentRenders = DEFAULT_MAX_CONCURRENT_RENDERS
+    private readonly maxConcurrentRenders = DEFAULT_MAX_CONCURRENT_RENDERS,
+    private readonly maxQueuedRenders = DEFAULT_MAX_QUEUED_RENDERS
   ) {
     if (!Number.isSafeInteger(renderTimeoutMs) || renderTimeoutMs <= 0
-      || !Number.isSafeInteger(maxConcurrentRenders) || maxConcurrentRenders <= 0) {
+      || !Number.isSafeInteger(maxConcurrentRenders) || maxConcurrentRenders <= 0
+      || !Number.isSafeInteger(maxQueuedRenders) || maxQueuedRenders < 0) {
       throw new Error('Invalid SVG renderer limits');
     }
   }
@@ -70,32 +92,69 @@ export class BpmnSvgRenderer {
     ));
   }
 
-  async renderPng(xml: string): Promise<Buffer> {
+  async renderPng(xml: string, scale = 1): Promise<PngRenderResult> {
+    const requestedScale = normalizePngScale(scale);
     return this.runRender(browser => this.renderWithBrowser(browser, async () => {
       const svg = await this.renderPage(browser, xml);
-      return this.rasterizeSvg(browser, svg);
+      return this.rasterizeSvg(browser, svg, requestedScale);
     }));
   }
 
   private async runRender<T>(operation: (browser: Browser) => Promise<T>): Promise<T> {
-    if (this.closed) {
-      throw new Error('SVG renderer is closed');
-    }
-    if (this.activeRenders >= this.maxConcurrentRenders) {
-      throw new Error('SVG renderer concurrency limit reached');
-    }
-    this.activeRenders += 1;
+    await this.acquireRenderSlot();
 
     try {
       const browser = await this.getBrowser();
       return await operation(browser);
     } finally {
-      this.activeRenders -= 1;
+      this.releaseRenderSlot();
     }
+  }
+
+  /**
+   * Take one render slot, waiting in FIFO order when every slot is busy. An
+   * overlapping export queues instead of failing, which is what an agent
+   * issuing two exports back to back expects; only a wait list longer than
+   * `maxQueuedRenders` is rejected outright.
+   */
+  private async acquireRenderSlot(): Promise<void> {
+    if (this.closed) {
+      throw new Error('SVG renderer is closed');
+    }
+    if (this.activeRenders < this.maxConcurrentRenders) {
+      this.activeRenders += 1;
+      return;
+    }
+    if (this.renderQueue.length >= this.maxQueuedRenders) {
+      throw new Error(
+        `SVG renderer queue limit of ${this.maxQueuedRenders} pending renders exceeded`
+      );
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      this.renderQueue.push({ resolve, reject });
+    });
+    if (this.closed) {
+      this.releaseRenderSlot();
+      throw new Error('SVG renderer is closed');
+    }
+  }
+
+  /** Hand the slot to the next waiter, or give it back to the pool. */
+  private releaseRenderSlot(): void {
+    const waiter = this.renderQueue.shift();
+    if (waiter) {
+      waiter.resolve();
+      return;
+    }
+    this.activeRenders -= 1;
   }
 
   async close(): Promise<void> {
     this.closed = true;
+    for (const waiter of this.renderQueue.splice(0)) {
+      waiter.reject(new Error('SVG renderer is closed'));
+    }
     const browser = this.browser;
     const browserLaunch = this.browserLaunch;
 
@@ -299,7 +358,11 @@ export class BpmnSvgRenderer {
     }
   }
 
-  private async rasterizeSvg(browser: Browser, svg: string): Promise<Buffer> {
+  private async rasterizeSvg(
+    browser: Browser,
+    svg: string,
+    requestedScale: number
+  ): Promise<PngRenderResult> {
     const page = await browser.newPage();
 
     try {
@@ -315,26 +378,38 @@ content="default-src 'none'; style-src 'unsafe-inline'">
 <style>html,body{margin:0;overflow:hidden;background:#fff}svg{display:block}</style></head>
 <body>${svg}</body></html>`);
 
-      const dimensions = await page.$eval('svg', (element, limits) => {
+      const geometry = await page.$eval('svg', (element, limits) => {
         const width = Number(element.getAttribute('width'));
         const height = Number(element.getAttribute('height'));
         if (!Number.isFinite(width) || width <= 0
           || !Number.isFinite(height) || height <= 0) {
           throw new Error('Invalid SVG raster dimensions');
         }
+        // The caller's scale is honoured only as far as the pixel caps allow;
+        // beyond that the image is downscaled and the result says so.
         const scale = Math.min(
-          1,
+          limits.requestedScale,
           limits.maxDimension / width,
           limits.maxDimension / height,
           Math.sqrt(limits.maxPixels / (width * height))
         );
-        const renderedWidth = Math.max(1, Math.ceil(width * scale));
-        const renderedHeight = Math.max(1, Math.ceil(height * scale));
-        element.setAttribute('width', String(renderedWidth));
-        element.setAttribute('height', String(renderedHeight));
-        return { width: renderedWidth, height: renderedHeight };
-      }, { maxDimension: MAX_PNG_DIMENSION, maxPixels: MAX_PNG_PIXELS });
-      await page.setViewport(dimensions);
+        // CSS pixels stay at the SVG's own size; deviceScaleFactor supplies the
+        // resolution, so text and strokes are resampled rather than stretched.
+        element.setAttribute('width', String(width));
+        element.setAttribute('height', String(height));
+        return { cssWidth: Math.max(1, Math.ceil(width)), cssHeight: Math.max(1, Math.ceil(height)), scale };
+      }, {
+        maxDimension: MAX_PNG_DIMENSION,
+        maxPixels: MAX_PNG_PIXELS,
+        requestedScale
+      });
+
+      const effectiveScale = Math.max(geometry.scale, Number.MIN_VALUE);
+      await page.setViewport({
+        width: geometry.cssWidth,
+        height: geometry.cssHeight,
+        deviceScaleFactor: effectiveScale
+      });
 
       const screenshot = await page.screenshot({
         type: 'png',
@@ -344,7 +419,13 @@ content="default-src 'none'; style-src 'unsafe-inline'">
       if (blockedExternalRequest) {
         throw new Error('PNG rendering attempted to load an external resource');
       }
-      return Buffer.from(screenshot);
+      return {
+        image: Buffer.from(screenshot),
+        width: Math.max(1, Math.round(geometry.cssWidth * effectiveScale)),
+        height: Math.max(1, Math.round(geometry.cssHeight * effectiveScale)),
+        scale: effectiveScale,
+        downscaled: effectiveScale < requestedScale
+      };
     } finally {
       await page.close().catch(() => undefined);
     }
@@ -443,6 +524,14 @@ async function resolveBrowserExecutable(): Promise<string | undefined> {
   }
 
   return SYSTEM_BROWSER_PATHS.find(existsSync);
+}
+
+/** Reject a scale the renderer cannot honour before a browser page is opened. */
+function normalizePngScale(scale: number): number {
+  if (!Number.isFinite(scale) || scale <= 0 || scale > MAX_PNG_SCALE) {
+    throw new Error(`PNG scale must be between 0 and ${MAX_PNG_SCALE}`);
+  }
+  return scale;
 }
 
 function normalizeMarkerIds(svg: string): string {

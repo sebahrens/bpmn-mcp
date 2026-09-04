@@ -225,6 +225,24 @@ describe('file operation containment', () => {
     await expect(fs.readFile(outsideTarget, 'utf8')).resolves.toBe('outside race sentinel');
   });
 
+  it('never re-pins a workspace that a symlink replaced between operations', async () => {
+    const fileManager = new FileManager(diagramsRoot);
+    await expect(fileManager.saveBpmnFile('<xml />', { filename: 'pinned.bpmn' }))
+      .resolves.toMatchObject({ success: true });
+    await fs.rm(diagramsRoot, { recursive: true, force: true });
+    await fs.symlink(siblingRoot, diagramsRoot, 'dir');
+
+    const result = await fileManager.saveBpmnFile('replacement', {
+      filename: 'outside.bpmn',
+      overwrite: true
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('symbolic link');
+    await expect(fs.readFile(outsideBpmn, 'utf8')).resolves.toBe('outside BPMN sentinel');
+    await expect(fileManager.readBpmnFile('outside.bpmn', 1024)).rejects.toThrow();
+  });
+
   it('shares the pinned root across BPMN persistence and Mermaid opens', async () => {
     const engine = new SimpleBpmnEngine(diagramsRoot);
     const sharedHandler = new BpmnRequestHandler(engine);

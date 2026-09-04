@@ -55,6 +55,7 @@ import {
   isBpmnConnectionType,
   isBpmnElementType,
   isBpmnFlowNodeType,
+  BpmnXmlParseError,
   isBpmnQName,
   isSupportedEventDefinitionType,
   resolveAssociationOwnership,
@@ -76,9 +77,50 @@ import {
 } from './layout/BpmnLayoutAdapter.js';
 import type { LayoutDirection, LayoutModel } from './layout/LayoutModel.js';
 import {
+  transposeDocumentGeometry,
+  type LayoutOrientation
+} from './layout/LayoutOrientation.js';
+import {
   type GeometryDiagnostic,
   validateBpmnGeometry
 } from './BpmnGeometry.js';
+
+/**
+ * What `auto_layout` produced. `changed` is false when the layout reproduced
+ * the geometry the diagram already had, in which case nothing was committed.
+ */
+export interface AutoLayoutResult extends BpmnLayoutResult {
+  changed: boolean;
+}
+
+/** Every coordinate a layout is allowed to move, in comparison order. */
+function geometrySignature(document: BpmnDocument): string {
+  const shapes = [...document.elements.values(), ...document.lanes.values()]
+    .map(element => [
+      element.id,
+      element.position.x,
+      element.position.y,
+      element.size.width,
+      element.size.height
+    ].join(':'))
+    .sort();
+  const edges = Array.from(document.connections.values(), connection => [
+    connection.id,
+    ...connection.waypoints.map(point => `${point.x},${point.y}`)
+  ].join(':')).sort();
+  const orientations = Array.from(document.diagram.shapes.values(), shape => (
+    `${shape.elementId}:${shape.isHorizontal ?? ''}`
+  )).sort();
+  return JSON.stringify([shapes, edges, orientations]);
+}
+
+/**
+ * True when two documents place everything identically. Used to skip the
+ * commit for a layout that would rewrite the file with the same bytes.
+ */
+function sameDocumentGeometry(left: BpmnDocument, right: BpmnDocument): boolean {
+  return geometrySignature(left) === geometrySignature(right);
+}
 
 export class DocumentRevisionConflictError extends Error {
   readonly code = 'revision_conflict';
@@ -772,9 +814,8 @@ export class SimpleBpmnEngine {
       }
       const source = working.elements.get(sourceId);
       const target = working.elements.get(targetId);
-      if (!source || !target) {
-        throw new Error('Source or target element not found');
-      }
+      if (!source) throw missingEndpointError(working, 'Source', sourceId);
+      if (!target) throw missingEndpointError(working, 'Target', targetId);
 
       let resolvedType = type;
       if (resolvedType === undefined) {
@@ -829,6 +870,15 @@ export class SimpleBpmnEngine {
       if (isDefault && resolvedType !== 'bpmn:SequenceFlow') {
         throw new Error('Only sequence flows can be default flows');
       }
+      if (resolvedType === 'bpmn:SequenceFlow'
+        && source.type === 'bpmn:EventBasedGateway'
+        && !isEventBasedGatewayTarget(target)) {
+        throw new Error(
+          `Element ${target.id} cannot follow an event-based gateway; targets must be `
+          + 'receive tasks or intermediate catch events with a message, timer, signal '
+          + 'or conditional definition'
+        );
+      }
       if (isDefault && !supportsConditionalOutgoingFlow(source)) {
         throw new Error(`Element ${source.id} cannot own a default sequence flow`);
       }
@@ -843,7 +893,10 @@ export class SimpleBpmnEngine {
         id: flowId, source: sourceId, target: targetId, type: resolvedType, ownerId, scopeId, label,
         condition,
         associationDirection: resolvedType === 'bpmn:Association' ? associationDirection : undefined,
-        waypoints: calculateConnectionWaypoints(source, target), properties: {}
+        waypoints: calculateConnectionWaypoints(source, target),
+        properties: connectionOptions.documentation === undefined
+          ? {}
+          : { documentation: connectionOptions.documentation }
       };
       working.connections.set(flowId, connection);
       if (isDefault && source.kind === 'flowNode') {
@@ -1257,9 +1310,9 @@ export class SimpleBpmnEngine {
     this.assertBpmnIdentifier(connectionId, 'connectionId');
     if (update.sourceId) this.assertBpmnIdentifier(update.sourceId, 'sourceId');
     if (update.targetId) this.assertBpmnIdentifier(update.targetId, 'targetId');
-    if (!update.expectedRevision && !update.expectedSemanticRevision) {
-      throw new Error('update_connection requires expectedRevision or expectedSemanticRevision');
-    }
+    // Both guards are optional, as they are on every other mutation. Supplying
+    // one still makes the update conditional; requiring one turned a label
+    // change into a forced get_connection round trip (mcp-bpmn-8u0.7).
 
     const context = this.getProcess(processId);
     return this.commitMutation(context, async working => {
@@ -1279,7 +1332,8 @@ export class SimpleBpmnEngine {
       const targetId = update.targetId ?? connection.target;
       const source = working.elements.get(sourceId);
       const target = working.elements.get(targetId);
-      if (!source || !target) throw new Error('Source or target element not found');
+      if (!source) throw missingEndpointError(working, 'Source', sourceId);
+      if (!target) throw missingEndpointError(working, 'Target', targetId);
       const endpointsChanged = sourceId !== connection.source || targetId !== connection.target;
       if (endpointsChanged && update.endpointPolicy !== 'snap-to-boundary') {
         throw new Error('Endpoint changes require endpointPolicy "snap-to-boundary"');
@@ -1318,6 +1372,17 @@ export class SimpleBpmnEngine {
       if (Object.prototype.hasOwnProperty.call(update, 'isDefault')
         && connection.type !== 'bpmn:SequenceFlow') {
         throw new Error('Only sequence flows can be default flows');
+      }
+      // bpmn:Association has no name attribute, so a label set here used to be
+      // accepted, reported back, and then silently discarded on save. Reject it
+      // instead of losing it.
+      if (Object.prototype.hasOwnProperty.call(update, 'label')
+        && update.label !== null
+        && connection.type === 'bpmn:Association') {
+        throw new Error(
+          'Labels are only valid on sequence flows and message flows; '
+          + 'BPMN associations have no name. Use add_text_annotation to annotate one.'
+        );
       }
 
       let condition = connection.condition ? { ...connection.condition } : undefined;
@@ -2003,7 +2068,12 @@ export class SimpleBpmnEngine {
     return context.filename!;
   }
 
-  async saveAs(processId: string, filename: string, expectedRevision?: string): Promise<string> {
+  async saveAs(
+    processId: string,
+    filename: string,
+    expectedRevision?: string,
+    overwrite = false
+  ): Promise<string> {
     const context = this.getProcess(processId);
     const normalizedFilename = normalizeBpmnFilename(filename);
     const previousFilename = context.filename;
@@ -2017,7 +2087,9 @@ export class SimpleBpmnEngine {
       normalizedFilename,
       false,
       false,
-      expectedRevision
+      expectedRevision,
+      false,
+      overwrite
     );
     // The old file was a server-generated placeholder for this same diagram,
     // so keeping it would leave two files claiming to be the same process.
@@ -2261,7 +2333,19 @@ export class SimpleBpmnEngine {
     this.fileManager = new FileManager(diagramsPath);
   }
 
-  async applyAutoLayout(processId: string, expectedRevision?: string): Promise<BpmnLayoutResult> {
+  /**
+   * Rank the diagram with the external layout engine and adopt the result.
+   *
+   * `orientation` reflects a left-to-right ranking into a top-to-bottom one;
+   * the layout engine has no direction option of its own. A layout that
+   * reproduces the geometry already on disk is not committed at all, so a
+   * second `auto_layout` call neither bumps the revision nor rewrites the file.
+   */
+  async applyAutoLayout(
+    processId: string,
+    expectedRevision?: string,
+    orientation: LayoutOrientation = 'left-to-right'
+  ): Promise<AutoLayoutResult> {
     const snapshot = await this.withProcessLock(processId, async () => {
       const context = this.getProcess(processId);
       const xml = await this.serializer.serialize(this.cloneDocument(context.document), true);
@@ -2284,15 +2368,39 @@ export class SimpleBpmnEngine {
     if (snapshot.document.collaborations.has(snapshot.document.diagram.planeElementId)
       && !hasWhiteBoxParticipant) {
       const context = this.getProcess(processId);
+      const preview = this.cloneDocument(context.document);
+      applyCollaborationLayoutPolicy(this.cloneDocument(context.document), preview);
+      if (orientation === 'top-to-bottom') transposeDocumentGeometry(preview);
+      if (sameDocumentGeometry(context.document, preview)) {
+        return { xml: context.xml!, warnings: [], changed: false };
+      }
       await this.commitMutation(context, working => {
         const requested = this.cloneDocument(working.document);
         applyCollaborationLayoutPolicy(requested, working.document);
+        if (orientation === 'top-to-bottom') {
+          transposeDocumentGeometry(working.document);
+          this.repositionBoundaryEvents(working);
+        }
       }, undefined, true, false, expectedRevision);
-      return { xml: context.xml!, warnings: [] };
+      return { xml: context.xml!, warnings: [], changed: true };
     }
     const result = await this.layoutAdapter.layout(snapshot.xml);
-    await this.applyLayoutXml(processId, result.xml, snapshot.document, expectedRevision);
-    return result;
+    const laidOut = await this.parseLayoutXml(result.xml);
+    applyCollaborationLayoutPolicy(snapshot.document, laidOut.document);
+    if (orientation === 'top-to-bottom') {
+      transposeDocumentGeometry(laidOut.document);
+      // Reflection moves a boundary event to the reflected point on its host's
+      // outline, which is no longer on the outline once the host keeps its own
+      // proportions. Re-attach before the geometry is compared or committed.
+      this.repositionBoundaryEvents(laidOut);
+    }
+
+    const current = this.getProcess(processId);
+    if (sameDocumentGeometry(current.document, laidOut.document)) {
+      return { ...result, changed: false };
+    }
+    await this.adoptLayoutDocument(processId, laidOut, expectedRevision);
+    return { ...result, changed: true };
   }
 
   getLayoutModel(
@@ -2325,26 +2433,38 @@ export class SimpleBpmnEngine {
     requestedLayout?: BpmnDocument,
     expectedRevision?: string
   ): Promise<void> {
+    const laidOut = await this.parseLayoutXml(xml);
+    if (requestedLayout) {
+      applyCollaborationLayoutPolicy(requestedLayout, laidOut.document);
+    }
+    await this.adoptLayoutDocument(processId, laidOut, expectedRevision);
+  }
+
+  /** Parse adapter output under the same limits that guard ordinary imports. */
+  private async parseLayoutXml(xml: string): Promise<ProcessContext> {
     if (typeof xml !== 'string') {
       throw new Error('Layout XML must be text');
     }
     if (Buffer.byteLength(xml, 'utf8') > this.importLimits.maxBytes) {
       throw new Error('Layout XML exceeds the configured byte limit');
     }
+    try {
+      return await this.serializer.parse(xml, this.importLimits);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to parse layout XML: ${message}`);
+    }
+  }
 
+  /** Swap a parsed layout in for the live document under one commit. */
+  private async adoptLayoutDocument(
+    processId: string,
+    laidOut: ProcessContext,
+    expectedRevision?: string
+  ): Promise<void> {
     const context = this.getProcess(processId);
-    await this.commitMutation(context, async working => {
-      let laidOut: ProcessContext;
-      try {
-        laidOut = await this.serializer.parse(xml, this.importLimits);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Failed to parse layout XML: ${message}`);
-      }
+    await this.commitMutation(context, working => {
       this.assertLayoutSemanticsUnchanged(working.document, laidOut.document);
-      if (requestedLayout) {
-        applyCollaborationLayoutPolicy(requestedLayout, laidOut.document);
-      }
       working.document = laidOut.document;
       working.elements = laidOut.document.elements;
       working.connections = laidOut.document.connections;
@@ -2404,7 +2524,13 @@ export class SimpleBpmnEngine {
     overwrite = true,
     allowUnregistered = false,
     expectedRevision?: string,
-    dryRun = false
+    dryRun = false,
+    /**
+     * Write over an existing file that is not this diagram's current one. Used
+     * only by save_as, where replacing the target is the caller's explicit
+     * request rather than a compare-and-set rewrite of the active file.
+     */
+    replaceTarget = false
   ): Promise<T> {
     const batch = this.activeBatches.get(context.id);
     if (batch) {
@@ -2492,7 +2618,7 @@ export class SimpleBpmnEngine {
       if (dryRun) return value;
       const saveResult = await this.fileManager.saveBpmnFile(xml, {
         filename: targetFilename,
-        overwrite,
+        overwrite: overwrite || replaceTarget,
         ...(overwrite ? { expectedContent } : {})
       });
       if (!saveResult.success) {
@@ -3224,6 +3350,15 @@ export class SimpleBpmnEngine {
     }
   }
 
+  /**
+   * Turn an import failure into something an agent can act on.
+   *
+   * Structural problems this code base detects itself name BPMN ids the agent
+   * already works with, so they are forwarded verbatim: telling someone their
+   * well-formed file is "malformed" when the real problem is one bad reference
+   * leaves them no way forward. Only XML-level parser failures, whose messages
+   * can quote document content, are replaced with a generic one.
+   */
   private safeImportError(error: unknown): Error {
     const message = error instanceof Error ? error.message : '';
     const identifierError = message.match(/(?:Invalid|Duplicate) BPMN xsd:ID at [\s\S]+$/u);
@@ -3249,7 +3384,10 @@ export class SimpleBpmnEngine {
     if (/No process or collaboration/i.test(message)) {
       return new Error('BPMN import rejected: a process or collaboration root is required');
     }
-    return new Error('Failed to parse BPMN XML: malformed or invalid input');
+    if (error instanceof BpmnXmlParseError || message.length === 0) {
+      return new Error('Failed to parse BPMN XML: malformed or invalid input');
+    }
+    return new Error(`BPMN import rejected: ${message}`);
   }
 
   private defaultProcessOwner(context: ProcessContext): string {
@@ -3299,7 +3437,9 @@ export class SimpleBpmnEngine {
       'isExpanded', 'calledElement', 'assignee', 'candidateGroups', 'dueDate',
       'eventDefinition', 'eventDefinitionPayload', 'cancelActivity', 'attachTo',
       'blackBox', 'processRef', 'text', 'textFormat', 'dataObjectRef', 'isCollection', 'itemSubjectRef',
-      'multiInstance'
+      // Read from imported documents so an event subprocess keeps its identity;
+      // not authored through the tool surface.
+      'multiInstance', 'triggeredByEvent', 'documentation'
     ]);
     for (const property of Object.keys(properties)) {
       if (!supportedProperties.has(property)) {
@@ -3390,6 +3530,12 @@ export class SimpleBpmnEngine {
       this.assertMultiInstanceProperties(type, properties.multiInstance);
     }
 
+    if (properties.documentation !== undefined
+      && (typeof properties.documentation !== 'string'
+        || properties.documentation.trim().length === 0)) {
+      throw new Error('documentation must be a non-empty string');
+    }
+
     const hasCalledElement = Object.prototype.hasOwnProperty.call(properties, 'calledElement');
     if (hasCalledElement) {
       if (type !== 'bpmn:CallActivity') {
@@ -3416,7 +3562,8 @@ export class SimpleBpmnEngine {
       if (!supportsEventDefinition(type, eventDefinition)) {
         throw new Error(`${eventDefinition} event definitions are not legal on ${type}`);
       }
-      if (type === 'bpmn:StartEvent' && scopeId !== ownerId) {
+      if (type === 'bpmn:StartEvent' && scopeId !== ownerId
+        && context.elements.get(scopeId)?.properties.triggeredByEvent !== true) {
         throw new Error('Start events in regular subprocesses cannot have an event definition');
       }
       this.assertEventDefinitionPayload(context, type, eventDefinition, properties, ownerId);
@@ -3794,6 +3941,47 @@ function compareStableText(left: string, right: string): number {
   if (left < right) return -1;
   if (left > right) return 1;
   return 0;
+}
+
+/**
+ * Explain a missing connection endpoint.
+ *
+ * A stale or mistyped id is the most common mistake at this boundary, and the
+ * old message named neither which end was wrong nor the id itself, so the
+ * caller had to bisect. When the id turns out to name a connection rather than
+ * an element, say so: that is a different mistake with a different fix.
+ */
+function missingEndpointError(
+  context: ProcessContext,
+  side: 'Source' | 'Target',
+  elementId: string
+): Error {
+  const connection = context.connections.get(elementId);
+  if (connection) {
+    return new Error(
+      `${side} "${elementId}" is a ${connection.type}, not an element; `
+      + 'connections cannot be endpoints of another connection'
+    );
+  }
+  return new Error(`${side} element "${elementId}" not found`);
+}
+
+/** Event definitions that can hold an event-based gateway's decision open. */
+const EVENT_BASED_GATEWAY_TARGET_DEFINITIONS = new Set([
+  'message', 'timer', 'signal', 'conditional'
+]);
+
+/**
+ * Whether an element can sit downstream of an event-based gateway. The gateway
+ * defers its choice to whichever target occurs first, so every target has to be
+ * something that waits for an event.
+ */
+function isEventBasedGatewayTarget(target: BpmnDocumentElement): boolean {
+  if (target.type === 'bpmn:ReceiveTask') return true;
+  if (target.type !== 'bpmn:IntermediateCatchEvent') return false;
+  const definition = target.properties.eventDefinition;
+  return typeof definition === 'string'
+    && EVENT_BASED_GATEWAY_TARGET_DEFINITIONS.has(definition);
 }
 
 /** BPMN's default for bpmn:TextAnnotation textFormat (BPMN 2.0 §10.4.1). */

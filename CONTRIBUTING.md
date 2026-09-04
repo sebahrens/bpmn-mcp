@@ -11,10 +11,34 @@ deployment, an npm publish, or any other release operation.
 - npm, as supplied with Node.js
 
 CI tests the minimum supported Node.js release, 22.12, and the current Node.js
-24 line. Keep `package-lock.json` synchronized with `package.json` and use
-`npm ci` for a reproducible install. The renderer tests use Puppeteer, so the
-install needs to be able to download its supported browser and the test machine
-must be able to launch it.
+24 line. Use `npm ci` for a reproducible install. The renderer tests use
+Puppeteer, so the install needs to be able to download its supported browser
+(about 650 MB into the shared `~/.cache/puppeteer`; see
+[README](README.md#browser-download)) and the test machine must be able to
+launch it.
+
+### The two lockfiles
+
+This repository tracks **two** lockfiles that must stay byte-identical:
+
+- `package-lock.json` — what contributors and `npm ci` resolve against, and what
+  the CI cache key hashes.
+- `npm-shrinkwrap.json` — the same content under the name npm packs into the
+  published tarball, so an installed release resolves the tree that was tested.
+
+`npm install` rewrites whichever of them are present, so run it once in the
+checkout and commit both files together. `npm run test:package` compares their
+bytes and fails on drift.
+
+Two rules exist because both have already caused a regression:
+
+- **Never delete a lockfile and reinstall to regenerate it.** A fresh resolution
+  on Linux drops the optional packages of other platforms, and `npm ci` on
+  npm 11 then fails on macOS and Windows. Let `npm install` update the existing
+  file in place.
+- **Never hand-edit either file**, in particular not to add an `overrides` entry
+  under `dependencies`: that shape makes `npm audit` fail in CI. Advance a
+  transitive package by updating the dependency that pulls it in.
 
 ## Set up a development checkout
 
@@ -48,8 +72,10 @@ The following commands are the supported contributor entry points:
 | `npm run test:integration` | Run integration tests, including the real browser-backed renderer suite. |
 | `npm run test:e2e` | Remove `dist/`, rebuild, and exercise the compiled MCP server. |
 | `npm test` | Run the normal source-level suites and renderer suite; compiled output is not used. |
-| `npm run test:all` | Remove `dist/`, rebuild, and run every suite, including e2e and renderer tests. |
-| `npm run test:package` | Clean, build, pack, install, and initialize the published entry points in a temporary directory. |
+| `npm run test:all` | Remove `dist/`, rebuild, and run every suite with coverage: Jest (including the layout comparison matrix), e2e, renderer, installer, and ralph-loop. |
+| `npm run test:package` | Clean, build, pack, install, and initialize the published entry points in a temporary directory; also checks the README tool inventory, the tool contract, and that the two lockfiles are identical. |
+| `npm run test:layout-candidates` | Opt-in: compare the shipped layout against the dev-only alternative packages. Included in `npm run test:all`. |
+| `npm run test:ralph` | Opt-in: integration tests for `ralph-loop/loop.sh`, using fake `bd`/`codex`/`claude` executables. Included in `npm run test:all`. Needs `jq` and `perl`. |
 | `npm run contract:update` | Rebuild `dist/` and regenerate `scripts/tool-contract.json`, the reviewed MCP tool inventory and schema fingerprints. |
 | `npm run clean` | Remove generated `dist/` output. |
 | `npm run check` | Run the complete clean contributor/CI gate: type-check, lint, build, all tests, package smoke, and the production dependency audit. |
@@ -84,11 +110,15 @@ must not be committed either.
 
 Tests and the package smoke check create isolated directories under the
 operating system temporary directory and remove them afterward. The test user
-therefore needs permission to create, read, and delete temporary files. Tests
-that save diagrams set `MCP_BPMN_DIAGRAMS_PATH` to those isolated directories;
-they must not write to the normal `~/mcp-bpmn` diagram directory. If a test
-fails, verify that it preserves this isolation and cleans up in `afterEach` or
-`afterAll`.
+therefore needs permission to create, read, and delete temporary files.
+
+Diagram storage has no fixed home-directory location: by default the server
+writes into the directory the MCP client launched it from
+(`WorkspaceSession.fromLaunch()`), which for a test run would be the checkout
+itself. Tests that save diagrams must therefore construct the engine with an
+isolated directory, or set `MCP_BPMN_DIAGRAMS_PATH` to one, so they never write
+BPMN files into the working tree. If a test fails, verify that it preserves this
+isolation and cleans up in `afterEach` or `afterAll`.
 
 ## Pull requests
 

@@ -24,7 +24,7 @@ async function runSelectedLayout(xml: string): Promise<LibraryLayoutResult> {
     let source = '';
     process.stdin.setEncoding('utf8');
     for await (const chunk of process.stdin) source += chunk;
-    const { layoutProcess } = await import('bpmn-auto-layout-alpha');
+    const { layoutProcess } = await import('bpmn-auto-layout');
     process.stdout.write(JSON.stringify(await layoutProcess(source)));
   `;
   return new Promise((resolve, reject) => {

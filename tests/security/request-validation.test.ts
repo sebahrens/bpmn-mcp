@@ -400,9 +400,6 @@ describe('MCP request validation boundary', () => {
       waypoints: [{ x: 10, y: 20 }, { x: 30, y: 20 }],
       endpointPolicy: 'detach'
     }],
-    ['unguarded semantic connection update', 'update_connection', {
-      connectionId: 'Flow_1', label: 'Updated'
-    }],
     ['endpoint semantic update without snapping', 'update_connection', {
       connectionId: 'Flow_1', targetId: 'Task_2',
       expectedSemanticRevision: `sha256:${'a'.repeat(64)}`

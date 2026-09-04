@@ -32,6 +32,14 @@ type CollaborationContext = SemanticElement & {
 
 const VALIDATION_LEVELS = new Set<ValidationLevel>(['syntax', 'semantic', 'full']);
 
+/** Event definitions that can hold an event-based gateway's decision open. */
+const EVENT_BASED_GATEWAY_TARGET_DEFINITIONS = new Set([
+  'bpmn:MessageEventDefinition',
+  'bpmn:TimerEventDefinition',
+  'bpmn:SignalEventDefinition',
+  'bpmn:ConditionalEventDefinition'
+]);
+
 const EVENT_DEFINITION_RULES: Record<string, Set<string>> = {
   'bpmn:StartEvent': new Set([
     'bpmn:MessageEventDefinition',
@@ -193,6 +201,7 @@ export class BpmnValidator {
       return this.result(level, issues);
     }
 
+    const explicitCancelActivityIds = elementIdsDeclaringAttribute(xml, 'cancelActivity');
     const semanticById = new Map<string, SemanticElement>();
     const containers: FlowContainer[] = [];
     const collaborationContexts: CollaborationContext[] = [];
@@ -243,7 +252,7 @@ export class BpmnValidator {
     this.validateSequenceFlows(containers, semanticById, issues);
     this.validateMessageFlows(collaborationContexts, semanticById, issues);
     this.validateAssociations(containers, collaborationContexts, semanticById, issues);
-    this.validateEvents(containers, semanticById, issues);
+    this.validateEvents(containers, semanticById, issues, explicitCancelActivityIds);
     this.validateSubprocesses(containers, issues);
     this.validateLanes(containers, semanticById, issues);
 
@@ -384,6 +393,107 @@ export class BpmnValidator {
             elementId: flow.id
           });
         }
+        this.validateFlowCondition(flow, source.element, issues);
+        this.validateEventBasedGatewayTarget(flow, source.element, target.element, issues);
+      }
+      this.validateDefaultFlows(container, issues);
+    }
+  }
+
+  /**
+   * A conditionExpression decides whether one outgoing path is taken, so it is
+   * only meaningful where the source chooses between its outgoing flows. The
+   * engine already enforces this for flows it authors; imported documents were
+   * reaching the serializer before anyone noticed.
+   */
+  private validateFlowCondition(flow: any, source: any, issues: BpmnValidationIssue[]): void {
+    if (!flow.conditionExpression) return;
+    const decides = this.isInstance(source, 'bpmn:Activity')
+      || ['bpmn:ExclusiveGateway', 'bpmn:InclusiveGateway', 'bpmn:ComplexGateway']
+        .includes(source.$type);
+    if (decides) return;
+    this.addIssue(issues, {
+      code: 'BPMN_INVALID_FLOW_CONDITION',
+      severity: 'error',
+      message: `A conditional sequence flow must leave an activity or an exclusive, `
+        + `inclusive or complex gateway, not ${source.$type}`,
+      elementId: flow.id
+    });
+  }
+
+  /**
+   * An event-based gateway defers the choice to whichever of its targets occurs
+   * first, so every target has to be something that can wait for an event.
+   */
+  private validateEventBasedGatewayTarget(
+    flow: any,
+    source: any,
+    target: any,
+    issues: BpmnValidationIssue[]
+  ): void {
+    if (source.$type !== 'bpmn:EventBasedGateway') return;
+    if (target.$type === 'bpmn:ReceiveTask') return;
+    const definitionType = (target.eventDefinitions || [])[0]?.$type;
+    const waits = target.$type === 'bpmn:IntermediateCatchEvent'
+      && EVENT_BASED_GATEWAY_TARGET_DEFINITIONS.has(definitionType);
+    if (waits) return;
+    this.addIssue(issues, {
+      code: 'BPMN_INVALID_EVENT_GATEWAY_TARGET',
+      severity: 'error',
+      message: 'An event-based gateway must target receive tasks or intermediate catch events '
+        + 'with a message, timer, signal or conditional definition',
+      elementId: flow.id
+    });
+  }
+
+  /**
+   * A default flow is the path taken when no condition holds, so it must be one
+   * of the node's own outgoing flows, must not itself carry a condition, and
+   * only makes sense on a node that evaluates conditions at all.
+   */
+  private validateDefaultFlows(container: FlowContainer, issues: BpmnValidationIssue[]): void {
+    const outgoingByNode = new Map<string, Set<string>>();
+    for (const flow of container.sequenceFlows) {
+      const sourceId = flow.sourceRef?.id;
+      if (typeof sourceId !== 'string') continue;
+      if (!outgoingByNode.has(sourceId)) outgoingByNode.set(sourceId, new Set());
+      outgoingByNode.get(sourceId)!.add(flow.id);
+    }
+
+    for (const node of container.flowNodes) {
+      // The BPMN schema declares `default` only where it is meaningful, so a
+      // default on a parallel or event-based gateway never becomes a parsed
+      // reference: moddle sidelines it into $attrs with a generic "unknown
+      // attribute" warning. Reading both is what turns that into a diagnostic
+      // naming the gateway.
+      const strayDefault = node.$attrs?.default;
+      if (typeof strayDefault === 'string' && strayDefault.length > 0) {
+        this.addIssue(issues, {
+          code: 'BPMN_INVALID_DEFAULT_FLOW',
+          severity: 'error',
+          message: `${node.$type} cannot have a default flow`,
+          elementId: node.id
+        });
+        continue;
+      }
+      const defaultFlow = node.default;
+      if (!defaultFlow) continue;
+      if (!outgoingByNode.get(node.id)?.has(defaultFlow.id)) {
+        this.addIssue(issues, {
+          code: 'BPMN_INVALID_DEFAULT_FLOW',
+          severity: 'error',
+          message: `Default flow ${defaultFlow.id} is not an outgoing flow of ${node.id}`,
+          elementId: node.id
+        });
+        continue;
+      }
+      if (defaultFlow.conditionExpression) {
+        this.addIssue(issues, {
+          code: 'BPMN_INVALID_DEFAULT_FLOW',
+          severity: 'error',
+          message: `Default flow ${defaultFlow.id} must not carry a condition`,
+          elementId: node.id
+        });
       }
     }
   }
@@ -495,7 +605,9 @@ export class BpmnValidator {
   private validateEvents(
     containers: FlowContainer[],
     semanticById: Map<string, SemanticElement>,
-    issues: BpmnValidationIssue[]
+    issues: BpmnValidationIssue[],
+    /** Ids whose start tag actually carries a cancelActivity attribute. */
+    explicitCancelActivityIds: ReadonlySet<string>
   ): void {
     const incoming = new Map<string, any[]>();
     const outgoing = new Map<string, any[]>();
@@ -564,7 +676,13 @@ export class BpmnValidator {
               elementId: event.id
             });
           }
+          // bpmn-moddle materializes cancelActivity's schema default of true on
+          // parse, and bpmn.io tools never write the attribute for compensation
+          // boundary events, so reading the parsed value alone reported every
+          // mainstream export as invalid. Only an attribute the author actually
+          // wrote is judged.
           if (definitionType === 'bpmn:CompensateEventDefinition'
+            && explicitCancelActivityIds.has(event.id)
             && event.cancelActivity !== false) {
             this.addIssue(issues, {
               code: 'BPMN_INVALID_BOUNDARY_INTERRUPTION',
@@ -785,4 +903,25 @@ export class BpmnValidator {
       summary: `Validation ${valid ? 'passed' : 'failed'}: ${errors.length} errors, ${warnings.length} warnings`
     };
   }
+}
+
+/**
+ * Ids of elements whose own start tag carries the named attribute.
+ *
+ * bpmn-moddle materializes schema defaults on parse, so the parsed value cannot
+ * distinguish "the author wrote this" from "the schema says this". Rules that
+ * judge intent rather than effect need the former, and the source text is the
+ * only place it survives.
+ */
+function elementIdsDeclaringAttribute(xml: string, attribute: string): Set<string> {
+  const declared = new Set<string>();
+  const startTag = /<[^!?/][^>]*>/g;
+  const attributePattern = new RegExp(`(?:^|\\s)${attribute}\\s*=`, 'u');
+  const idPattern = /(?:^|\s)id\s*=\s*"([^"]*)"/u;
+  for (const [tag] of xml.matchAll(startTag)) {
+    if (!attributePattern.test(tag)) continue;
+    const id = idPattern.exec(tag)?.[1];
+    if (id) declared.add(id);
+  }
+  return declared;
 }

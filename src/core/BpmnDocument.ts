@@ -355,6 +355,18 @@ export function assertValidMessageFlowEndpoints(
   }
 }
 
+/**
+ * A failure raised while turning XML text into a moddle tree, as opposed to a
+ * structural problem found afterwards. Its message may echo document content,
+ * so callers replace it with a generic one.
+ */
+export class BpmnXmlParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BpmnXmlParseError';
+  }
+}
+
 export function getDefaultElementSize(type: BpmnElementType): Size {
   if (type === 'bpmn:Participant') {
     return { width: 600, height: 250 };
@@ -745,6 +757,7 @@ export class BpmnDocumentSerializer {
       });
       semanticById.set(connection.id, semantic);
       this.applyConnectionProperties(connection, semantic, semanticById);
+      this.applyDocumentation(semantic, connection.properties?.documentation);
 
       if (connection.type === 'bpmn:MessageFlow') {
         const collaboration = semanticById.get(connection.ownerId);
@@ -1016,6 +1029,7 @@ export class BpmnDocumentSerializer {
         );
       }
       this.applyConnectionProperties(connection, semantic, semanticById);
+      this.applyDocumentation(semantic, connection.properties?.documentation);
       if (isNew) {
         this.attachConnection(connection, semantic, semanticById);
       }
@@ -1203,6 +1217,54 @@ export class BpmnDocumentSerializer {
       container.flowElements = container.flowElements || [];
       container.flowElements.push(semantic);
     }
+    this.registerConnectionOnEndpoints(semantic);
+  }
+
+  /**
+   * Mirror a new connection into its endpoints' derived incoming/outgoing
+   * lists.
+   *
+   * These lists duplicate sourceRef/targetRef, and tools that write them expect
+   * them to stay complete. Adding a flow to an imported document left the new
+   * edge out of them, so the file contradicted itself: bpmn-js recomputes and
+   * never noticed, but stricter importers and file diffs did. Endpoints that do
+   * not use the lists are left alone rather than gaining them.
+   */
+  /**
+   * Write bpmn:documentation, BPMN's own place for the prose that explains an
+   * element. It is a child element rather than an attribute, and an empty
+   * value removes it rather than emitting a blank one.
+   */
+  private applyDocumentation(semantic: any, documentation: unknown): void {
+    if (typeof documentation !== 'string' || documentation.trim().length === 0) {
+      if (Array.isArray(semantic.documentation) && semantic.documentation.length > 0) {
+        semantic.documentation = [];
+      }
+      return;
+    }
+    const existing = Array.isArray(semantic.documentation) ? semantic.documentation[0] : undefined;
+    if (existing) {
+      existing.text = documentation;
+      return;
+    }
+    semantic.documentation = [this.moddle.create('bpmn:Documentation', { text: documentation })];
+  }
+
+  private registerConnectionOnEndpoints(semantic: any): void {
+    const { sourceRef, targetRef } = semantic;
+    if (!sourceRef || !targetRef) return;
+    // A node that already lists one direction follows the convention even if it
+    // has no flows in the other yet, so presence on either endpoint decides it
+    // for this connection. Documents that never use the lists stay untouched.
+    const usesDerivedLists = [sourceRef, targetRef].some(endpoint => (
+      Array.isArray(endpoint.incoming) || Array.isArray(endpoint.outgoing)
+    ));
+    if (!usesDerivedLists) return;
+
+    sourceRef.outgoing = Array.isArray(sourceRef.outgoing) ? sourceRef.outgoing : [];
+    if (!sourceRef.outgoing.includes(semantic)) sourceRef.outgoing.push(semantic);
+    targetRef.incoming = Array.isArray(targetRef.incoming) ? targetRef.incoming : [];
+    if (!targetRef.incoming.includes(semantic)) targetRef.incoming.push(semantic);
   }
 
   private reconcileConnectionReferences(
@@ -1264,6 +1326,10 @@ export class BpmnDocumentSerializer {
     if (element.type === 'bpmn:BoundaryEvent' && typeof element.properties.attachTo === 'string') {
       semantic.attachedToRef = semanticById.get(element.properties.attachTo);
     }
+    if (element.properties.triggeredByEvent === true) {
+      semantic.triggeredByEvent = true;
+    }
+    this.applyDocumentation(semantic, element.properties.documentation);
     if (element.type === 'bpmn:CallActivity'
       && typeof element.properties.calledElement === 'string') {
       // Written back verbatim: the value was either validated when authored
@@ -1677,7 +1743,11 @@ export class BpmnDocumentSerializer {
       sourceIds = new Set(Object.keys(result.elementsById));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Failed to parse BPMN XML: ${message}`);
+      // Everything above this point is XML-level: the message can quote the
+      // document, so it is marked and generalized before it reaches a caller.
+      // Everything below is this code base's own structural checking, whose
+      // messages name BPMN ids the agent already sees and are safe to forward.
+      throw new BpmnXmlParseError(`Failed to parse BPMN XML: ${message}`);
     }
 
     if (!definitions || definitions.$type !== 'bpmn:Definitions') {
@@ -2228,7 +2298,12 @@ export class BpmnDocumentSerializer {
         };
       } else if (eventDefinitionName === 'compensation') {
         if (definition.activityRef?.id) payload.activityRef = definition.activityRef.id;
-        if (typeof definition.waitForCompletion === 'boolean') {
+        // waitForCompletion describes how a *throwing* compensation event waits
+        // for its handlers. moddle materializes the schema default on parse, so
+        // reading it back on a catching boundary event captured a value the
+        // author never wrote and then made the element impossible to update.
+        if (type !== 'bpmn:BoundaryEvent'
+          && typeof definition.waitForCompletion === 'boolean') {
           payload.waitForCompletion = definition.waitForCompletion;
         }
       }
@@ -2245,6 +2320,17 @@ export class BpmnDocumentSerializer {
         };
       }
       properties.eventDefinitionPayload = payload;
+    }
+    // An event subprocess is triggered by its start event rather than by an
+    // incoming flow, which changes what its start event is allowed to carry.
+    // Without recording it, an imported event subprocess looked like a regular
+    // one and its start event could not even be renamed.
+    if (item.triggeredByEvent === true) {
+      properties.triggeredByEvent = true;
+    }
+    const documentation = item.documentation?.[0]?.text;
+    if (typeof documentation === 'string' && documentation.length > 0) {
+      properties.documentation = documentation;
     }
     if (item.attachedToRef?.id) {
       properties.attachTo = item.attachedToRef.id;
@@ -2393,7 +2479,10 @@ export class BpmnDocumentSerializer {
         ? (item.associationDirection || 'None')
         : undefined,
       waypoints: (edge?.waypoint || []).map((point: any) => ({ x: point.x, y: point.y })),
-      properties: {}
+      properties: typeof item.documentation?.[0]?.text === 'string'
+        && item.documentation[0].text.length > 0
+        ? { documentation: item.documentation[0].text }
+        : {}
     };
     document.connections.set(connection.id, connection);
   }

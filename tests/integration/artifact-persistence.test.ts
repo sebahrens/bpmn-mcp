@@ -3,7 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ResourceLimits } from '../../src/config/index.js';
 import { DEFAULT_RESOURCE_LIMITS } from '../../src/config/index.js';
-import { BpmnSvgRenderer } from '../../src/core/BpmnSvgRenderer.js';
+import {
+  BpmnSvgRenderer,
+  type PngRenderResult
+} from '../../src/core/BpmnSvgRenderer.js';
 import { diagramContext } from '../../src/core/DiagramContext.js';
 import { SimpleBpmnEngine } from '../../src/core/SimpleBpmnEngine.js';
 import { BpmnRequestHandler } from '../../src/server/handlers.js';
@@ -15,18 +18,23 @@ function textOf(result: Awaited<ReturnType<BpmnRequestHandler['handleRequest']>>
   return content.text;
 }
 
+/** A PNG render stub carrying the pixel geometry save_png now reports. */
+function pngResult(image: Buffer): PngRenderResult {
+  return { image, width: 1, height: 1, scale: 1, downscaled: false };
+}
+
 describe('managed rendered artifact persistence', () => {
   let directory: string;
   let handler: BpmnRequestHandler;
   let renderSvg: jest.Mock<Promise<string>, [string]>;
-  let renderPng: jest.Mock<Promise<Buffer>, [string]>;
+  let renderPng: jest.Mock<Promise<PngRenderResult>, [string, (number | undefined)?]>;
 
   beforeEach(async () => {
     directory = await fs.mkdtemp(join(tmpdir(), 'mcp-bpmn-artifacts-'));
     IdGenerator.reset();
     diagramContext.clear();
     renderSvg = jest.fn(async () => '<svg width="1" height="1" viewBox="0 0 1 1"/>');
-    renderPng = jest.fn(async () => Buffer.from('89504e470d0a1a0a', 'hex'));
+    renderPng = jest.fn(async () => pngResult(Buffer.from('89504e470d0a1a0a', 'hex')));
     const renderer = {
       render: renderSvg,
       renderPng,
@@ -76,7 +84,11 @@ describe('managed rendered artifact persistence', () => {
       filename: 'review.png',
       format: 'png',
       mimeType: 'image/png',
-      byteLength: 8
+      byteLength: 8,
+      width: 1,
+      height: 1,
+      scale: 1,
+      downscaled: false
     });
     await expect(fs.readFile(join(directory, 'review.svg'), 'utf8'))
       .resolves.toBe(await renderSvg.mock.results[0].value);
@@ -123,7 +135,7 @@ describe('managed rendered artifact persistence', () => {
 
   it('rejects rendered output over the configured byte limit without writing it', async () => {
     renderSvg.mockResolvedValue('x'.repeat(1_025));
-    renderPng.mockResolvedValue(Buffer.alloc(1_025));
+    renderPng.mockResolvedValue(pngResult(Buffer.alloc(1_025)));
 
     const svg = await handler.handleRequest('save_svg', { filename: 'large.svg' });
     const png = await handler.handleRequest('save_png', { filename: 'large.png' });

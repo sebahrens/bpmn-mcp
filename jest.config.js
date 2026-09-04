@@ -37,16 +37,15 @@ export default {
     'src/**/*.ts',
     '!src/**/*.d.ts',
   ],
-  coveragePathIgnorePatterns: [
-    '<rootDir>/src/core/layout/index.ts',
-    '<rootDir>/src/core/layout/adapters/index.ts',
-    '<rootDir>/src/utils/AutoLayoutEnhanced.ts',
-  ],
+  // Nothing is excluded from coverage. The two layout barrels that used to be
+  // listed here were deleted with the dead re-export layer (mcp-bpmn-iqa.5),
+  // and an ignore entry must never be used to hide a module that still ships.
+  coveragePathIgnorePatterns: [],
   coverageDirectory: 'coverage',
   coverageReporters: ['text', 'lcov', 'html'],
   // These thresholds are deliberately scoped to production-reachable modules
-  // covered by mcp-bpmn-21p. Unreachable legacy modules are ignored above so
-  // their direct characterization tests cannot inflate the aggregate report.
+  // covered by mcp-bpmn-21p. Nothing is excluded from the report, so a floor
+  // here always describes shipping code.
   coverageThreshold: {
     // The MCP request surface is the contract agents actually call. Floors sit a
     // few points under the measured numbers so an unrelated refactor does not

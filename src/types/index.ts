@@ -139,6 +139,8 @@ export interface BpmnConditionExpression {
 
 export interface BpmnConnectOptions {
   condition?: string;
+  /** Free-text bpmn:documentation carried on the connection. */
+  documentation?: string;
   conditionLanguage?: string;
   conditionType?: 'bpmn:FormalExpression';
   isDefault?: boolean;

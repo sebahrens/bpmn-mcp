@@ -54,6 +54,16 @@ const SIDES: Side[] = ['top', 'right', 'bottom', 'left'];
 const CONTAINER_TYPES = new Set(['bpmn:Participant', 'bpmn:Lane']);
 
 /**
+ * Cost per unit of route that runs inside a participant the connection does not
+ * belong to. A message flow belongs to the collaboration rather than to either
+ * pool, so it pays for every unit it spends inside one and leaves directly
+ * instead of running under a foreign pool's tasks. The cost stays far below the
+ * clearance and collision weights, so it only settles routes those cannot
+ * separate.
+ */
+const FOREIGN_INTERIOR_COST_PER_UNIT = 3;
+
+/**
  * Generate and rank deterministic orthogonal routes for one rendered BPMN edge.
  * The router is deliberately side-effect free so auto-layout, proposal tools,
  * and future geometry operations can share the same candidate generation.
@@ -99,6 +109,7 @@ export class ConnectionRouter {
       .filter(candidate => candidate.connectionId !== connectionId);
     const labelObstacles = labelObstacleBounds(diagramShapes, diagramEdges, connectionId)
       .filter(label => !scopeAncestors.has(label.id));
+    const foreignInteriors = foreignParticipantBounds(document, diagramShapes, connection);
     const maxCoordinate = options.maxCoordinate ?? Number.POSITIVE_INFINITY;
     const routes = routeCandidates(
       currentShapeBounds(document, source),
@@ -141,7 +152,8 @@ export class ConnectionRouter {
         contacts,
         labelContacts.collisions.size,
         labelContacts.clearance.size,
-        connection
+        connection,
+        foreignInteriors
       );
       const boundaryDiagnostics: GeometryDiagnostic[] = [];
       if (waypoints.length < 2) {
@@ -500,7 +512,8 @@ function scoreRoute(
   contacts: RouteContacts,
   labelCollisions: number,
   labelClearanceFailures: number,
-  connection: BpmnDocumentConnection
+  connection: BpmnDocumentConnection,
+  foreignInteriors: Bounds[]
 ): ConnectionRouteScoreBreakdown {
   const shapeCollisions = contacts.shapeCollisions.size;
   const clearanceFailures = contacts.clearanceFailures.size + labelClearanceFailures;
@@ -520,9 +533,77 @@ function scoreRoute(
       + clearanceFailures * 100_000
       + connectionCrossings * 250_000
       + dockSidePenalty(route, connection) * 10_000
+      + foreignInteriorLength(route, foreignInteriors) * FOREIGN_INTERIOR_COST_PER_UNIT
       + bends * 100
       + length
   };
+}
+
+/**
+ * Every participant that does not own this connection. A message flow is owned
+ * by the collaboration, so both of the pools it links are foreign to it; a
+ * sequence flow is owned by one participant's process and pays nothing for the
+ * pool it legitimately runs inside.
+ */
+function foreignParticipantBounds(
+  document: BpmnDocument,
+  shapes: BpmnShapeModel[],
+  connection: BpmnDocumentConnection
+): Bounds[] {
+  const bounds: Bounds[] = [];
+  for (const shape of shapes) {
+    const element = document.elements.get(shape.elementId);
+    if (!element || element.kind !== 'participant') continue;
+    if (element.processRef && element.processRef === connection.ownerId) continue;
+    bounds.push(currentShapeBounds(document, shape));
+  }
+  return bounds;
+}
+
+/** Total route length that runs strictly inside any of the given rectangles. */
+function foreignInteriorLength(route: Position[], interiors: Bounds[]): number {
+  if (interiors.length === 0 || route.length < 2) return 0;
+  return route.slice(1).reduce((total, end, index) => total + interiors.reduce(
+    (segmentTotal, bounds) => segmentTotal + segmentLengthInsideBounds(route[index], end, bounds),
+    0
+  ), 0);
+}
+
+/**
+ * Length of the part of one segment that lies inside the rectangle, clipped
+ * parametrically. The rectangle is shrunk by an epsilon so a route that runs
+ * exactly along a pool's edge counts as outside it.
+ */
+function segmentLengthInsideBounds(start: Position, end: Position, bounds: Bounds): number {
+  const epsilon = 0.001;
+  const minimumX = bounds.x + epsilon;
+  const maximumX = bounds.x + bounds.width - epsilon;
+  const minimumY = bounds.y + epsilon;
+  const maximumY = bounds.y + bounds.height - epsilon;
+  if (minimumX >= maximumX || minimumY >= maximumY) return 0;
+
+  const deltaX = end.x - start.x;
+  const deltaY = end.y - start.y;
+  let enter = 0;
+  let exit = 1;
+  const clip = (direction: number, distance: number): boolean => {
+    if (direction === 0) return distance >= 0;
+    const crossing = distance / direction;
+    if (direction < 0) {
+      if (crossing > exit) return false;
+      if (crossing > enter) enter = crossing;
+    } else {
+      if (crossing < enter) return false;
+      if (crossing < exit) exit = crossing;
+    }
+    return true;
+  };
+  const inside = clip(-deltaX, start.x - minimumX)
+    && clip(deltaX, maximumX - start.x)
+    && clip(-deltaY, start.y - minimumY)
+    && clip(deltaY, maximumY - start.y);
+  if (!inside || exit <= enter) return 0;
+  return Math.hypot(deltaX, deltaY) * (exit - enter);
 }
 
 /**

@@ -34,6 +34,20 @@ interface CandidateMatrixRow {
 }
 
 const fixtureDirectory = join(process.cwd(), 'tests', 'fixtures', 'layout');
+
+// Pinned so that silently dropping a fixture cannot shrink the corpus a passing
+// candidate is measured against.
+const DECISION_CORPUS_FEATURES = [
+  'sequential',
+  'branch/rejoin',
+  'skip flow',
+  'cycle',
+  'self-loop',
+  'long labels',
+  'collaboration/message flow',
+  'lanes',
+  'subprocess/boundary event'
+];
 const candidateTimeoutMs = 20_000;
 const packageRunner = `
   let input = '';
@@ -112,7 +126,27 @@ async function currentProjectLayout(xml: string): Promise<{ xml: string; warning
   }
 }
 
-const candidates: LayoutCandidate[] = [
+/**
+ * The shipped path: the production `bpmn-auto-layout` dependency driven through
+ * `SimpleBpmnEngine`. This is the only candidate whose result is a regression
+ * signal, so it runs on every `npm test`.
+ */
+const projectCandidate: LayoutCandidate = {
+  id: 'mcp-bpmn-final-output',
+  version: 'working-tree',
+  unsupported: {},
+  layout: currentProjectLayout
+};
+
+/**
+ * Third-party alternatives kept only as the evidence behind the layout-engine
+ * decision. They are dev-only packages that production never loads, and each
+ * fixture is replayed twice per candidate to prove determinism, so running them
+ * costs 54 extra Node subprocesses. They are opt-in through
+ * `npm run test:layout-candidates`, which `npm run test:all` (and therefore CI)
+ * also runs.
+ */
+const comparisonCandidates: LayoutCandidate[] = [
   {
     id: 'bpmn-auto-layout-stable',
     version: '1.3.0',
@@ -125,21 +159,20 @@ const candidates: LayoutCandidate[] = [
     id: 'bpmn-auto-layout-next',
     version: '2.0.0-alpha.2',
     unsupported: {},
-    layout: xml => packageLayout('bpmn-auto-layout-alpha', xml)
+    layout: xml => packageLayout('bpmn-auto-layout', xml)
   },
   {
     id: 'yabal',
     version: '2.0.0',
     unsupported: {},
     layout: xml => packageLayout('yet-another-bpmn-auto-layout', xml)
-  },
-  {
-    id: 'mcp-bpmn-final-output',
-    version: 'working-tree',
-    unsupported: {},
-    layout: currentProjectLayout
   }
 ];
+
+const candidates: LayoutCandidate[] = [...comparisonCandidates, projectCandidate];
+
+const comparisonMatrixEnabled = process.env.MCP_BPMN_LAYOUT_CANDIDATES === '1';
+const describeComparisonMatrix = comparisonMatrixEnabled ? describe : describe.skip;
 
 async function evaluateCandidate(
   candidate: LayoutCandidate,
@@ -211,7 +244,7 @@ function printableMatrix(rows: CandidateMatrixRow[]): string {
   return [header, separator, ...body].join('\n');
 }
 
-describe('layout candidate corpus', () => {
+describeComparisonMatrix('layout candidate corpus (opt-in)', () => {
   let matrix: CandidateMatrixRow[];
 
   beforeAll(async () => {
@@ -222,20 +255,10 @@ describe('layout candidate corpus', () => {
       }
     }
     console.log(`LAYOUT_CANDIDATE_MATRIX\n${printableMatrix(matrix)}`);
-  }, 120_000);
+  }, 240_000);
 
   it('covers the complete decision corpus for every shortlisted candidate and final output', () => {
-    expect(layoutFixtures.map(fixture => fixture.feature)).toEqual([
-      'sequential',
-      'branch/rejoin',
-      'skip flow',
-      'cycle',
-      'self-loop',
-      'long labels',
-      'collaboration/message flow',
-      'lanes',
-      'subprocess/boundary event'
-    ]);
+    expect(layoutFixtures.map(fixture => fixture.feature)).toEqual(DECISION_CORPUS_FEATURES);
     expect(matrix).toHaveLength(candidates.length * layoutFixtures.length);
     for (const candidate of candidates) {
       const rows = matrix.filter(row => row.candidate === candidate.id);
@@ -258,8 +281,27 @@ describe('layout candidate corpus', () => {
     expect(matrix.filter(row => !row.deterministic)).toEqual([]);
   });
 
+  it('uses structured diagnostics with offending IDs for geometry failures', () => {
+    for (const row of matrix.filter(row => row.diagnostics.length > 0)) {
+      for (const diagnostic of row.diagnostics.filter(item => item.code !== 'MISSING_DI')) {
+        expect(diagnostic.ids.length).toBeGreaterThan(0);
+      }
+    }
+  });
+});
+
+describe('selected layout path', () => {
+  let selectedRows: CandidateMatrixRow[];
+
+  beforeAll(async () => {
+    selectedRows = [];
+    for (const fixture of layoutFixtures) {
+      selectedRows.push(await evaluateCandidate(projectCandidate, fixture));
+    }
+  }, 120_000);
+
   it('passes the complete decision corpus through the selected project path', () => {
-    const selectedRows = matrix.filter(row => row.candidate === 'mcp-bpmn-final-output');
+    expect(layoutFixtures.map(fixture => fixture.feature)).toEqual(DECISION_CORPUS_FEATURES);
     expect(selectedRows).toHaveLength(layoutFixtures.length);
     expect(selectedRows.map(row => ({
       feature: row.feature,
@@ -272,12 +314,8 @@ describe('layout candidate corpus', () => {
     })));
   });
 
-  it('uses structured diagnostics with offending IDs for geometry failures', () => {
-    for (const row of matrix.filter(row => row.diagnostics.length > 0)) {
-      for (const diagnostic of row.diagnostics.filter(item => item.code !== 'MISSING_DI')) {
-        expect(diagnostic.ids.length).toBeGreaterThan(0);
-      }
-    }
+  it('produces identical normalized geometry on repeated runs', () => {
+    expect(selectedRows.filter(row => !row.deterministic)).toEqual([]);
   });
 
   it('preserves selected-candidate DI and semantics after a later mutable-engine edit', async () => {
@@ -318,7 +356,7 @@ describe('layout candidate corpus', () => {
         .replace(taskElement, taskWithExtension);
       expect(sourceXml).not.toBe(generated);
 
-      const selectedOutput = await packageLayout('bpmn-auto-layout-alpha', sourceXml);
+      const selectedOutput = await packageLayout('bpmn-auto-layout', sourceXml);
       expect(selectedOutput.warnings).toEqual([]);
       const beforeMutation = await validateBpmnGeometry(selectedOutput.xml);
       expect(beforeMutation.valid).toBe(true);

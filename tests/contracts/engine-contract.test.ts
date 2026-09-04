@@ -531,8 +531,30 @@ describe('live engine contract', () => {
     for (const algorithm of algorithms ?? []) {
       const result = await handler.handleRequest('auto_layout', { algorithm });
       expect(result.isError).toBeUndefined();
-      expect(textOf(result)).toContain(`Applied ${algorithm} auto-layout`);
+      expect(result.structuredContent).toMatchObject({ algorithm, changed: true });
+      expect(textOf(result)).toContain('Applied left-to-right auto-layout');
     }
+
+    // Both reading directions are advertised and each commits a real layout
+    // when it differs from what is already on the diagram.
+    for (const direction of ['top-to-bottom', 'left-to-right', 'top-to-bottom'] as const) {
+      const result = await handler.handleRequest('auto_layout', { direction });
+      expect(result.isError).toBeUndefined();
+      expect(result.structuredContent).toMatchObject({ direction, changed: true });
+    }
+
+    // Re-running the same direction is a no-op that neither commits nor bumps
+    // the revision (mcp-bpmn-3g8.13).
+    const repeated = await handler.handleRequest('auto_layout', { direction: 'top-to-bottom' });
+    expect(repeated.structuredContent).toMatchObject({ changed: false });
+    expect((repeated.structuredContent as { beforeRevision: string; afterRevision: string })
+      .beforeRevision)
+      .toBe((repeated.structuredContent as { afterRevision: string }).afterRevision);
+
+    const unsupportedDirection = await handler.handleRequest('auto_layout', {
+      direction: 'diagonal'
+    });
+    expect(unsupportedDirection.isError).toBe(true);
 
     const unsupported = await handler.handleRequest('auto_layout', { algorithm: 'vertical' });
     expect(unsupported.isError).toBe(true);

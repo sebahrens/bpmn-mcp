@@ -1,6 +1,10 @@
 import { MermaidParser } from './MermaidParser.js';
 import { SimpleBpmnGenerator } from '../core/SimpleBpmnGenerator.js';
 import { BpmnDocumentSerializer } from '../core/BpmnDocument.js';
+import {
+  transposeDocumentGeometry,
+  type LayoutOrientation
+} from '../core/layout/LayoutOrientation.js';
 import { config } from '../config/index.js';
 import type { ResourceLimits } from '../config/index.js';
 import {
@@ -102,6 +106,24 @@ export interface AnalysisResult {
   };
 }
 
+/** How each Mermaid direction maps onto the two layout orientations. */
+const MERMAID_LAYOUT_ORIENTATION: Record<MermaidAST['direction'], LayoutOrientation> = {
+  TD: 'top-to-bottom',
+  TB: 'top-to-bottom',
+  BT: 'top-to-bottom',
+  LR: 'left-to-right',
+  RL: 'left-to-right'
+};
+
+/**
+ * Directions whose reading order runs backwards. BPMN has no notion of a
+ * reversed reading order, so these are laid out forwards and reported.
+ */
+const REVERSED_MERMAID_DIRECTIONS: Partial<Record<MermaidAST['direction'], string>> = {
+  BT: 'top to bottom',
+  RL: 'left to right'
+};
+
 export class MermaidConverter {
   private parser: MermaidParser;
   private simpleGenerator: SimpleBpmnGenerator;
@@ -164,6 +186,21 @@ export class MermaidConverter {
       );
       const layout = await this.layoutAdapter.layout(result.xml);
       const laidOut = await this.documentSerializer.parse(layout.xml, config.bpmnImportLimits);
+      // The layout engine only ranks left to right. A Mermaid diagram that
+      // declares a vertical direction is reflected onto that axis instead of
+      // silently coming out horizontal.
+      const orientation = MERMAID_LAYOUT_ORIENTATION[ast.direction];
+      if (orientation === 'top-to-bottom') {
+        transposeDocumentGeometry(laidOut.document);
+        layout.xml = await this.documentSerializer.serialize(laidOut.document, true);
+      }
+      const reversedDirection = REVERSED_MERMAID_DIRECTIONS[ast.direction];
+      if (reversedDirection) {
+        warnings.push(
+          `Mermaid direction ${ast.direction} is read back to front; the diagram was `
+          + `laid out ${reversedDirection}, which keeps the flow order intact.`
+        );
+      }
       result.xml = layout.xml;
       for (const element of result.elements) {
         const laidOutElement = laidOut.elements.get(element.id);

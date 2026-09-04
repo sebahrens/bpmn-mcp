@@ -9,7 +9,7 @@ import {
   connectionGeometryRevision,
   connectionSemanticState
 } from '../core/SimpleBpmnEngine.js';
-import { BpmnSvgRenderer } from '../core/BpmnSvgRenderer.js';
+import { BpmnSvgRenderer, type PngRenderResult } from '../core/BpmnSvgRenderer.js';
 import { config } from '../config/index.js';
 import type { ResourceLimits } from '../config/index.js';
 import { WorkspaceSession } from '../config/WorkspaceSession.js';
@@ -52,9 +52,18 @@ type ToolDispatchers = {
   [Name in ToolName]: (args: ToolArguments<Name>) => Promise<CallToolResult>;
 };
 
+/** A rendered artifact awaiting persistence, with the PNG's pixel geometry. */
+type RenderedArtifact =
+  | { format: 'svg'; content: string }
+  | {
+    format: 'png';
+    content: Buffer;
+    raster: { width: number; height: number; scale: number; downscaled: boolean };
+  };
+
 interface DiagramArtifactRenderer {
   render(xml: string): Promise<string>;
-  renderPng(xml: string): Promise<Buffer>;
+  renderPng(xml: string, scale?: number): Promise<PngRenderResult>;
   close(): Promise<void>;
 }
 
@@ -538,13 +547,15 @@ export class BpmnRequestHandler {
   }
 
   private async saveAs(args: ToolArguments<'save_as'>): Promise<CallToolResult> {
-    const { filename, expectedRevision } = args;
+    const { filename, overwrite, expectedRevision } = args;
     const context = diagramContext.getCurrent();
     const info = diagramContext.getCurrentInfo()!;
     const beforeRevision = context.revision;
     const previousFilename = context.filename;
     const previousWasPlaceholder = context.filenameManaged === true;
-    const activeFilename = await this.engine.saveAs(context.id, filename, expectedRevision);
+    const activeFilename = await this.engine.saveAs(
+      context.id, filename, expectedRevision, overwrite
+    );
     const removedPreviousFile = previousWasPlaceholder
       && previousFilename !== undefined
       && previousFilename !== activeFilename;
@@ -621,6 +632,7 @@ export class BpmnRequestHandler {
       attachTo,
       ownerId,
       scopeId,
+      documentation,
       expectedRevision
     } = args;
     const context = diagramContext.getCurrent();
@@ -634,7 +646,8 @@ export class BpmnRequestHandler {
         eventDefinition,
         eventDefinitionPayload,
         cancelActivity,
-        attachTo
+        attachTo,
+        ...(documentation === undefined ? {} : { documentation })
       },
       ownerId,
       scopeId
@@ -654,7 +667,8 @@ export class BpmnRequestHandler {
 
   private async addActivity(args: ToolArguments<'add_activity'>): Promise<CallToolResult> {
     const {
-      activityType, name, position, properties = {}, ownerId, scopeId, expectedRevision
+      activityType, name, position, properties = {}, ownerId, scopeId, documentation,
+      expectedRevision
     } = args;
     const context = diagramContext.getCurrent();
     
@@ -663,7 +677,7 @@ export class BpmnRequestHandler {
       type: bpmnType,
       name,
       position,
-      properties,
+      properties: { ...properties, ...(documentation === undefined ? {} : { documentation }) },
       ownerId,
       scopeId
     };
@@ -681,7 +695,9 @@ export class BpmnRequestHandler {
   }
 
   private async addGateway(args: ToolArguments<'add_gateway'>): Promise<CallToolResult> {
-    const { gatewayType, name, position, ownerId, scopeId, expectedRevision } = args;
+    const {
+      gatewayType, name, position, ownerId, scopeId, documentation, expectedRevision
+    } = args;
     const context = diagramContext.getCurrent();
     
     const bpmnType = TypeMappings.mapGatewayType(gatewayType);
@@ -689,6 +705,7 @@ export class BpmnRequestHandler {
       type: bpmnType,
       name,
       position,
+      ...(documentation === undefined ? {} : { properties: { documentation } }),
       ownerId,
       scopeId
     };
@@ -769,6 +786,7 @@ export class BpmnRequestHandler {
       conditionLanguage,
       conditionType,
       isDefault,
+      documentation,
       expectedRevision
     } = args;
     const context = diagramContext.getCurrent();
@@ -779,6 +797,7 @@ export class BpmnRequestHandler {
       conditionLanguage,
       conditionType,
       isDefault,
+      documentation,
       expectedRevision
     });
 
@@ -1094,12 +1113,15 @@ export class BpmnRequestHandler {
   }
 
   private async updateElement(args: ToolArguments<'update_element'>): Promise<CallToolResult> {
-    const { elementId, name, properties, defaultFlow, expectedRevision } = args;
+    const { elementId, name, properties, documentation, defaultFlow, expectedRevision } = args;
     const context = diagramContext.getCurrent();
     const beforeRevision = context.revision;
+    const mergedProperties = documentation === undefined
+      ? properties
+      : { ...(properties ?? {}), documentation };
     await this.engine.updateElement(context.id, elementId, {
       name,
-      properties,
+      properties: mergedProperties,
       ...(Object.prototype.hasOwnProperty.call(args, 'defaultFlow') ? { defaultFlow } : {})
     }, expectedRevision);
 
@@ -1385,9 +1407,8 @@ export class BpmnRequestHandler {
     return this.saveRenderedArtifact(
       context,
       args.filename,
-      'svg',
-      svg,
-      args.overwrite
+      args.overwrite,
+      { format: 'svg', content: svg }
     );
   }
 
@@ -1395,23 +1416,31 @@ export class BpmnRequestHandler {
     assertSafeFilename(args.filename, ['.png']);
     const context = diagramContext.getCurrent();
     const xml = await this.engine.exportXml(context.id, true);
-    const png = await this.svgRenderer.renderPng(xml);
+    const png = await this.svgRenderer.renderPng(xml, args.scale ?? 1);
     return this.saveRenderedArtifact(
       context,
       args.filename,
-      'png',
-      png,
-      args.overwrite
+      args.overwrite,
+      {
+        format: 'png',
+        content: png.image,
+        raster: {
+          width: png.width,
+          height: png.height,
+          scale: png.scale,
+          downscaled: png.downscaled
+        }
+      }
     );
   }
 
   private async saveRenderedArtifact(
     context: ProcessContext,
     filename: string,
-    format: 'svg' | 'png',
-    content: string | Buffer,
-    overwrite: boolean
+    overwrite: boolean,
+    artifact: RenderedArtifact
   ): Promise<CallToolResult> {
+    const { format, content } = artifact;
     const byteLength = typeof content === 'string'
       ? Buffer.byteLength(content, 'utf8')
       : content.byteLength;
@@ -1430,21 +1459,29 @@ export class BpmnRequestHandler {
       );
     }
 
-    return format === 'svg'
-      ? textToolResult('save_svg', {
+    if (artifact.format === 'svg') {
+      return textToolResult('save_svg', {
         processId: context.id,
         filename,
         format: 'svg',
         mimeType: 'image/svg+xml',
         byteLength
-      }, `Saved rendered SVG artifact as ${filename}`)
-      : textToolResult('save_png', {
-        processId: context.id,
-        filename,
-        format: 'png',
-        mimeType: 'image/png',
-        byteLength
-      }, `Saved rendered PNG artifact as ${filename}`);
+      }, `Saved rendered SVG artifact as ${filename}`);
+    }
+
+    const { raster } = artifact;
+    return textToolResult('save_png', {
+      processId: context.id,
+      filename,
+      format: 'png',
+      mimeType: 'image/png',
+      byteLength,
+      ...raster
+    }, raster.downscaled
+      ? `Saved rendered PNG artifact as ${filename} at ${raster.width}x${raster.height}px; `
+        + `the requested scale was reduced to ${raster.scale.toFixed(3)} to stay inside `
+        + 'the renderer pixel limits'
+      : `Saved rendered PNG artifact as ${filename} at ${raster.width}x${raster.height}px`);
   }
 
   private async validate(args: ToolArguments<'validate'>): Promise<CallToolResult> {
@@ -1494,28 +1531,38 @@ export class BpmnRequestHandler {
   }
 
   private async autoLayout(args: ToolArguments<'auto_layout'>): Promise<CallToolResult> {
-    const { algorithm = 'horizontal', expectedRevision } = args;
+    const {
+      algorithm = 'horizontal',
+      direction = 'left-to-right',
+      expectedRevision
+    } = args;
     const context = diagramContext.getCurrent();
     const beforeRevision = context.revision;
-    
+
     const elementCount = context.elements.size;
     const connectionCount = context.connections.size;
-    
-    // Apply auto-layout
-    const layout = await this.engine.applyAutoLayout(context.id, expectedRevision);
+
+    const layout = await this.engine.applyAutoLayout(context.id, expectedRevision, direction);
     const warningText = layout.warnings.length === 0
       ? ''
       : `\n\nWarnings:\n${layout.warnings.map(formatBpmnLayoutDiagnostic).join('\n')}`;
-    
+    const summary = layout.changed
+      ? `Applied ${direction} auto-layout to current diagram\n\n`
+        + `Repositioned ${elementCount} elements and ${connectionCount} connections.`
+      : `The ${direction} layout matches the current diagram, so nothing was changed `
+        + 'and the revision is unchanged.';
+
     return textToolResult('auto_layout', {
       algorithm,
+      direction,
+      changed: layout.changed,
       elementCount,
       connectionCount,
       warnings: layout.warnings,
       filename: activeFilename(context),
       beforeRevision,
       afterRevision: context.revision
-    }, `Applied ${algorithm} auto-layout to current diagram\n\nRepositioned ${elementCount} elements and ${connectionCount} connections.${warningText}`);
+    }, `${summary}${warningText}`);
   }
 
   private conversionWarningText(warnings: string[]): string {
@@ -1667,7 +1714,7 @@ const ERROR_CLASSIFIERS: ReadonlyArray<{
     details: match => ({ connectionId: match[1] })
   },
   {
-    pattern: /^(?:Associated element|Element) (\S+) not found/,
+    pattern: /^(?:Associated element|Source element|Target element|Element) "?([^"\s]+)"? not found/,
     code: 'element_not_found',
     recovery: 'List elements with list_elements and use an id from that result.',
     details: match => ({ elementId: match[1] })
@@ -1693,6 +1740,12 @@ const ERROR_CLASSIFIERS: ReadonlyArray<{
     code: 'render_unavailable',
     recovery: 'Install a Chrome or Chromium build and point PUPPETEER_EXECUTABLE_PATH at it, '
       + 'or export format "xml" instead.'
+  },
+  {
+    pattern: /does not exist below the startup boundary|must be a descendant of the startup boundary|Workspace path components must be directories/i,
+    code: 'file_not_found',
+    recovery: 'Create the directory first, or call get_workspace and select an existing '
+      + 'directory below the startup boundary it reports.'
   },
   {
     pattern: /Unable to save|Unable to read|diagram file is busy/i,

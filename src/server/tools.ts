@@ -3,13 +3,12 @@ import { z } from 'zod';
 import { jsonDescription, zodToJsonSchema } from 'zod-to-json-schema';
 import {
   MAX_INPUT_ARRAY_ITEMS,
+  MAX_PNG_SCALE,
   TOOL_INPUT_LIMITS
 } from '../config/index.js';
 import {
   BPMN_ARTIFACT_TYPES,
-  BPMN_FLOW_NODE_TYPES,
-  type SafeJsonObject,
-  type SafeJsonValue
+  BPMN_FLOW_NODE_TYPES
 } from '../types/index.js';
 import { isBpmnId } from '../utils/BpmnId.js';
 
@@ -140,164 +139,6 @@ function firstDuplicate(values: string[]): string | undefined {
   return values.find(value => seen.size === seen.add(value).size);
 }
 
-export const PROPERTY_PAYLOAD_LIMITS = Object.freeze({
-  maxDepth: 8,
-  maxKeys: 128,
-  maxKeyLength: 256,
-  maxStringLength: 8_192,
-  maxArrayLength: MAX_INPUT_ARRAY_ITEMS,
-  maxSerializedBytes: 64 * 1_024
-});
-
-const FORBIDDEN_PROPERTY_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
-
-class PropertyPayloadError extends Error {
-  constructor(
-    message: string,
-    readonly path: Array<string | number> = []
-  ) {
-    super(message);
-  }
-}
-
-/**
- * Validate and detach an untrusted JSON property bag. Records intentionally
- * have no prototype so later property access cannot resolve inherited keys.
- */
-export function copySafeProperties(value: unknown): SafeJsonObject {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new PropertyPayloadError('properties must be a JSON object');
-  }
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    throw new PropertyPayloadError('properties must be a plain JSON object');
-  }
-
-  const state = {
-    keyCount: 0,
-    serializedBytes: 0,
-    seen: new WeakSet<object>()
-  };
-  const copied = copySafeJsonValue(value, 0, [], state);
-  return copied as SafeJsonObject;
-}
-
-function copySafeJsonValue(
-  value: unknown,
-  depth: number,
-  path: Array<string | number>,
-  state: { keyCount: number; serializedBytes: number; seen: WeakSet<object> }
-): SafeJsonValue {
-  if (value === null || typeof value === 'boolean') {
-    addSerializedBytes(JSON.stringify(value), path, state);
-    return value;
-  }
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) {
-      throw new PropertyPayloadError('property numbers must be finite', path);
-    }
-    addSerializedBytes(JSON.stringify(value), path, state);
-    return value;
-  }
-  if (typeof value === 'string') {
-    if (value.length > PROPERTY_PAYLOAD_LIMITS.maxStringLength) {
-      throw new PropertyPayloadError(
-        `property strings may contain at most ${PROPERTY_PAYLOAD_LIMITS.maxStringLength} characters`,
-        path
-      );
-    }
-    addSerializedBytes(JSON.stringify(value), path, state);
-    return value;
-  }
-  if (typeof value !== 'object') {
-    throw new PropertyPayloadError('properties may contain only JSON values', path);
-  }
-  if (depth > PROPERTY_PAYLOAD_LIMITS.maxDepth) {
-    throw new PropertyPayloadError(
-      `property payload may be at most ${PROPERTY_PAYLOAD_LIMITS.maxDepth} levels deep`,
-      path
-    );
-  }
-  if (state.seen.has(value)) {
-    throw new PropertyPayloadError('property payload must not contain circular references', path);
-  }
-  state.seen.add(value);
-
-  if (Array.isArray(value)) {
-    if (value.length > PROPERTY_PAYLOAD_LIMITS.maxArrayLength) {
-      throw new PropertyPayloadError(
-        `property arrays may contain at most ${PROPERTY_PAYLOAD_LIMITS.maxArrayLength} items`,
-        path
-      );
-    }
-    const result: SafeJsonValue[] = [];
-    addSerializedBytes('[', path, state);
-    for (let index = 0; index < value.length; index += 1) {
-      if (!Object.prototype.hasOwnProperty.call(value, index)) {
-        throw new PropertyPayloadError('property arrays must not contain empty slots', [...path, index]);
-      }
-      if (index > 0) addSerializedBytes(',', [...path, index], state);
-      result.push(copySafeJsonValue(value[index], depth + 1, [...path, index], state));
-    }
-    addSerializedBytes(']', path, state);
-    return result;
-  }
-
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    throw new PropertyPayloadError('properties may contain only plain JSON objects', path);
-  }
-
-  const keys = Reflect.ownKeys(value);
-  state.keyCount += keys.length;
-  if (state.keyCount > PROPERTY_PAYLOAD_LIMITS.maxKeys) {
-    throw new PropertyPayloadError(
-      `property payload may contain at most ${PROPERTY_PAYLOAD_LIMITS.maxKeys} keys`,
-      path
-    );
-  }
-
-  const result = Object.create(null) as SafeJsonObject;
-  addSerializedBytes('{', path, state);
-  for (const [index, key] of keys.entries()) {
-    if (typeof key !== 'string') {
-      throw new PropertyPayloadError('property keys must be strings', path);
-    }
-    if (FORBIDDEN_PROPERTY_KEYS.has(key)) {
-      throw new PropertyPayloadError(`forbidden property key "${key}"`, [...path, key]);
-    }
-    if (key.length > PROPERTY_PAYLOAD_LIMITS.maxKeyLength) {
-      throw new PropertyPayloadError(
-        `property keys may contain at most ${PROPERTY_PAYLOAD_LIMITS.maxKeyLength} characters`,
-        [...path, key]
-      );
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
-    if (!descriptor.enumerable || !('value' in descriptor)) {
-      throw new PropertyPayloadError('properties may contain only plain JSON fields', [...path, key]);
-    }
-    if (index > 0) addSerializedBytes(',', [...path, key], state);
-    addSerializedBytes(`${JSON.stringify(key)}:`, [...path, key], state);
-    result[key] = copySafeJsonValue(descriptor.value, depth + 1, [...path, key], state);
-  }
-  addSerializedBytes('}', path, state);
-  return result;
-}
-
-function addSerializedBytes(
-  fragment: string,
-  path: Array<string | number>,
-  state: { serializedBytes: number }
-): void {
-  state.serializedBytes += Buffer.byteLength(fragment, 'utf8');
-  if (state.serializedBytes > PROPERTY_PAYLOAD_LIMITS.maxSerializedBytes) {
-    throw new PropertyPayloadError(
-      `property payload exceeds ${PROPERTY_PAYLOAD_LIMITS.maxSerializedBytes} serialized bytes`,
-      path
-    );
-  }
-}
-
 const position = z.object({
   x: z.number().finite()
     .min(TOOL_INPUT_LIMITS.coordinate.min)
@@ -407,6 +248,11 @@ const activityProperties = z.object({
 }).strict();
 const elementUpdateProperties = z.object({
   isExpanded: z.boolean().optional(),
+  text: annotationText().optional().describe(
+    'Replacement text for a bpmn:TextAnnotation, preserved exactly'
+  ),
+  textFormat: boundedTrimmedString(TOOL_INPUT_LIMITS.language).optional()
+    .describe('Text media type for a bpmn:TextAnnotation; BPMN defaults to text/plain'),
   calledElement: extensionString().optional(),
   assignee: extensionString().nullable().optional(),
   candidateGroups: candidateGroups().nullable().optional(),
@@ -929,7 +775,11 @@ const outputSchemas = {
     filename: outputFilename,
     format: z.literal('png'),
     mimeType: z.literal('image/png'),
-    byteLength: outputCount
+    byteLength: outputCount,
+    width: outputCount,
+    height: outputCount,
+    scale: z.number().finite().positive(),
+    downscaled: z.boolean()
   }).strict(),
   validate: z.object({
     level: z.enum(['syntax', 'semantic', 'full']),
@@ -961,6 +811,8 @@ const outputSchemas = {
   }).strict(),
   auto_layout: z.object({
     algorithm: z.literal('horizontal'),
+    direction: z.enum(['left-to-right', 'top-to-bottom']),
+    changed: z.boolean(),
     elementCount: outputCount,
     connectionCount: outputCount,
     warnings: z.array(outputLayoutWarning),
@@ -1073,6 +925,9 @@ export const toolDefinitions = {
     outputSchema: outputSchemas.save_as,
     schema: z.object({
       filename: filename().describe('New filename for the diagram'),
+      overwrite: z.boolean().default(false).describe(
+        'Replace an existing file with this filename instead of failing'
+      ),
       ...expectedRevisionField
     }).strict()
   },
@@ -1093,6 +948,9 @@ export const toolDefinitions = {
     description: 'Add an event to the current diagram',
     outputSchema: outputSchemas.add_event,
     schema: z.object({
+  documentation: boundedTrimmedString(TOOL_INPUT_LIMITS.annotationText).optional().describe(
+    'Free-text bpmn:documentation for this element, preserved in the BPMN file'
+  ),
       eventType: z.enum([
         'start',
         'end',
@@ -1162,6 +1020,9 @@ export const toolDefinitions = {
     description: 'Add an activity to the current diagram',
     outputSchema: outputSchemas.add_activity,
     schema: z.object({
+  documentation: boundedTrimmedString(TOOL_INPUT_LIMITS.annotationText).optional().describe(
+    'Free-text bpmn:documentation for this element, preserved in the BPMN file'
+  ),
       activityType: z.enum([
         'task',
         'userTask',
@@ -1194,6 +1055,9 @@ export const toolDefinitions = {
     description: 'Add a gateway to the current diagram',
     outputSchema: outputSchemas.add_gateway,
     schema: z.object({
+  documentation: boundedTrimmedString(TOOL_INPUT_LIMITS.annotationText).optional().describe(
+    'Free-text bpmn:documentation for this element, preserved in the BPMN file'
+  ),
       gatewayType: z.enum([
         'exclusive',
         'parallel',
@@ -1255,12 +1119,19 @@ export const toolDefinitions = {
   },
   connect: {
     annotations: ADDITIVE,
-    description: 'Connect two elements in the current diagram',
+    description: 'Connect two elements. Creates a SequenceFlow between flow nodes in the same '
+      + 'process and scope, or a MessageFlow when the endpoints belong to different participants '
+      + 'of a collaboration, including black-box pools. label becomes the flow name; condition and '
+      + 'isDefault apply to sequence flows only.',
     outputSchema: outputSchemas.connect,
     schema: z.object({
       sourceId: bpmnId().describe('ID of the source element'),
       targetId: bpmnId().describe('ID of the target element'),
       label: label().optional().describe('Label for the connection (optional)'),
+  documentation: boundedTrimmedString(TOOL_INPUT_LIMITS.annotationText).optional().describe(
+    'Free-text bpmn:documentation for this element, preserved in the BPMN file'
+  ),
+
       condition: expression().optional().describe(
         'Formal condition expression for a sequence flow; cannot be combined with isDefault'
       ),
@@ -1385,6 +1256,10 @@ export const toolDefinitions = {
     schema: z.object({
       elementId: bpmnId().describe('ID of the element to update'),
       name: name().optional().describe('New name for the element'),
+  documentation: boundedTrimmedString(TOOL_INPUT_LIMITS.annotationText).optional().describe(
+    'Free-text bpmn:documentation for this element, preserved in the BPMN file'
+  ),
+
       properties: elementUpdateProperties.optional().describe(
         'Typed properties to update. isCollection and itemSubjectRef apply only to data object references; null clears itemSubjectRef, assignee, candidateGroups, or dueDate. Unknown and namespace-qualified fields are rejected.'
       ),
@@ -1396,7 +1271,7 @@ export const toolDefinitions = {
   },
   update_connection: {
     annotations: DESTRUCTIVE_UPDATE,
-    description: 'Atomically update a SequenceFlow, MessageFlow, or Association label, condition, default ownership, direction, or endpoints while preserving its ID. Endpoint rewiring requires explicit boundary snapping. Requires a current semantic or document revision.',
+    description: 'Atomically update a SequenceFlow, MessageFlow, or Association label, condition, default ownership, direction, or endpoints while preserving its ID. Labels apply to sequence and message flows only; BPMN associations have no name. Endpoint rewiring requires explicit boundary snapping. Pass expectedSemanticRevision from get_connection, or expectedRevision from any prior result, to make the update conditional on nothing having changed since.',
     outputSchema: outputSchemas.update_connection,
     schema: z.object({
       connectionId: bpmnId().describe('ID of the connection to update'),
@@ -1434,9 +1309,6 @@ export const toolDefinitions = {
         'associationDirection'].some(field => Object.prototype.hasOwnProperty.call(update, field));
       if (!hasMutation) {
         context.addIssue({ code: z.ZodIssueCode.custom, message: 'At least one semantic field must be updated' });
-      }
-      if (!update.expectedRevision && !update.expectedSemanticRevision) {
-        context.addIssue({ code: z.ZodIssueCode.custom, message: 'expectedRevision or expectedSemanticRevision is required' });
       }
       if ((update.sourceId || update.targetId) && update.endpointPolicy !== 'snap-to-boundary') {
         context.addIssue({ code: z.ZodIssueCode.custom, message: 'Endpoint changes require endpointPolicy "snap-to-boundary"' });
@@ -1662,11 +1534,17 @@ export const toolDefinitions = {
   },
   save_png: {
     annotations: DESTRUCTIVE_UPDATE,
-    description: 'Render the current diagram as PNG and save it as a separate file in the managed workspace',
+    description: 'Render the current diagram as PNG and save it as a separate file in the managed workspace. The result reports the pixel width and height, the scale actually used, and whether the requested scale was reduced to stay inside the renderer pixel limits',
     outputSchema: outputSchemas.save_png,
     schema: z.object({
       filename: artifactFilename('png').describe('Managed-store .png filename'),
-      overwrite: z.boolean().default(false).describe('Replace an existing artifact with this filename')
+      overwrite: z.boolean().default(false).describe('Replace an existing artifact with this filename'),
+      scale: z.number().finite().positive().max(MAX_PNG_SCALE).default(1)
+        .describe(
+          'Pixel density multiplier applied to the diagram\'s own size, 1 to '
+          + `${MAX_PNG_SCALE}. Large diagrams are downscaled below the requested `
+          + 'value to stay inside the renderer pixel limits; the result says so'
+        )
     }).strict()
   },
   validate: {
@@ -1710,12 +1588,19 @@ export const toolDefinitions = {
   },
   auto_layout: {
     annotations: DESTRUCTIVE_UPDATE,
-    description: 'Apply deterministic automatic layout. Collaboration processes are ranked independently; requested pool/lane sizes are lower bounds, manual coordinates are replaced, disconnected nodes stay in their owner, and message flows route after non-overlapping pool placement.',
+    description: 'Apply deterministic automatic layout. Collaboration processes are ranked independently; requested pool/lane sizes are lower bounds, manual coordinates are replaced, disconnected nodes stay in their owner, and message flows route after non-overlapping pool placement. A layout that reproduces the current geometry is not committed and returns changed false with the revision unchanged.',
     outputSchema: outputSchemas.auto_layout,
     schema: z.object({
       algorithm: z.enum(['horizontal'])
         .default('horizontal')
         .describe('Layout algorithm to use'),
+      direction: z.enum(['left-to-right', 'top-to-bottom'])
+        .default('left-to-right')
+        .describe(
+          'Reading direction of the result. "top-to-bottom" reflects the ranked '
+          + 'layout across the diagonal, so pools become vertical bands and '
+          + 'flows run downward'
+        ),
       ...expectedRevisionField
     }).strict()
   },
@@ -1747,11 +1632,14 @@ export const toolDefinitions = {
   },
   select_workspace: {
     annotations: IDEMPOTENT_UPDATE,
-    description: 'Select a session-scoped workspace below the immutable startup boundary; closes the active diagram when the workspace changes',
+    description: 'Select a session-scoped workspace below the immutable startup boundary reported by get_workspace; closes the active diagram when the workspace changes. The directory must already exist: this tool never creates one',
     outputSchema: outputSchemas.select_workspace,
     schema: z.object({
       path: boundedTrimmedString({ minLength: 1, maxLength: 4_096 })
-        .describe('Relative descendant path without dot segments or symbolic links')
+        .describe(
+          'Relative descendant path without dot segments or symbolic links, '
+          + 'naming a directory that already exists'
+        )
     }).strict()
   }
 } satisfies Record<string, ToolDefinition>;

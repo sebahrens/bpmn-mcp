@@ -29,10 +29,21 @@ export interface WorkspaceInfo {
   configPath?: string;
 }
 
+export interface WorkspaceSelectionOptions {
+  /**
+   * Create the selected directory tree. Off by default: a path an agent
+   * invented must not litter the repository with empty directories.
+   */
+  create?: boolean;
+}
+
 /**
- * One immutable launch boundary and one mutable, session-scoped workspace.
- * Resolving paths never changes process.cwd(), so package imports remain
- * anchored to the installed executable.
+ * One immutable containment boundary and one mutable, session-scoped workspace
+ * below it. The boundary is the workspace resolved at startup, so a repository
+ * .mcp-bpmn.json or MCP_BPMN_DIAGRAMS_PATH narrows storage for the whole
+ * session rather than merely picking its initial directory. Resolving paths
+ * never changes process.cwd(), so package imports remain anchored to the
+ * installed executable.
  */
 export class WorkspaceSession {
   private currentWorkspace: string;
@@ -62,7 +73,7 @@ export class WorkspaceSession {
       const workspace = canonicalDirectory(override, 'MCP_BPMN_DIAGRAMS_PATH');
       return new WorkspaceSession(
         launchCwd,
-        launchCwd,
+        workspace,
         workspace,
         'environment'
       );
@@ -71,10 +82,12 @@ export class WorkspaceSession {
     const configPath = path.join(launchCwd, WORKSPACE_CONFIG_FILENAME);
     const configuredPath = readRepositoryConfig(configPath);
     if (configuredPath !== undefined) {
-      const workspace = canonicalDescendant(launchCwd, configuredPath);
+      // The configured directory is created once, because an operator wrote it
+      // down; it then becomes the boundary every later selection stays inside.
+      const workspace = canonicalDescendant(launchCwd, configuredPath, { create: true });
       return new WorkspaceSession(
         launchCwd,
-        launchCwd,
+        workspace,
         workspace,
         'repository_config',
         configPath
@@ -103,8 +116,12 @@ export class WorkspaceSession {
     };
   }
 
-  resolveSelection(relativePath: string): string {
-    return canonicalDescendant(this.startupBoundary, relativePath);
+  /**
+   * Resolve one relative path below the startup boundary. The directory must
+   * already exist unless the caller explicitly opts into creating it.
+   */
+  resolveSelection(relativePath: string, options: WorkspaceSelectionOptions = {}): string {
+    return canonicalDescendant(this.startupBoundary, relativePath, options);
   }
 
   activateSelection(workspace: string): {
@@ -192,7 +209,11 @@ function readRepositoryConfig(configPath: string): string | undefined {
   }
 }
 
-function canonicalDescendant(boundary: string, relativePath: string): string {
+function canonicalDescendant(
+  boundary: string,
+  relativePath: string,
+  options: WorkspaceSelectionOptions = {}
+): string {
   if (typeof relativePath !== 'string'
     || relativePath.length === 0
     || relativePath.trim() !== relativePath
@@ -218,6 +239,12 @@ function canonicalDescendant(boundary: string, relativePath: string): string {
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (!options.create) {
+        throw new Error(
+          `Workspace path ${relativePath} does not exist below the startup boundary; `
+          + 'create the directory first, or select an existing one'
+        );
+      }
       try {
         mkdirSync(candidate, { mode: 0o700 });
       } catch (mkdirError) {

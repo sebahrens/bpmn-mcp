@@ -919,7 +919,7 @@ describe('MCP Server End-to-End Tests', () => {
             expect(text).toContain(structured.elementId);
             return;
           case 'auto_layout':
-            expect(text).toContain(structured.algorithm);
+            expect(text).toContain(String(structured.direction));
             expect(text).toContain(String(structured.elementCount));
             expect(text).toContain(String(structured.connectionCount));
             return;
@@ -1626,6 +1626,9 @@ describe('MCP Server End-to-End Tests', () => {
         recovery: expect.stringContaining('new_bpmn')
       });
 
+      // select_workspace no longer creates directory trees (mcp-bpmn-owa.4),
+      // so the target has to exist before it can be selected.
+      await mkdir(path.join(diagramsDirectory, 'selected'), { recursive: true });
       const selectedWorkspace = await call('select_workspace', { path: 'selected' });
       expect(selectedWorkspace.structuredContent).toMatchObject({
         workspace: path.join(diagramsDirectory, 'selected'),
@@ -1697,7 +1700,9 @@ describe('MCP Server End-to-End Tests', () => {
       });
       expect(secondWorkspace).toMatchObject({
         launchCwd: secondRepository,
-        startupBoundary: secondRepository,
+        // The configured workspace is the containment boundary, not the launch
+        // directory that happened to hold the config file (mcp-bpmn-owa.4).
+        startupBoundary: path.join(secondRepository, 'wiki', 'processes', 'assets'),
         workspace: path.join(secondRepository, 'wiki', 'processes', 'assets'),
         source: 'repository_config'
       });
@@ -2022,7 +2027,7 @@ describe('MCP Server End-to-End Tests', () => {
 
       expect(textContent(await callTool(launch, 12, 'auto_layout', {
         algorithm: 'horizontal'
-      }))).toContain('Applied horizontal auto-layout');
+      }))).toContain('Applied left-to-right auto-layout');
 
       const unsupportedLayout = expectProtocolSuccess(await sendRequest(launch, {
         jsonrpc: '2.0',

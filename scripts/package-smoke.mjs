@@ -510,6 +510,25 @@ if (JSON.stringify(shrinkwrapMetadata.packages?.['']?.dependencies)
   throw new Error('npm-shrinkwrap.json root dependencies differ from package.json');
 }
 
+// The repository deliberately keeps two lockfiles with identical bytes:
+// `package-lock.json` is what contributors, `npm ci` and the CI cache key use,
+// and `npm-shrinkwrap.json` is the copy npm packs into the published tarball so
+// an installed release resolves the same tree. Only `npm install` may update
+// them, and it rewrites whichever files are present, so they can silently drift
+// if one is regenerated alone. Compare the bytes rather than a parsed subset:
+// a difference anywhere means the packed lockfile no longer describes the tree
+// that was tested.
+const lockfileBytes = readFileSync(join(projectRoot, 'package-lock.json'));
+const shrinkwrapBytes = readFileSync(join(projectRoot, 'npm-shrinkwrap.json'));
+if (!lockfileBytes.equals(shrinkwrapBytes)) {
+  throw new Error(
+    'package-lock.json and npm-shrinkwrap.json have drifted. Run `npm install` '
+    + 'once in the checkout so npm rewrites both from the same resolution, then '
+    + 'commit them together. Never regenerate one by deleting it and '
+    + 'reinstalling: that drops other platforms\' optional packages.'
+  );
+}
+
 const { toolNames, tools: builtTools } = await import(BUILT_TOOLS_URL);
 const documentedToolNames = [...readme.matchAll(/^#### `([^`]+)`$/gm)]
   .map(([, name]) => name);

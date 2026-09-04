@@ -39,9 +39,12 @@ describe('WorkspaceSession', () => {
 
     const session = WorkspaceSession.fromLaunch(root, {});
 
+    // The configured directory is the containment boundary, not merely the
+    // initial workspace: mcp-bpmn-owa.4 pinned startupBoundary to the launch
+    // cwd, which left repository-narrowed storage unenforced.
     expect(session.getInfo()).toEqual({
       launchCwd: root,
-      startupBoundary: root,
+      startupBoundary: path.join(root, 'wiki', 'processes', 'assets'),
       workspace: path.join(root, 'wiki', 'processes', 'assets'),
       source: 'repository_config',
       configPath: path.join(root, '.mcp-bpmn.json')
@@ -62,7 +65,7 @@ describe('WorkspaceSession', () => {
 
     expect(session.getInfo()).toMatchObject({
       launchCwd: root,
-      startupBoundary: root,
+      startupBoundary: override,
       workspace: override,
       source: 'environment'
     });
@@ -102,8 +105,65 @@ describe('WorkspaceSession', () => {
     }
   });
 
+  it('refuses a selection that does not exist and creates nothing', async () => {
+    const session = WorkspaceSession.fromLaunch(root, {});
+    const handler = new BpmnRequestHandler(
+      new SimpleBpmnEngine(session.path),
+      undefined,
+      undefined,
+      undefined,
+      session
+    );
+
+    try {
+      const rejected = await handler.handleRequest('select_workspace', {
+        path: 'brand/new/dirs'
+      });
+
+      expect(rejected).toMatchObject({ isError: true });
+      expect(rejected.structuredContent).toMatchObject({
+        message: expect.stringContaining('does not exist below the startup boundary')
+      });
+      await expect(fs.readdir(root)).resolves.toEqual([]);
+      expect(session.getInfo()).toMatchObject({ workspace: root, source: 'launch_cwd' });
+    } finally {
+      await handler.shutdown();
+    }
+  });
+
+  it('creates a selected directory tree only when the caller opts in', async () => {
+    const session = WorkspaceSession.fromLaunch(root, {});
+
+    expect(() => session.resolveSelection('brand/new/dirs')).toThrow('does not exist');
+    await expect(fs.readdir(root)).resolves.toEqual([]);
+
+    expect(session.resolveSelection('brand/new/dirs', { create: true }))
+      .toBe(path.join(root, 'brand', 'new', 'dirs'));
+    await expect(fs.stat(path.join(root, 'brand', 'new', 'dirs')))
+      .resolves.toMatchObject({});
+  });
+
+  it('confines selections to the configured repository workspace', async () => {
+    await fs.mkdir(path.join(root, 'src'));
+    await fs.mkdir(path.join(root, 'wiki', 'assets', 'nested'), { recursive: true });
+    await fs.writeFile(
+      path.join(root, '.mcp-bpmn.json'),
+      JSON.stringify({ path: 'wiki/assets' })
+    );
+
+    const session = WorkspaceSession.fromLaunch(root, {});
+
+    expect(session.resolveSelection('nested')).toBe(path.join(root, 'wiki', 'assets', 'nested'));
+    expect(() => session.resolveSelection('src')).toThrow('does not exist');
+    expect(() => session.activateSelection(path.join(root, 'src')))
+      .toThrow('descendant of the startup boundary');
+  });
+
   it('switches only this handler session without changing process cwd', async () => {
     const session = WorkspaceSession.fromLaunch(root, {});
+    // select_workspace no longer creates the directory tree (mcp-bpmn-owa.4),
+    // so the destination exists before the switch.
+    await fs.mkdir(path.join(root, 'wiki', 'processes', 'assets'), { recursive: true });
     const handler = new BpmnRequestHandler(
       new SimpleBpmnEngine(session.path),
       undefined,

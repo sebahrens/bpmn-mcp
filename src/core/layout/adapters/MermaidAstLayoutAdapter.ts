@@ -116,10 +116,6 @@ export class MermaidAstLayoutAdapter {
   }
 }
 
-export function mermaidAstToLayoutModel(ast: MermaidAST): LayoutModel {
-  return MermaidAstLayoutAdapter.toLayoutModel(ast);
-}
-
 export function toLayoutDirection(direction: MermaidAST['direction']): LayoutDirection {
   switch (direction) {
     case 'TD':

@@ -203,6 +203,12 @@ export const config = getConfig();
  * ASCII bytes with a 10-digit PID), so a 200-byte target remains at most 253
  * bytes under the common portable 255-byte component ceiling.
  */
+/**
+ * Largest pixel-density multiplier `save_png` accepts. Declared here so the
+ * tool schema can advertise it without importing the Puppeteer-backed renderer.
+ */
+export const MAX_PNG_SCALE = 4;
+
 export const MAX_INPUT_ARRAY_ITEMS = 256;
 export const TOOL_INPUT_LIMITS = Object.freeze({
   coordinate: Object.freeze({ min: 0, max: 1_000_000 }),

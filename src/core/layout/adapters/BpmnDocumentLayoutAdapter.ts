@@ -267,20 +267,6 @@ export class BpmnDocumentLayoutAdapter {
   }
 }
 
-export function bpmnDocumentToLayoutModel(
-  document: BpmnDocument,
-  direction: LayoutDirection = 'left-to-right'
-): LayoutModel {
-  return BpmnDocumentLayoutAdapter.fromDocument(document, direction);
-}
-
-export function processContextToLayoutModel(
-  context: ProcessContext,
-  direction: LayoutDirection = 'left-to-right'
-): LayoutModel {
-  return BpmnDocumentLayoutAdapter.fromContext(context, direction);
-}
-
 function visualContainerId(
   element: BpmnDocumentElement,
   rootId: string,

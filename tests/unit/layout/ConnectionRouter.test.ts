@@ -166,7 +166,86 @@ describe('ConnectionRouter container awareness', () => {
     expect(best.waypoints[0]).toEqual({ x: 336, y: 240 });
     expect(best.waypoints[best.waypoints.length - 1]).toEqual({ x: 750, y: 470 });
   });
+
+  it('leaves a pool directly instead of crossing its interior to another pool', async () => {
+    const engine = new SimpleBpmnEngine(directory);
+    const collaboration = await engine.createProcess('Message crossing', 'collaboration');
+    const customer = await engine.createElement(collaboration.id, {
+      id: 'Participant_1',
+      type: 'bpmn:Participant',
+      name: 'Customer',
+      position: { x: 80, y: 80 },
+      size: { width: 600, height: 250 }
+    });
+    const supplier = await engine.createElement(collaboration.id, {
+      id: 'Participant_2',
+      type: 'bpmn:Participant',
+      name: 'Supplier',
+      position: { x: 80, y: 410 },
+      size: { width: 900, height: 250 }
+    });
+    if (customer.kind !== 'participant' || supplier.kind !== 'participant') {
+      throw new Error('Expected collaboration participants');
+    }
+    await engine.createElement(collaboration.id, {
+      id: 'SendTask_1',
+      type: 'bpmn:SendTask',
+      name: 'Send',
+      ownerId: customer.processRef,
+      position: { x: 286, y: 160 },
+      size: { width: 100, height: 80 }
+    });
+    await engine.createElement(collaboration.id, {
+      id: 'ReceiveTask_1',
+      type: 'bpmn:ReceiveTask',
+      name: 'Receive',
+      ownerId: supplier.processRef,
+      position: { x: 700, y: 470 },
+      size: { width: 100, height: 80 }
+    });
+    const message = await engine.connect(collaboration.id, 'SendTask_1', 'ReceiveTask_1');
+
+    const [best] = new ConnectionRouter().route(collaboration.document, message.id, {
+      avoidElementIds: [],
+      avoidConnectionIds: [],
+      clearance: 10
+    });
+
+    // The horizontal run between the pools must happen in the gap, not under
+    // the Customer pool's tasks (mcp-bpmn-3g8.14).
+    const customerPool = { x: 80, y: 80, width: 600, height: 250 };
+    const supplierPool = { x: 80, y: 410, width: 900, height: 250 };
+    expect(best.diagnostics).toEqual([]);
+    expect(interiorLength(best.waypoints, customerPool)).toBeLessThanOrEqual(100);
+    expect(interiorLength(best.waypoints, supplierPool)).toBeLessThanOrEqual(100);
+    for (const [index, end] of best.waypoints.slice(1).entries()) {
+      const start = best.waypoints[index];
+      if (start.y !== end.y || Math.abs(end.x - start.x) < 1) continue;
+      expect(start.y).toBeGreaterThan(customerPool.y + customerPool.height);
+      expect(start.y).toBeLessThan(supplierPool.y);
+    }
+  });
 });
+
+/** Route length that runs strictly inside one rectangle, for orthogonal routes. */
+function interiorLength(route: { x: number; y: number }[], bounds: Bounds): number {
+  return route.slice(1).reduce((total, end, index) => {
+    const start = route[index];
+    if (start.x === end.x) {
+      if (start.x <= bounds.x || start.x >= bounds.x + bounds.width) return total;
+      return total + overlap(start.y, end.y, bounds.y, bounds.y + bounds.height);
+    }
+    if (start.y <= bounds.y || start.y >= bounds.y + bounds.height) return total;
+    return total + overlap(start.x, end.x, bounds.x, bounds.x + bounds.width);
+  }, 0);
+}
+
+function overlap(first: number, second: number, low: number, high: number): number {
+  return Math.max(
+    0,
+    Math.min(Math.max(first, second), high) - Math.max(Math.min(first, second), low)
+  );
+}
 
 function withinBounds(point: { x: number; y: number }, bounds: Bounds): boolean {
   return point.x >= bounds.x && point.x <= bounds.x + bounds.width

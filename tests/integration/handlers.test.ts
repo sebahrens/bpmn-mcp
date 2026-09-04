@@ -1296,16 +1296,26 @@ describe('BpmnRequestHandler Integration Tests', () => {
       const associationBefore = (await handler.handleRequest('get_connection', {
         connectionId: associationId
       })).structuredContent as any;
-      const association = await handler.handleRequest('update_connection', {
+      // bpmn:Association has no name attribute, so a label used to be accepted
+      // and reported back before being dropped on save (mcp-bpmn-a3j.15). It is
+      // now refused, and the direction update on its own still applies.
+      const labelled = await handler.handleRequest('update_connection', {
         connectionId: associationId,
         label: 'Supporting data',
+        associationDirection: 'Both',
+        expectedSemanticRevision: associationBefore.semanticRevision
+      });
+      expect(labelled.isError).toBe(true);
+      expect(labelled.content[0].text).toContain('associations have no name');
+
+      const association = await handler.handleRequest('update_connection', {
+        connectionId: associationId,
         associationDirection: 'Both',
         expectedSemanticRevision: associationBefore.semanticRevision
       });
       expect(association.isError).toBeUndefined();
       expect((association.structuredContent as any).after).toMatchObject({
         type: 'bpmn:Association',
-        label: 'Supporting data',
         associationDirection: 'Both'
       });
 
@@ -1690,13 +1700,27 @@ describe('BpmnRequestHandler Integration Tests', () => {
     });
 
     it('should handle invalid element IDs', async () => {
-      const result = await handler.handleRequest('connect', {
+      // The message names which end is wrong and the id it was given
+      // (mcp-bpmn-8u0.6), so the caller does not have to bisect.
+      const both = await handler.handleRequest('connect', {
         sourceId: 'invalid-source',
         targetId: 'invalid-target'
       });
+      expect(both.isError).toBe(true);
+      expect(both.content[0].text).toContain('Source element "invalid-source" not found');
+      expect(both.structuredContent).toMatchObject({ code: 'element_not_found' });
 
-      expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain('Error: Source or target element not found');
+      const created = await handler.handleRequest('add_activity', {
+        activityType: 'task',
+        name: 'Real source'
+      });
+      const sourceId = (created.structuredContent as { elementId: string }).elementId;
+      const targetOnly = await handler.handleRequest('connect', {
+        sourceId,
+        targetId: 'invalid-target'
+      });
+      expect(targetOnly.isError).toBe(true);
+      expect(targetOnly.content[0].text).toContain('Target element "invalid-target" not found');
     });
 
     it('should add, list, get, and independently delete an association', async () => {
@@ -1776,7 +1800,9 @@ describe('BpmnRequestHandler Integration Tests', () => {
       const result = await handler.handleRequest('auto_layout', {});
 
       expect(result.isError).toBeUndefined();
-      expect(result.content[0].text).toContain('Applied horizontal auto-layout');
+      // The message names the reading direction; algorithm stays 'horizontal'
+      // as the only ranking the layout engine offers (mcp-bpmn-9sv.15).
+      expect(result.content[0].text).toContain('Applied left-to-right auto-layout');
       expect(result.content[0].text).toContain('3 elements');
       expect(diagramContext.getCurrent().xml).not.toBe(xmlBefore);
       const parsed = await new BpmnModdle().fromXML(diagramContext.getCurrent().xml!);
@@ -3250,6 +3276,143 @@ describe('BpmnRequestHandler Integration Tests', () => {
       expect(built.isError).toBe(true);
       expect(built.structuredContent).toMatchObject({ code: 'invalid_arguments' });
       expect(diagramContext.getCurrent().elements.size).toBe(0);
+    });
+  });
+
+  describe('documentation, annotation text, and save_as overwrite', () => {
+    const xmlOf = async (): Promise<string> => {
+      const exported = await handler.handleRequest('export', { format: 'xml' });
+      return exported.content[0].text as string;
+    };
+
+    it('carries bpmn:documentation from creation through export and reopen', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Documented', filename: 'documented.bpmn' });
+      const task = (await handler.handleRequest('add_activity', {
+        activityType: 'userTask',
+        name: 'Review claim',
+        documentation: 'Assessor checks the claim against policy limits.'
+      })).structuredContent as { elementId: string };
+      const start = (await handler.handleRequest('add_event', {
+        eventType: 'start',
+        name: 'Claim filed',
+        documentation: 'Raised by the customer portal.'
+      })).structuredContent as { elementId: string };
+      await handler.handleRequest('connect', {
+        sourceId: start.elementId,
+        targetId: task.elementId,
+        documentation: 'Straight through, no triage.'
+      });
+
+      const xml = await xmlOf();
+      expect(xml).toContain('<bpmn:documentation>Assessor checks the claim');
+      expect(xml).toContain('<bpmn:documentation>Raised by the customer portal.');
+      expect(xml).toContain('<bpmn:documentation>Straight through, no triage.');
+
+      await handler.handleRequest('close', {});
+      await handler.handleRequest('open_bpmn', { filename: 'documented.bpmn' });
+      const reopened = await handler.handleRequest('get_element', { elementId: task.elementId });
+      expect((reopened.structuredContent as any).properties.documentation)
+        .toBe('Assessor checks the claim against policy limits.');
+    });
+
+    it('edits documentation with update_element', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Edit docs' });
+      const task = (await handler.handleRequest('add_activity', {
+        activityType: 'task',
+        name: 'Step',
+        documentation: 'First wording.'
+      })).structuredContent as { elementId: string };
+
+      await handler.handleRequest('update_element', {
+        elementId: task.elementId,
+        documentation: 'Corrected wording.'
+      });
+
+      const xml = await xmlOf();
+      expect(xml).toContain('<bpmn:documentation>Corrected wording.');
+      expect(xml).not.toContain('First wording.');
+    });
+
+    it('edits the text of an existing annotation instead of forcing delete and recreate', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Annotation edit' });
+      const annotation = (await handler.handleRequest('add_text_annotation', {
+        text: 'Needs sign-off'
+      })).structuredContent as { annotationId: string };
+
+      const updated = await handler.handleRequest('update_element', {
+        elementId: annotation.annotationId,
+        properties: { text: 'Needs two sign-offs' }
+      });
+
+      expect(updated.isError).toBeUndefined();
+      const xml = await xmlOf();
+      expect(xml).toContain('Needs two sign-offs');
+      expect(xml).not.toContain('Needs sign-off<');
+    });
+
+    it('replaces an existing file only when save_as asks for it', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'First', filename: 'target.bpmn' });
+      await handler.handleRequest('close', {});
+      await handler.handleRequest('new_bpmn', { name: 'Second' });
+
+      const refused = await handler.handleRequest('save_as', { filename: 'target.bpmn' });
+      expect(refused.isError).toBe(true);
+      expect(refused.content[0].text).toContain('already exists');
+
+      const replaced = await handler.handleRequest('save_as', {
+        filename: 'target.bpmn',
+        overwrite: true
+      });
+      expect(replaced.isError).toBeUndefined();
+      expect(replaced.structuredContent).toMatchObject({ filename: 'target.bpmn' });
+
+      await handler.handleRequest('close', {});
+      const reopened = await handler.handleRequest('open_bpmn', { filename: 'target.bpmn' });
+      expect((reopened.structuredContent as any).name).toBe('Second');
+    });
+
+    it('updates a connection label without first fetching its revision', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'No revision' });
+      const start = (await handler.handleRequest('add_event', { eventType: 'start' }))
+        .structuredContent as { elementId: string };
+      const task = (await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Work'
+      })).structuredContent as { elementId: string };
+      const flow = (await handler.handleRequest('connect', {
+        sourceId: start.elementId,
+        targetId: task.elementId
+      })).structuredContent as { connectionId: string };
+
+      // One call, no get_connection round trip first (mcp-bpmn-8u0.7).
+      const updated = await handler.handleRequest('update_connection', {
+        connectionId: flow.connectionId,
+        label: 'Approved'
+      });
+
+      expect(updated.isError).toBeUndefined();
+      expect(await xmlOf()).toContain('name="Approved"');
+    });
+
+    it('still rejects a stale revision when one is supplied', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Stale revision' });
+      const start = (await handler.handleRequest('add_event', { eventType: 'start' }))
+        .structuredContent as { elementId: string };
+      const task = (await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Work'
+      })).structuredContent as { elementId: string };
+      const flow = (await handler.handleRequest('connect', {
+        sourceId: start.elementId,
+        targetId: task.elementId
+      })).structuredContent as { connectionId: string };
+
+      const stale = await handler.handleRequest('update_connection', {
+        connectionId: flow.connectionId,
+        label: 'Approved',
+        expectedRevision: `sha256:${'a'.repeat(64)}:v1`
+      });
+
+      expect(stale.isError).toBe(true);
+      expect(stale.structuredContent).toMatchObject({ code: 'revision_conflict' });
     });
   });
 });

@@ -60,14 +60,20 @@ Do not imply runtime-engine compatibility from successful parsing or export. Ask
 
 Use Mermaid only when its compact syntax reduces work without losing requested BPMN meaning.
 
-Supported input is a `graph` or `flowchart` (or recognizable declaration-less flowchart) with direction `TD`, `TB`, `LR`, `RL`, or `BT`. It supports:
+Supported input is a `graph` or `flowchart` (or recognizable declaration-less flowchart) with direction `TD`, `TB`, `LR`, `RL`, or `BT`. `TD`, `TB` and `BT` are laid out top to bottom, `LR` and `RL` left to right. BPMN has no reversed reading order, so `BT` and `RL` are laid out forwards and report that in the conversion warnings. It supports:
 
 - word-like node IDs;
-- ordinary task nodes, exclusive decisions, subprocess-shaped nodes, data-object nodes, and terminator-shaped event nodes;
-- `-->` and `-.->` edges with optional labels; dotted styling is not retained;
-- one level of non-nested subgraphs.
+- these node shapes only: `A[Task]`, `A{Decision}`, `A[/Subprocess/]`, `A[[Data object]]`, and `A((Event))`. Every other Mermaid shape — `A(Rounded)`, `A([Stadium])`, `A[(Database)]`, `A{{Hexagon}}`, `A[/Trapezoid\]`, `A[\Alt/]`, `A[\Alt\]`, `A(((Double circle)))`, `A>Asymmetric]` — is rejected with `UNSUPPORTED_SHAPE` naming the supported replacement, never silently approximated;
+- quoted labels (`A["Review (draft)"]`, `subgraph cust ["Customer Side"]`). Quotes are delimiters and are removed; anything inside them, including `]`, `|`, `&`, `-->` and markdown backticks, is kept as the name, and `#quot;`/`#35;` entity codes are decoded;
+- edges `-->`, `--->`, `---`, `==>`, `===`, `-.->` and `-.-`, each with an optional label written either inline (`A -- yes --> B`, `A -. retry .-> B`, `A == ship ==> B`) or between pipes (`A -->|yes| B`), but not both on one edge. Arrowless (`---`) and thick (`==>`) links convert to ordinary directed sequence flows and warn that the styling is dropped, as dotted edges already do. `~~~`, `<-->`, `--o` and `--x` are rejected with `UNSUPPORTED_CONNECTOR`;
+- `&` endpoint lists (`A --> B & C`, `A & B --> C`), expanded to the cartesian product of both sides;
+- one level of non-nested subgraphs, declared as `subgraph id[Title]`, `subgraph id["Title"]`, `subgraph "Title"` or `subgraph Title`. A title without an explicit ID gets a unique ID derived from it.
 
 Start/end labels and endpoint position can infer start and end events. Other terminator nodes become intermediate throw events. Without subgraphs the result is a process. With subgraphs, each subgraph becomes a white-box pool, every node must belong to one subgraph, internal edges become sequence flows, and cross-subgraph edges become message flows.
+
+Mermaid draws several arrows out of a node to mean a choice; BPMN reads them as a parallel (AND) split in which every branch runs. The conversion follows the diagram, and a non-decision node with two or more outgoing sequence flows raises `IMPLICIT_PARALLEL_SPLIT` at that node. Treat it as a question for the user: an exclusive choice must be written as a decision node (`A{...}`), or modeled with the typed gateway tools.
+
+`auto_layout` takes the same two reading directions through its `direction` argument (`left-to-right`, the default, or `top-to-bottom`), and a layout that reproduces the geometry already on the diagram is not committed at all: it returns `changed: false` and leaves the revision alone. It still has no spacing, subset, or pinned-element controls, so every coordinate is replaced each time it does commit.
 
 Use typed tools instead when the request needs activity subtypes, non-exclusive gateways, event definitions, boundary attachment, conditions/default flows, lanes, black-box pools, annotations/associations, multi-instance settings, or Camunda 7 user-task fields. Mermaid directives, CSS classes, and edge styles can be ignored with warnings; nested subgraphs and unsupported diagram syntax fail. A data-object node cannot be a sequence/message-flow endpoint.
 

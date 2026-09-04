@@ -38,11 +38,32 @@ with an opt-in typed Camunda 7 profile documented in
   `save_png`; the normal Puppeteer install downloads a compatible browser
 
 XML authoring, validation, layout, persistence, and XML export do not launch a
-browser. SVG export and managed SVG/PNG artifact rendering do. If the Puppeteer
-browser download is intentionally skipped, set `PUPPETEER_EXECUTABLE_PATH` to a
-compatible Chrome or Chromium executable before starting the server. Rendering
-is headless, limited to one concurrent render per server instance, and has a
+browser. SVG export and managed SVG/PNG artifact rendering do. Rendering is
+headless, limited to one concurrent render per server instance, and has a
 twenty-second timeout.
+
+### Browser download
+
+`npm ci` in this checkout runs Puppeteer's install step, which downloads Chrome
+for Testing and the headless shell into a shared, machine-wide cache at
+`~/.cache/puppeteer`. That download needs network access and about **650 MB** of
+disk (measured on Linux with `puppeteer@25.8.0`: 391 MB for `chrome`, 261 MB for
+`chrome-headless-shell`). The cache is shared across projects, so a machine that
+already has it pays nothing extra.
+
+To skip it, install with `PUPPETEER_SKIP_DOWNLOAD=1`. Everything except SVG/PNG
+rendering then works unchanged; those three calls fail until you point the
+server at an existing browser:
+
+```bash
+export PUPPETEER_EXECUTABLE_PATH="/usr/bin/google-chrome"
+```
+
+`make install` never downloads a browser: the installer runs its private
+`npm install` with `PUPPETEER_SKIP_DOWNLOAD=true`, so the installed server
+renders only if this checkout's `npm ci` already filled the shared cache, a
+system Chrome/Chromium is on `PATH`, or `PUPPETEER_EXECUTABLE_PATH` is set.
+`make doctor` reports which of those applies as `SVG browser readiness`.
 
 Chrome refuses to start as root, and container, devcontainer, CI, and cloud
 sandbox images commonly run the server as uid 0. The server therefore launches
@@ -191,9 +212,10 @@ and approval policies.
 | Context creation/import | `new_bpmn`, `new_from_mermaid`, `open_bpmn`, `open_mermaid_file` | Process or collaboration roots; documented Mermaid subset; imports must fit the server's canonical model |
 | Context lifecycle | `save`, `save_as`, `close`, `current` | One active diagram and filename; local atomic persistence |
 | Authoring | `add_event`, `add_activity`, `add_gateway`, `add_data_object`, `add_text_annotation`, `add_pool`, `add_lane` | The explicit schema enums and typed properties below, not arbitrary BPMN elements or extension attributes |
-| Relationships | `connect`, `add_association` | Direct `connect` authors sequence flows; Mermaid subgraphs can also produce message flows; associations are artifact relationships |
+| Relationships | `connect`, `add_association` | `connect` authors a sequence flow within one process, or a message flow across participants of a collaboration; associations are artifact relationships |
 | Query/mutation | `list_elements`, `get_element`, `list_connections`, `get_connection`, `update_element`, `update_connection`, `update_element_geometry`, `update_connection_geometry`, `apply_geometry_patch`, `route_connection`, `delete_element` | Paginated queries, typed semantic updates, guarded BPMNShape/BPMNEdge geometry updates, and proposal-first local rerouting |
-| Export/quality | `export`, `save_svg`, `save_png`, `validate`, `analyze_geometry`, `auto_layout` | XML or browser-backed SVG export; managed SVG/PNG artifact persistence; structural and geometry diagnostics; horizontal layout only |
+| Bulk authoring | `build_process` | Many nodes and the flows between them in one atomic call, using caller-chosen `ref` names; the same per-element validation applies |
+| Export/quality | `export`, `save_svg`, `save_png`, `validate`, `analyze_geometry`, `auto_layout` | XML or browser-backed SVG export; managed SVG/PNG artifact persistence; structural and geometry diagnostics; left-to-right or top-to-bottom layout |
 | Workspace and stored files | `get_workspace`, `select_workspace`, `list_diagrams`, `delete_diagram_file`, `get_diagrams_path` | Per-session repository discovery and sandboxed access inside the selected workspace; rendered artifacts remain separate from managed BPMN listings; `get_diagrams_path` is a compatibility alias |
 
 ### Creation Tools
@@ -204,9 +226,14 @@ Create a new BPMN process or collaboration diagram and set it as the current con
 ```javascript
 {
   name: "Order Processing",
+  filename: "order-processing.bpmn", // optional; see Diagram filenames
   type: "process" // or "collaboration" (optional, defaults to "process")
 }
 ```
+
+Omitting `filename` is safe: the server generates a placeholder name for
+autosave and `save_as` removes it when you pick a real one. See
+[Diagram filenames](#diagram-filenames).
 
 #### `new_from_mermaid`
 Create a new BPMN diagram from Mermaid code and set it as the current context.
@@ -214,6 +241,7 @@ Create a new BPMN diagram from Mermaid code and set it as the current context.
 ```javascript
 {
   name: "My Process",
+  filename: "my-process.bpmn", // optional; see Diagram filenames
   mermaidCode: "graph TD\n  A[Start] --> B[Task] --> C[End]"
 }
 ```
@@ -253,7 +281,8 @@ Open and convert a Mermaid file to BPMN, setting it as the current context.
 
 ```javascript
 {
-  filename: "my-flowchart.mmd"
+  filename: "my-flowchart.mmd",
+  bpmnFilename: "my-flowchart.bpmn" // optional; names the converted diagram
 }
 ```
 
@@ -268,8 +297,12 @@ file.
 
 #### `save_as`
 Atomically save the current diagram with a new filename and make that filename
-active. Later mutations update only the new file; the previous file remains an
-unchanged snapshot.
+active. Later mutations update only the new file.
+
+If the previous filename was a server-generated placeholder, it is deleted so
+the diagram does not exist twice; the result reports `previousFilename` and
+`removedPreviousFile`. A filename you chose yourself is kept as an unchanged
+snapshot. See [Diagram filenames](#diagram-filenames).
 
 ```javascript
 {
@@ -431,7 +464,10 @@ the annotation to that element.
 ```
 
 #### `connect`
-Connect two elements with a sequence flow in the current diagram.
+Connect two elements in the current diagram. Endpoints in the same process and
+scope get a sequence flow; endpoints belonging to different participants of a
+collaboration, black-box pools included, get a message flow. The connection type
+follows from the endpoints, so there is no type argument.
 
 ```javascript
 {
@@ -446,7 +482,9 @@ Connect two elements with a sequence flow in the current diagram.
 ```
 
 Conditions and defaults are supported for activities and exclusive, inclusive,
-or complex gateways. A default flow cannot also have a condition.
+or complex gateways. A default flow cannot also have a condition, and neither
+applies to a message flow. The result reports the `connectionType` that was
+created, so a caller can confirm which kind it got.
 
 #### `add_association`
 Add a BPMN association artifact between two BaseElements in a compatible
@@ -752,11 +790,17 @@ files are preserved unless `overwrite` is explicitly true.
 ```javascript
 {
   filename: "order-review.png",
-  overwrite: false // optional; defaults to false
+  overwrite: false, // optional; defaults to false
+  scale: 1 // optional pixel density, 1 to 4; defaults to 1
 }
 ```
 
-PNG is rasterized from the same sanitized SVG that `save_svg` writes.
+PNG is rasterized from the same sanitized SVG that `save_svg` writes. `scale`
+becomes the browser's device pixel ratio, so text and strokes are resampled
+rather than stretched. The result reports `width`, `height`, `scale`, and
+`downscaled`; a diagram whose raster would exceed 4,096 px on a side or
+16 million pixels is reduced below the requested scale and says so instead of
+shrinking silently.
 
 Both tools render from the active BPMN snapshot without changing its XML,
 revision, or active `.bpmn` filename. Rendered output is capped at 5 MiB by
@@ -799,9 +843,20 @@ Apply automatic layout to position elements in the current diagram.
 
 ```javascript
 {
-  algorithm: "horizontal" // currently only horizontal is supported
+  algorithm: "horizontal", // currently only horizontal is supported
+  direction: "left-to-right" // or "top-to-bottom"
 }
 ```
+
+`direction` chooses the reading direction. `top-to-bottom` reflects the ranked
+layout across the diagonal: flows run downward, pools become vertical bands,
+and edge endpoints are re-docked onto the borders they now face. There are no
+spacing, subset, or pinned-element controls yet, so every coordinate the layout
+touches is replaced.
+
+A layout that reproduces the geometry the diagram already has is not committed.
+The call returns `changed: false`, leaves the revision alone, and does not
+rewrite the file, so running `auto_layout` twice is free the second time.
 
 Layout runs in a killable subprocess with a default five-second budget. A
 benchmark-derived preflight accepts at most 2,000 elements, 2,000 connections,
@@ -1013,30 +1068,75 @@ do not propagate the intended repository cwd:
 export MCP_BPMN_DIAGRAMS_PATH=/custom/path
 ```
 
-Resource limits can be tuned with `MCP_BPMN_MAX_IMPORT_BYTES`,
-`MCP_BPMN_MAX_MERMAID_BYTES`, `MCP_BPMN_MAX_LAYOUT_ELEMENTS`,
-`MCP_BPMN_MAX_LAYOUT_CONNECTIONS`, `MCP_BPMN_MAX_LAYOUT_DENSITY`,
-`MCP_BPMN_MAX_LAYOUT_BYTES`, `MCP_BPMN_MAX_CONCURRENT_LAYOUTS`,
-`MCP_BPMN_MAX_LISTING_ITEMS`, `MCP_BPMN_MAX_LISTING_METADATA_BYTES`, and
-`MCP_BPMN_LAYOUT_TIMEOUT_MS`. The graceful shutdown deadline can be overridden
-with `MCP_BPMN_SHUTDOWN_TIMEOUT_MS`, and the Chrome command line used for SVG and
-PNG rendering with `MCP_BPMN_BROWSER_ARGS`. Defaults are 5 MiB per imported/layout input and
-per listing metadata page, 2,000 layout elements/connections, density 10, two concurrent layout
-subprocesses, 10,000 listing candidates, and 5,000 ms. The layout defaults
-come from local sparse/dense benchmarks: 2,000/1,999 completed in about 1.4s,
-25/300 took about 4.8s, and 26/325 exceeded five seconds.
+`src/config/index.ts` defines every other supported variable. This is the
+complete set the **server** reads at runtime (`MCP_BPMN_LAYOUT_CANDIDATES`,
+listed under [Development](#-development), is a test-suite flag and has no
+effect on the server):
+
+| Variable | Effect | Default |
+| --- | --- | --- |
+| `MCP_BPMN_DIAGRAMS_PATH` | Absolute workspace override; must have no dot segments | launch cwd |
+| `MCP_BPMN_MAX_IMPORT_BYTES` | Largest accepted BPMN import | 5 MiB |
+| `MCP_BPMN_MAX_IMPORT_ELEMENTS` | Elements accepted per import | 10,000 |
+| `MCP_BPMN_MAX_IMPORT_FLOWS` | Flows accepted per import | 20,000 |
+| `MCP_BPMN_MAX_IMPORT_DI_ELEMENTS` | DI elements accepted per import | 30,000 |
+| `MCP_BPMN_MAX_MERMAID_BYTES` | Largest accepted Mermaid input | 5 MiB |
+| `MCP_BPMN_MAX_ARTIFACT_BYTES` | Largest rendered SVG/PNG written by `save_svg`/`save_png` | 5 MiB |
+| `MCP_BPMN_MAX_LAYOUT_ELEMENTS` | Elements accepted per layout | 2,000 |
+| `MCP_BPMN_MAX_LAYOUT_CONNECTIONS` | Connections accepted per layout | 2,000 |
+| `MCP_BPMN_MAX_LAYOUT_DENSITY` | Connections per element accepted per layout | 10 |
+| `MCP_BPMN_MAX_LAYOUT_BYTES` | Largest XML handed to the layout subprocess | 5 MiB |
+| `MCP_BPMN_MAX_CONCURRENT_LAYOUTS` | Simultaneous layout subprocesses | 2 |
+| `MCP_BPMN_MAX_LISTING_ITEMS` | Directory entries scanned by `list_diagrams` | 10,000 |
+| `MCP_BPMN_MAX_LISTING_METADATA_BYTES` | Total diagram bytes read for listing metadata | 5 MiB |
+| `MCP_BPMN_LAYOUT_TIMEOUT_MS` | Layout subprocess deadline | 5,000 ms |
+| `MCP_BPMN_SHUTDOWN_TIMEOUT_MS` | Graceful shutdown deadline | 15,000 ms |
+| `MCP_BPMN_BROWSER_ARGS` | Space-separated list that replaces the Chrome command line used for SVG/PNG rendering | `--no-sandbox --disable-setuid-sandbox` under uid 0, otherwise none |
+
+A numeric variable that is not a positive number — a typo, `0`, or a negative
+value — is ignored and the default applies, so a malformed override can never
+disable a limit. Read the defaults from
+`src/config/index.ts` rather than pinning them in deployment documentation. The
+layout defaults come from local sparse/dense benchmarks recorded in that file:
+2,000/1,999 completed in about 1.4s, 25/300 took about 4.8s, and 26/325 exceeded
+five seconds.
 
 On SIGINT, SIGTERM, or stdin EOF, the server stops accepting tool calls and
 allows accepted operations and their atomic persistence to finish before it
 closes renderer/layout subprocesses and the stdio transport. Graceful shutdown
 has a hard 15-second deadline; exceeding it forces a nonzero exit.
 
-New diagrams start with the filename `{ProcessId}_{ProcessName}.bpmn`. Each
-diagram has exactly one active filename: opening adopts the opened filename and
-`save_as` switches it after the new file is written successfully. Add, update,
-delete, connect, and layout operations serialize and atomically autosave the
-active file; failed serialization or writes leave both memory and disk at the
-last successful state.
+### Diagram filenames
+
+Each diagram has exactly one active filename, and every successful mutation
+serializes and atomically autosaves to it. A failed serialization or write
+leaves both memory and disk at the last successful state.
+
+`new_bpmn`, `new_from_mermaid`, and `open_mermaid_file` all accept an optional
+filename (`filename`, or `bpmnFilename` on `open_mermaid_file`). Pass one and
+that name is the active filename from the first autosave; a name with no
+extension gets `.bpmn` appended.
+
+Omit it and the server generates a **placeholder** name instead, so that
+autosave has somewhere to write before you have chosen a name. The placeholder
+is not meant to be read by a human:
+
+```text
+mcp-bpmn-v1_<base64url of ["<processId>","<name>","<uuid>"]>.bpmn
+```
+
+Encoding the metadata is what lets `list_diagrams` report the exact process ID
+and name without opening the file. If that encoded name would exceed 200 bytes,
+the server falls back to `{processId}_{sanitizedName}_{uuid}.bpmn`; the 200-byte
+ceiling leaves room for the atomic-write suffix inside one 255-byte filesystem
+component.
+
+`save_as` adopts the name you give it and **deletes the placeholder** it
+replaces, so a diagram that started unnamed does not leave an orphan duplicate
+behind. Its result reports `previousFilename` and `removedPreviousFile`. A
+filename you chose yourself is never deleted on your behalf: calling `save_as`
+on a named diagram leaves the previous file in place as an unchanged snapshot.
+Opening a file adopts that file's name, which is likewise never a placeholder.
 
 ## 🏗️ Architecture
 
@@ -1047,29 +1147,38 @@ last successful state.
 - **Jest** - Testing framework
 
 ### Key Components
-- `SimpleBpmnEngine` - Canonical BPMN document mutation, persistence, and XML export
-- `BpmnSvgRenderer` - Isolated, browser-backed `bpmn-js` SVG rendering
-- `DiagramContext` - Stateful context management for current diagram
-- `BpmnAutoLayoutV2Adapter` - BPMN auto-layout integration
-- `BpmnRequestHandler` - MCP request processing
-- `MermaidConverter` - Mermaid to BPMN conversion
-- `TypeMappings` - BPMN element type conversions
-- `IdGenerator` - Consistent ID generation
+- `SimpleBpmnEngine` (`src/core/`) - Canonical BPMN document mutation, persistence, and XML export
+- `BpmnDocument` (`src/core/`) - Typed, moddle-backed model and XML serialization
+- `BpmnValidator` (`src/core/`) - Syntax, semantic, and full validation levels
+- `BpmnSvgRenderer` (`src/core/`) - Isolated, browser-backed `bpmn-js` SVG rendering
+- `DiagramContext` (`src/core/`) - Stateful context management for current diagram
+- `BpmnAutoLayoutV2Adapter` (`src/core/layout/`) - The one layout path; runs `bpmn-auto-layout` in a bounded subprocess
+- `BpmnRequestHandler` (`src/server/`) - MCP request validation and dispatch
+- `MermaidConverter` / `MermaidParser` (`src/converters/`) - Mermaid to BPMN conversion
+- `WorkspaceSession` (`src/config/`) - Launch cwd, startup boundary, and workspace selection
+- `FileManager` / `SafeFileStore` (`src/utils/`) - Bounded, atomic, root-pinned file operations
 
 ### Project Structure
 
 ```
 mcp-bpmn/
 ├── src/
-│   ├── core/           # Core BPMN engine
-│   ├── server/         # MCP server implementation
-│   ├── utils/          # Utilities (layout, ID generation)
+│   ├── core/           # BPMN engine, document model, validator, renderer
+│   │   └── layout/     # Layout model, adapters, connection routing
+│   ├── converters/     # Mermaid parsing and conversion
+│   ├── server/         # MCP server, tool schemas, request handlers
+│   ├── utils/          # IDs, type mappings, safe file access
 │   ├── types/          # TypeScript type definitions
-│   └── config/         # Configuration
+│   └── config/         # Configuration and workspace resolution
 ├── tests/
-│   ├── unit/          # Unit tests
-│   ├── integration/   # Integration tests
-│   └── e2e/           # End-to-end tests
+│   ├── unit/          # Component tests grouped by source area
+│   ├── integration/   # Cross-component behavior
+│   ├── contracts/     # Engine and tool-annotation contracts
+│   ├── security/      # Adversarial boundary and resource tests
+│   ├── e2e/           # Built MCP server protocol tests
+│   ├── fixtures/      # BPMN, Mermaid, dialect, and layout inputs
+│   ├── helpers/       # Shared test helpers
+│   └── mocks/         # Jest/runtime mocks
 ├── dist/              # Compiled output
 └── docs/              # Documentation
 ```
@@ -1083,23 +1192,40 @@ npm run build        # Build TypeScript
 npm run build:bundle # Build CommonJS bundle
 npm run build:watch  # Build with watch mode
 npm run check        # Complete clean contributor/CI quality gate
-npm test            # Run source-level tests (no build output required)
-npm run test:all    # Clean, build, and run every test including e2e
-npm run test:unit   # Run unit tests only
-npm run test:integration # Run integration tests only
-npm run test:e2e    # Run end-to-end tests
-npm run lint        # Run ESLint
-npm run dev         # Development mode with hot reload
-npm start           # Start the MCP server
+npm test             # Source-level tests, then the renderer suite
+npm run test:all     # Clean, build, and run every suite including e2e and the loop tests
+npm run test:unit    # Unit tests only
+npm run test:integration # Integration tests, then the renderer suite
+npm run test:e2e     # Clean, build, and run the compiled MCP server tests
+npm run test:package # Pack, install, and initialize the published entry points
+npm run lint         # Run ESLint
+npm run dev          # Development mode with hot reload
+npm start            # Start the MCP server
 ```
+
+Two suites are excluded from the everyday loop and run only when asked for, or
+as part of `npm run test:all`:
+
+```bash
+npm run test:layout-candidates # Compare the shipped layout against the dev-only alternatives
+npm run test:ralph             # Integration tests for ralph-loop/loop.sh
+```
+
+`npm test` still exercises the shipped layout path across the whole fixture
+corpus; only the third-party comparison candidates, which cost roughly 54 extra
+Node subprocesses, are gated behind `test:layout-candidates`.
 
 ### Testing
 
-The project includes comprehensive test coverage. Source-level commands do not
-read `dist/`, so an old build cannot affect their result:
-- **Unit Tests**: Core functionality testing
-- **Integration Tests**: Handler and tool testing
-- **E2E Tests**: Full MCP protocol testing
+Source-level commands do not read `dist/`, so an old build cannot affect their
+result. The suites are:
+
+- **Unit** (`tests/unit/`) - component tests grouped by source area
+- **Integration** (`tests/integration/`) - cross-component behavior
+- **Contracts** (`tests/contracts/`) - the engine and tool-annotation contracts
+- **Security** (`tests/security/`) - adversarial boundary and resource tests
+- **E2E** (`tests/e2e/`) - the built MCP server over the protocol
+- **Renderer** (`npm run test:renderer`) - real Puppeteer/Chrome rendering
 
 Run tests with:
 ```bash
@@ -1112,19 +1238,25 @@ npm run test:watch          # Source-level tests in watch mode
 
 ## 📈 Performance
 
-The canonical release artifact was measured on 2026-08-22 with Node 25.9.0 and
-npm 11.12.1 using:
+The canonical release artifact was last measured on 2026-09-04 with Node 22.22.2
+and npm 10.9.7 using:
 
 ```bash
 npm pack --dry-run --json
 ```
 
-That command reported approximately `195 kB` compressed and `1104270` unpacked bytes.
-These figures describe the npm tarball,
-not an installed server: the tarball bundles no production dependencies, while
-installation resolves the nine direct runtime dependencies in `package.json`
-and their transitive dependencies. Puppeteer's managed Chrome download is also
-outside the tarball measurement. Re-run the command for the current artifact
+That command reported approximately **358 kB** compressed, **2,079,332** unpacked
+bytes, and **141** files. Most of the unpacked size is not executable code:
+`.js` accounts for about 689 kB, TypeScript declarations for about 327 kB, and
+source maps (`.js.map` plus `.d.ts.map`) for about 684 kB together, all emitted
+because `tsconfig.json` compiles the whole of `src/**/*`.
+
+These figures describe the npm tarball, not an installed server: the tarball
+bundles no production dependencies, while installation resolves the nine direct
+runtime dependencies in `package.json` and their transitive dependencies.
+Puppeteer's managed browser download (see [Browser
+download](#browser-download)) is also outside the tarball measurement, and it is
+far larger than the tarball itself. Re-run the command for the current artifact
 instead of treating this dated snapshot as a permanent size guarantee.
 
 The optional CommonJS bundle is not the release artifact and has no size claim.
@@ -1136,12 +1268,14 @@ defaults are documented under [File Storage](#-file-storage).
 - The authoring API is a focused BPMN 2.0 subset, not complete BPMN 2.0
   coverage. Unsupported imported constructs can be rejected rather than edited
   losslessly.
-- `connect` does not expose direct message-flow authoring. The Mermaid
-  collaboration subset can create message flows between subgraphs.
+- `connect` infers the connection type from its endpoints rather than taking
+  one. There is no way to ask for a message flow between two nodes that a
+  collaboration would otherwise join with a sequence flow.
 - `add_lane` authors top-level lanes in white-box pools; it cannot extend an
   imported nested lane hierarchy.
-- Auto-layout supports horizontal layout only. Vertical and radial algorithms
-  are not advertised.
+- Auto-layout ranks left to right, optionally reflected top to bottom. There
+  are no spacing, subset, or pinned-element controls, and radial algorithms are
+  not advertised.
 - Validation provides the documented syntax, semantic, and full guidance
   levels; it is not BPMN XSD certification or validation against a deployment
   engine.
