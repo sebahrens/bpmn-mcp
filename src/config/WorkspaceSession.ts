@@ -54,7 +54,9 @@ export class WorkspaceSession {
     private readonly startupBoundary: string,
     workspace: string,
     source: WorkspaceSource,
-    private readonly configPath?: string
+    private readonly configPath?: string,
+    /** Why the repository config was ignored, if one could not be applied. */
+    private readonly startupFailure?: string
   ) {
     this.currentWorkspace = workspace;
     this.currentSource = source;
@@ -80,17 +82,36 @@ export class WorkspaceSession {
     }
 
     const configPath = path.join(launchCwd, WORKSPACE_CONFIG_FILENAME);
-    const configuredPath = readRepositoryConfig(configPath);
-    if (configuredPath !== undefined) {
-      // The configured directory is created once, because an operator wrote it
-      // down; it then becomes the boundary every later selection stays inside.
-      const workspace = canonicalDescendant(launchCwd, configuredPath, { create: true });
+    try {
+      const configuredPath = readRepositoryConfig(configPath);
+      if (configuredPath !== undefined) {
+        // The configured directory is created once, because an operator wrote
+        // it down; it then becomes the boundary every later selection stays
+        // inside.
+        const workspace = canonicalDescendant(launchCwd, configuredPath, { create: true });
+        return new WorkspaceSession(
+          launchCwd,
+          workspace,
+          workspace,
+          'repository_config',
+          configPath
+        );
+      }
+    } catch (error) {
+      // This runs while the server module is still being imported, before the
+      // stdio transport exists: throwing here kills the process with a stack
+      // trace on stderr and the client never receives a protocol response. An
+      // unusable config is therefore not applied at all — storage stays on the
+      // launch cwd, which is where it would have been without the file — and
+      // the failure is held until a workspace call can report it as an
+      // ordinary tool error.
       return new WorkspaceSession(
         launchCwd,
-        workspace,
-        workspace,
-        'repository_config',
-        configPath
+        launchCwd,
+        launchCwd,
+        'launch_cwd',
+        undefined,
+        `${WORKSPACE_CONFIG_FILENAME} at ${configPath} was ignored: ${messageOf(error)}`
       );
     }
 
@@ -104,6 +125,14 @@ export class WorkspaceSession {
 
   get path(): string {
     return this.currentWorkspace;
+  }
+
+  /**
+   * The startup problem this session is carrying, if any. Every workspace call
+   * rejects with it; a caller that wants to surface it earlier can read it.
+   */
+  getStartupFailure(): string | undefined {
+    return this.startupFailure;
   }
 
   getInfo(): WorkspaceInfo {
@@ -121,6 +150,7 @@ export class WorkspaceSession {
    * already exist unless the caller explicitly opts into creating it.
    */
   resolveSelection(relativePath: string, options: WorkspaceSelectionOptions = {}): string {
+    this.assertUsableConfiguration();
     return canonicalDescendant(this.startupBoundary, relativePath, options);
   }
 
@@ -128,6 +158,7 @@ export class WorkspaceSession {
     changed: boolean;
     info: Omit<WorkspaceInfo, 'source'> & { source: 'selection' };
   } {
+    this.assertUsableConfiguration();
     if (!isPathContained(workspace, this.startupBoundary)
       || workspace === this.startupBoundary) {
       throw new Error('Workspace path must be a descendant of the startup boundary');
@@ -140,6 +171,20 @@ export class WorkspaceSession {
       info: { ...this.getInfo(), source: 'selection' }
     };
   }
+
+  /**
+   * Moving the workspace while the repository's own configuration is unusable
+   * would silently pick a boundary the operator never asked for, so the
+   * deferred startup failure is raised here instead — inside a request, where
+   * it becomes a tool error the client can read and act on.
+   */
+  private assertUsableConfiguration(): void {
+    if (this.startupFailure !== undefined) throw new Error(this.startupFailure);
+  }
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function readRepositoryConfig(configPath: string): string | undefined {

@@ -55,6 +55,54 @@ describe('BpmnAutoLayoutV2Adapter', () => {
 
     expect(adapterSource).toContain("code: error?.code ?? 'LAYOUT_FAILED'");
     expect(adapterSource).toContain('message: error?.message ?? String(error)');
+    // The runner must never use a falsy short-circuit for these fields: `||`
+    // and `&&` would rewrite a present-but-falsy diagnostic into the fallback.
+    expect(adapterSource).toContain('elementId: error?.elementId');
+    expect(adapterSource).toContain('relatedElementIds: error?.relatedElementIds');
+    expect(adapterSource).not.toMatch(/error\s*&&\s*error\.(elementId|relatedElementIds)/);
+    expect(adapterSource).not.toMatch(/error\.(code|message)\s*\|\|/);
+  });
+
+  it('keeps a present-but-falsy error code out of the unrelated-fallback path', async () => {
+    // A `0` code is present, so `error && error.code || FALLBACK` would have
+    // silently reported LAYOUT_FAILED for it. The diagnostic must instead be
+    // derived from the value that actually arrived, and the raw error kept as
+    // the cause so the real code is never lost.
+    const falsyCodeError = Object.assign(new Error('Layout rejected the diagram'), {
+      code: 0,
+      elementId: 'Task_1'
+    });
+    const adapter = new BpmnAutoLayoutV2Adapter(jest.fn().mockRejectedValue(falsyCodeError));
+
+    await expect(adapter.layout('<source />')).rejects.toMatchObject({
+      name: 'BpmnLayoutError',
+      code: 'LAYOUT_FAILED',
+      elementId: 'Task_1',
+      message: expect.stringContaining('Layout rejected the diagram'),
+      cause: falsyCodeError
+    });
+    await expect(adapter.layout('<source />')).rejects.toHaveProperty('cause.code', 0);
+  });
+
+  it('preserves a present-but-falsy warning code as a deterministic diagnostic', async () => {
+    const adapter = new BpmnAutoLayoutV2Adapter(jest.fn().mockResolvedValue({
+      xml: '<definitions />',
+      warnings: [
+        { code: 0, message: 'A falsy code is still a reported warning', elementId: 'Task_1' },
+        { code: '', message: 'An empty code is still a reported warning' }
+      ]
+    }));
+
+    await expect(adapter.layout('<source />')).resolves.toMatchObject({
+      warnings: [
+        {
+          code: 'LAYOUT_WARNING',
+          message: 'A falsy code is still a reported warning',
+          elementId: 'Task_1'
+        },
+        { code: 'LAYOUT_WARNING', message: 'An empty code is still a reported warning' }
+      ]
+    });
   });
 
   it('surfaces structured unsupported-feature failures without leaking package classes', async () => {

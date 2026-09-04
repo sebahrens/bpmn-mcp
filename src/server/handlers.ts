@@ -429,7 +429,7 @@ export class BpmnRequestHandler {
   private async newBpmn(args: ToolArguments<'new_bpmn'>): Promise<CallToolResult> {
     const { name, type = 'process', extensionProfile = 'portable', filename } = args;
     const context = await this.engine.createProcess(name, type, extensionProfile, filename);
-    await this.replaceCurrent(context, name);
+    const replacedDiagram = await this.replaceCurrent(context, name);
 
     return textToolResult('new_bpmn', {
       processId: context.id,
@@ -437,8 +437,10 @@ export class BpmnRequestHandler {
       type,
       extensionProfile: context.extensionProfile,
       filename: activeFilename(context),
+      ...(replacedDiagram ? { replacedDiagram } : {}),
       revision: context.revision
-    }, `Created new ${type} diagram "${name}"\nExtension profile: ${context.extensionProfile}`);
+    }, `Created new ${type} diagram "${name}"\nExtension profile: ${context.extensionProfile}`
+      + replacedDiagramText(replacedDiagram));
   }
 
   private async newFromMermaid(args: ToolArguments<'new_from_mermaid'>): Promise<CallToolResult> {
@@ -452,7 +454,7 @@ export class BpmnRequestHandler {
     const context = await this.engine.importXml(
       conversionResult.xml, name, extensionProfile, filename
     );
-    await this.replaceCurrent(context, name);
+    const replacedDiagram = await this.replaceCurrent(context, name);
     
     return textToolResult('new_from_mermaid', {
       processId: context.id,
@@ -460,11 +462,12 @@ export class BpmnRequestHandler {
       type: context.type,
       extensionProfile: context.extensionProfile,
       filename: activeFilename(context),
+      ...(replacedDiagram ? { replacedDiagram } : {}),
       revision: context.revision,
       nodeCount: conversionResult.stats.nodeCount,
       flowCount: conversionResult.stats.edgeCount,
       warnings: conversionResult.warnings
-    }, `Created new BPMN diagram "${name}" from Mermaid\nExtension profile: ${context.extensionProfile}\nElements: ${conversionResult.stats.nodeCount} nodes, ${conversionResult.stats.edgeCount} flows${this.conversionWarningText(conversionResult.warnings)}`);
+    }, `Created new BPMN diagram "${name}" from Mermaid\nExtension profile: ${context.extensionProfile}\nElements: ${conversionResult.stats.nodeCount} nodes, ${conversionResult.stats.edgeCount} flows${replacedDiagramText(replacedDiagram)}${this.conversionWarningText(conversionResult.warnings)}`);
   }
 
   // File operations
@@ -472,7 +475,7 @@ export class BpmnRequestHandler {
     const { filename } = args;
     
     const context = await this.engine.loadDiagram(filename);
-    await this.replaceCurrent(context, context.name);
+    const replacedDiagram = await this.replaceCurrent(context, context.name);
     
     return textToolResult('open_bpmn', {
       processId: context.id,
@@ -480,10 +483,12 @@ export class BpmnRequestHandler {
       type: context.type,
       extensionProfile: context.extensionProfile,
       filename: activeFilename(context),
+      ...(replacedDiagram ? { replacedDiagram } : {}),
       revision: context.revision,
       elementCount: context.elements.size,
       connectionCount: context.connections.size
-    }, `Opened BPMN diagram "${context.name}" from ${filename}\nExtension profile: ${context.extensionProfile}\nElements: ${context.elements.size}, Connections: ${context.connections.size}`);
+    }, `Opened BPMN diagram "${context.name}" from ${filename}\nExtension profile: ${context.extensionProfile}\nElements: ${context.elements.size}, Connections: ${context.connections.size}`
+      + replacedDiagramText(replacedDiagram));
   }
 
   private async openMermaidFile(args: ToolArguments<'open_mermaid_file'>): Promise<CallToolResult> {
@@ -503,7 +508,7 @@ export class BpmnRequestHandler {
     const context = await this.engine.importXml(
       conversionResult.xml, name, extensionProfile, bpmnFilename
     );
-    await this.replaceCurrent(context, name);
+    const replacedDiagram = await this.replaceCurrent(context, name);
     
     return textToolResult('open_mermaid_file', {
       processId: context.id,
@@ -511,12 +516,13 @@ export class BpmnRequestHandler {
       type: context.type,
       extensionProfile: context.extensionProfile,
       filename: activeFilename(context),
+      ...(replacedDiagram ? { replacedDiagram } : {}),
       revision: context.revision,
       sourceFilename: filename,
       nodeCount: conversionResult.stats.nodeCount,
       flowCount: conversionResult.stats.edgeCount,
       warnings: conversionResult.warnings
-    }, `Opened and converted Mermaid file "${filename}" to BPMN\nExtension profile: ${context.extensionProfile}\nElements: ${conversionResult.stats.nodeCount} nodes, ${conversionResult.stats.edgeCount} flows${this.conversionWarningText(conversionResult.warnings)}`);
+    }, `Opened and converted Mermaid file "${filename}" to BPMN\nExtension profile: ${context.extensionProfile}\nElements: ${conversionResult.stats.nodeCount} nodes, ${conversionResult.stats.edgeCount} flows${replacedDiagramText(replacedDiagram)}${this.conversionWarningText(conversionResult.warnings)}`);
   }
 
   private async save(args: ToolArguments<'save'>): Promise<CallToolResult> {
@@ -594,14 +600,27 @@ export class BpmnRequestHandler {
     }, `Closed diagram "${name}"`);
   }
 
-  private async replaceCurrent(context: ProcessContext, name: string): Promise<void> {
+  /**
+   * Make `context` current, reporting the diagram it displaced. Creating or
+   * opening a diagram silently closed the previous one, so an agent holding
+   * unsaved work in it had no signal at all; every caller now names the
+   * replaced diagram in its result text and structured content.
+   */
+  private async replaceCurrent(
+    context: ProcessContext,
+    name: string
+  ): Promise<ReplacedDiagram | undefined> {
     const previous = diagramContext.hasCurrent()
       ? diagramContext.getCurrent()
+      : undefined;
+    const previousInfo = previous && previous !== context
+      ? { name: diagramContext.getCurrentInfo()?.name ?? previous.name, filename: previous.filename }
       : undefined;
     if (previous && previous !== context) {
       await this.engine.releaseProcess(previous);
     }
     diagramContext.setCurrent(context, name);
+    return previousInfo;
   }
 
   private async current(): Promise<CallToolResult> {
@@ -1130,12 +1149,20 @@ export class BpmnRequestHandler {
       ...(Object.prototype.hasOwnProperty.call(args, 'defaultFlow') ? { defaultFlow } : {})
     }, expectedRevision);
 
+    // The engine leaves the revision alone when the serialized document is
+    // unchanged, so an update that matched what was already there is reported
+    // as such instead of silently invalidating the caller's revision token.
+    const changed = context.revision !== beforeRevision;
     return textToolResult('update_element', {
       elementId,
+      changed,
       filename: activeFilename(context),
       beforeRevision,
       afterRevision: context.revision
-    }, `Updated element ${elementId}`);
+    }, changed
+      ? `Updated element ${elementId}`
+      : `Element ${elementId} already had these values, so nothing was written `
+        + 'and the revision is unchanged');
   }
 
   private async updateConnection(
@@ -1619,7 +1646,8 @@ export class BpmnRequestHandler {
     return textToolResult('delete_diagram_file', {
       filename,
       closedCurrent
-    }, `Deleted diagram file: ${filename}`);
+    }, `Deleted diagram file: ${filename}`
+      + (closedCurrent ? ' (closed the active diagram; there is no current diagram now)' : ''));
   }
 
   private async getDiagramsPath(): Promise<CallToolResult> {
@@ -1728,15 +1756,59 @@ const ERROR_CLASSIFIERS: ReadonlyArray<{
     details: match => ({ elementId: match[1] })
   },
   {
-    pattern: /Missing BPMN process owner|ownerId|scopeId|not found in scope|scope/i,
+    // add_lane takes the pool's own element id, not the process it references.
+    pattern: /^Participant (\S+) not found/,
     code: 'owner_or_scope_invalid',
-    recovery: 'Pass the owning process id as ownerId, and the containing process or subprocess id as scopeId.'
+    recovery: 'Pass the pool elementId as poolId; list_elements reports each pool with '
+      + 'kind "participant" and its processRef.',
+    details: match => ({ poolId: match[1] })
   },
   {
-    pattern: /Geometry collision rejected|Unsafe geometry|not contained by/i,
+    pattern: /Missing BPMN process owner|ownerId|scopeId|not found in scope|scope/i,
+    code: 'owner_or_scope_invalid',
+    recovery: 'Pass the owning process id as ownerId, and the containing process or subprocess '
+      + 'id as scopeId; the message names the id this diagram expects.'
+  },
+  {
+    // A newly introduced collision. collisionPolicy is the caller's escape
+    // hatch here, so the recovery names it alongside the router.
+    pattern: /^Geometry (?:collision rejected for (\S+?)|patch rejected): (.+)$/s,
     code: 'geometry_rejected',
-    recovery: 'Inspect the diagram with analyze_geometry, then either move the obstacle, '
-      + 'let route_connection propose a route, or repeat the call with collisionPolicy "allow".'
+    recovery: 'Inspect the obstacle with analyze_geometry, then either let route_connection '
+      + 'propose a collision-free route for the edge, move the obstacle with '
+      + 'update_element_geometry, or repeat this call with collisionPolicy "allow" to accept '
+      + 'the reported collision.',
+    details: match => ({
+      reason: 'collision',
+      ...(match[1] ? { objectId: match[1] } : {}),
+      diagnostics: [{ message: match[2], ids: match[1] ? [match[1]] : [] }],
+      collisionPolicyApplies: true
+    })
+  },
+  {
+    // A broken invariant: non-finite or inverted bounds, an element outside its
+    // container, or an edge that no longer touches its endpoints. No
+    // collisionPolicy waives these, so saying "retry with allow" would be a
+    // wrong hint that costs the agent another round trip.
+    pattern: /^Unsafe geometry(?: for (\S+?))?(?: patch)?: (.+)$/s,
+    code: 'geometry_rejected',
+    recovery: 'collisionPolicy "allow" does not waive this: the geometry itself is unusable. '
+      + 'Keep every bound finite and positive, keep the element inside its pool or subprocess '
+      + '(resize the container first with update_element_geometry), and keep edge endpoints on '
+      + 'their shapes; analyze_geometry reports the current state.',
+    details: match => ({
+      reason: 'invariant',
+      ...(match[1] ? { objectId: match[1] } : {}),
+      diagnostics: [{ message: match[2], ids: match[1] ? [match[1]] : [] }],
+      collisionPolicyApplies: false
+    })
+  },
+  {
+    pattern: /not contained by/i,
+    code: 'geometry_rejected',
+    recovery: 'Move the element inside its container, or resize the container first with '
+      + 'update_element_geometry; collisionPolicy does not waive containment.',
+    details: () => ({ reason: 'invariant', collisionPolicyApplies: false })
   },
   {
     pattern: /^File already exists/i,
@@ -1808,6 +1880,15 @@ function defaultPoolPosition(context: ProcessContext): { x: number; y: number } 
   }
   if (left === undefined || bottom === undefined) return { ...DEFAULT_POOL_ORIGIN };
   return { x: left, y: bottom + POOL_STACK_GAP };
+}
+
+/** The diagram a create/open call displaced, reported so it is never silent. */
+type ReplacedDiagram = { name: string; filename?: string };
+
+function replacedDiagramText(replaced: ReplacedDiagram | undefined): string {
+  if (!replaced) return '';
+  return `\n(replaced and closed the previously active diagram "${replaced.name}"`
+    + `${replaced.filename ? ` in ${replaced.filename}` : ''})`;
 }
 
 function activeFilename(context: ProcessContext): string {

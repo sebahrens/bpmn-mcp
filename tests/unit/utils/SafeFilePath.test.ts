@@ -4,6 +4,7 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 import {
+  assertSafeFilename,
   COMPARE_WRITE_LOCK_PREFIX,
   SafeFileStore,
   SafeFilePathError
@@ -183,5 +184,65 @@ describe('SafeFileStore worker lifecycle', () => {
         (writer as unknown as InspectableSafeFileStore).worker?.child?.kill();
       }
     }
+  });
+});
+
+describe('assertSafeFilename hostile names', () => {
+  function rejection(filename: string): SafeFilePathError | undefined {
+    try {
+      assertSafeFilename(filename, ['.bpmn']);
+      return undefined;
+    } catch (error) {
+      if (error instanceof SafeFilePathError) return error;
+      throw error;
+    }
+  }
+
+  // WSL2 (/mnt/c) is a supported platform, so a name Windows resolves to a
+  // console device rather than a file has to be refused here: on that mount
+  // "CON.bpmn" opens the console and the caller's diagram is silently lost.
+  const reservedNames = [
+    'CON.bpmn', 'con.bpmn', 'Con.bpmn', 'PRN.bpmn', 'aux.bpmn', 'NUL.bpmn',
+    'com1.bpmn', 'COM9.bpmn', 'lpt1.bpmn', 'LPT9.bpmn', 'CON .bpmn'
+  ];
+
+  // Bidi overrides and other invisible format characters let one filename
+  // render as another in every listing an operator reads, and the C0/C1
+  // ranges are not filename material at all. Code points rather than literals,
+  // so the hostile characters cannot hide in this source file either.
+  const invisibleCodePoints: Array<[string, number]> = [
+    ['right-to-left override', 0x202e],
+    ['left-to-right embedding', 0x202a],
+    ['right-to-left mark', 0x200f],
+    ['first strong isolate', 0x2068],
+    ['zero width joiner', 0x200d],
+    ['soft hyphen', 0x00ad],
+    ['C0 bell', 0x0007],
+    ['C1 control', 0x009b],
+    ['delete character', 0x007f]
+  ];
+
+  it.each(reservedNames)('rejects the Windows device name %j', filename => {
+    expect(rejection(filename)).toBeInstanceOf(SafeFilePathError);
+  });
+
+  it.each(invisibleCodePoints)('rejects a filename carrying a %s', (_label, codePoint) => {
+    const filename = `report${String.fromCodePoint(codePoint as number)}name.bpmn`;
+
+    expect(rejection(filename)).toBeInstanceOf(SafeFilePathError);
+  });
+
+  // The no-false-positive twin: ordinary names, names that merely begin with
+  // the letters of a device name, and the non-ASCII names other suites save.
+  it('still accepts every ordinary filename', () => {
+    const accepted = [
+      'diagram.bpmn', 'valid.bpmn', 'saved.bpmn', 'race.bpmn', 'pinned.bpmn',
+      'order-to-cash.bpmn', 'Order To Cash.bpmn', 'v1.2.bpmn', 'foo..bpmn',
+      'console.bpmn', 'conference.bpmn', 'aux-review.bpmn', 'com10.bpmn',
+      'lpt0.bpmn', 'nullify.bpmn', 'prnt.bpmn', 'CONTRACT.bpmn', 'my CON.bpmn',
+      `${'é'.repeat(97)}a.bpmn`, 'Ordnung-für-Prozesse.bpmn', '流程图.bpmn'
+    ];
+
+    expect(accepted.filter(filename => rejection(filename) !== undefined)).toEqual([]);
   });
 });

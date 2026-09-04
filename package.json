@@ -39,6 +39,7 @@
     "test:claude-plugin": "node scripts/validate-claude-plugin.mjs",
     "test:installer": "sh tests/install-agent-integrations.test.sh",
     "test:ralph": "bash ralph-loop/tests/loop_test.sh",
+    "test:performance": "MCP_BPMN_PERF=1 jest --runTestsByPath tests/performance/large-diagram.performance.test.ts",
     "test:layout-candidates": "MCP_BPMN_LAYOUT_CANDIDATES=1 jest --runTestsByPath tests/integration/layout-candidates.test.ts",
     "test:evaluations": "jest --runTestsByPath tests/integration/agent-evaluations.test.ts",
     "eval:codex": "node scripts/run-agent-evals.mjs --client codex",

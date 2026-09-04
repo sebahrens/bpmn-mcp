@@ -71,6 +71,39 @@ describe('BpmnRequestHandler Integration Tests', () => {
       expect(diagramContext.getCurrent().xml).toContain('<bpmn:process');
     });
 
+    it('names the diagram it replaced or closed', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'First' });
+      const firstFilename = diagramContext.getCurrent().filename!;
+
+      const replaced = await handler.handleRequest('new_bpmn', { name: 'Second' });
+      expect(replaced.isError).toBeUndefined();
+      expect(replaced.content[0].text).toContain(
+        `(replaced and closed the previously active diagram "First" in ${firstFilename})`
+      );
+      expect(replaced.structuredContent).toMatchObject({
+        replacedDiagram: { name: 'First', filename: firstFilename }
+      });
+
+      const reopened = await handler.handleRequest('open_bpmn', { filename: firstFilename });
+      expect(reopened.content[0].text).toContain(
+        '(replaced and closed the previously active diagram "Second"'
+      );
+
+      const deleted = await handler.handleRequest('delete_diagram_file', {
+        filename: firstFilename
+      });
+      expect(deleted.structuredContent).toMatchObject({ closedCurrent: true });
+      expect(deleted.content[0].text).toContain('(closed the active diagram');
+      expect(diagramContext.hasCurrent()).toBe(false);
+    });
+
+    it('says nothing about a replacement when no diagram was open', async () => {
+      const created = await handler.handleRequest('new_bpmn', { name: 'Only' });
+
+      expect(created.content[0].text).not.toContain('replaced');
+      expect(created.structuredContent).not.toHaveProperty('replacedDiagram');
+    });
+
     it('should create a collaboration', async () => {
       const result = await handler.handleRequest('new_bpmn', {
         name: 'Test Collaboration',
@@ -1819,6 +1852,71 @@ describe('BpmnRequestHandler Integration Tests', () => {
   });
   });
 
+  describe('Owner and scope errors', () => {
+    it('names the id to pass for pools, processes, and subprocesses', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Owners', type: 'collaboration' });
+      const pool = (await handler.handleRequest('add_pool', { name: 'Pool' }))
+        .structuredContent as { elementId: string; processId: string };
+      const subProcess = (await handler.handleRequest('add_activity', {
+        activityType: 'subProcess',
+        name: 'Sub',
+        ownerId: pool.processId,
+        properties: { isExpanded: true }
+      })).structuredContent as { elementId: string };
+
+      const poolAsOwner = await handler.handleRequest('add_activity', {
+        activityType: 'task',
+        name: 'Task',
+        ownerId: pool.elementId
+      });
+      expect(poolAsOwner.isError).toBe(true);
+      expect(poolAsOwner.content[0].text).toContain(
+        `${pool.elementId} is a pool; pass its process id ${pool.processId} as ownerId.`
+      );
+      expect(poolAsOwner.structuredContent).toMatchObject({
+        code: 'owner_or_scope_invalid'
+      });
+
+      const subProcessAsOwner = await handler.handleRequest('add_activity', {
+        activityType: 'task',
+        name: 'Task',
+        ownerId: subProcess.elementId
+      });
+      expect(subProcessAsOwner.isError).toBe(true);
+      expect(subProcessAsOwner.content[0].text).toContain(
+        `${subProcess.elementId} is a bpmn:SubProcess; pass ${pool.processId} as ownerId `
+        + `and ${subProcess.elementId} as scopeId.`
+      );
+
+      const processAsPool = await handler.handleRequest('add_lane', {
+        poolId: pool.processId,
+        name: 'Operators',
+        flowNodeIds: [subProcess.elementId]
+      });
+      expect(processAsPool.isError).toBe(true);
+      expect(processAsPool.content[0].text).toContain(
+        `${pool.processId} is a process id; add_lane takes the pool elementId, `
+        + `which is ${pool.elementId}.`
+      );
+      expect(processAsPool.structuredContent).toMatchObject({
+        code: 'owner_or_scope_invalid',
+        poolId: pool.processId
+      });
+
+      const poolAsScope = await handler.handleRequest('add_activity', {
+        activityType: 'task',
+        name: 'Task',
+        ownerId: pool.processId,
+        scopeId: pool.elementId
+      });
+      expect(poolAsScope.isError).toBe(true);
+      expect(poolAsScope.content[0].text).toContain(
+        `${pool.elementId} is a pool; pass its process id ${pool.processId} as ownerId `
+        + 'and omit scopeId.'
+      );
+    });
+  });
+
   describe('Query operations', () => {
     beforeEach(async () => {
       await handler.handleRequest('new_bpmn', { name: 'Query Test' });
@@ -2172,6 +2270,59 @@ describe('BpmnRequestHandler Integration Tests', () => {
         expect.arrayContaining([expect.objectContaining({ code: 'SHAPE_OVERLAP' })])
       );
     });
+
+    it('reports geometry rejections with a code, the diagnostic, and a policy-aware recovery',
+      async () => {
+        const collision = await handler.handleRequest('update_element_geometry', {
+          elementId: 'StartEvent_1',
+          bounds: { x: 200, y: 200, width: 36, height: 36 }
+        });
+
+        expect(collision.isError).toBe(true);
+        expect(collision.structuredContent).toMatchObject({
+          code: 'geometry_rejected',
+          reason: 'collision',
+          objectId: 'StartEvent_1',
+          collisionPolicyApplies: true,
+          diagnostics: [{ ids: ['StartEvent_1'], message: expect.any(String) }]
+        });
+        const collisionRecovery = (collision.structuredContent as { recovery: string }).recovery;
+        expect(collisionRecovery).toContain('collisionPolicy "allow"');
+        expect(collisionRecovery).toContain('route_connection');
+
+        await handler.handleRequest('add_activity', {
+          activityType: 'subProcess',
+          name: 'Nested scope',
+          position: { x: 400, y: 400 }
+        });
+        await handler.handleRequest('add_activity', {
+          activityType: 'task',
+          name: 'Nested task',
+          ownerId: diagramContext.getCurrent().id,
+          scopeId: 'SubProcess_1',
+          position: { x: 450, y: 450 }
+        });
+
+        const escape = await handler.handleRequest('update_element_geometry', {
+          elementId: 'Task_2',
+          bounds: { x: 800, y: 800, width: 100, height: 80 },
+          collisionPolicy: 'allow'
+        });
+
+        expect(escape.isError).toBe(true);
+        expect(escape.structuredContent).toMatchObject({
+          code: 'geometry_rejected',
+          reason: 'invariant',
+          objectId: 'Task_2',
+          // collisionPolicy "allow" was already set on the rejected call, so
+          // repeating it is not a recovery and must not be suggested.
+          collisionPolicyApplies: false,
+          diagnostics: [{ ids: ['Task_2'], message: expect.stringContaining('not contained by') }]
+        });
+        const escapeRecovery = (escape.structuredContent as { recovery: string }).recovery;
+        expect(escapeRecovery).toContain('does not waive this');
+        expect(escapeRecovery).not.toContain('repeat this call with collisionPolicy');
+      });
 
     it('should reject subprocess, boundary-event, participant, lane, and owner escapes', async () => {
       await handler.handleRequest('add_activity', {
@@ -2736,6 +2887,38 @@ describe('BpmnRequestHandler Integration Tests', () => {
         edge => edge.connectionId === 'Flow_Approved'
       )?.labelBounds).toEqual(movedLabel);
     });
+
+    it('rejects an update that names no field, and writes nothing when values already match',
+      async () => {
+        const empty = await handler.handleRequest('update_element', { elementId: 'Task_1' });
+
+        expect(empty.isError).toBe(true);
+        expect(empty.content[0].text).toContain(
+          'At least one of name, documentation, properties, or defaultFlow must be updated'
+        );
+
+        const first = await handler.handleRequest('update_element', {
+          elementId: 'Task_1',
+          name: 'Same name'
+        });
+        expect(first.structuredContent).toMatchObject({ changed: true });
+        const before = await snapshotQueryState();
+
+        const repeated = await handler.handleRequest('update_element', {
+          elementId: 'Task_1',
+          name: 'Same name'
+        });
+
+        expect(repeated.isError).toBeUndefined();
+        expect(repeated.structuredContent).toMatchObject({
+          elementId: 'Task_1',
+          changed: false,
+          beforeRevision: before.context.revision,
+          afterRevision: before.context.revision
+        });
+        expect(repeated.content[0].text).toContain('the revision is unchanged');
+        await expectQueryStateUnchanged(before);
+      });
 
     it('should reject updating a non-existent element without changing state or disk', async () => {
       const before = await snapshotQueryState();

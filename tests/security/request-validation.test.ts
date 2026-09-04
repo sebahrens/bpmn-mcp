@@ -36,7 +36,7 @@ const validArguments = {
   get_element: { elementId: 'Task_1' },
   list_connections: {},
   get_connection: { connectionId: 'Flow_1' },
-  update_element: { elementId: 'Task_1' },
+  update_element: { elementId: 'Task_1', name: 'Renamed' },
   update_connection: {
     connectionId: 'Flow_1',
     label: 'Updated',

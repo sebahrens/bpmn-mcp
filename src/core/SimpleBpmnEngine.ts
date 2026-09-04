@@ -940,7 +940,7 @@ export class SimpleBpmnEngine {
       }
       const participant = working.elements.get(poolId);
       if (!participant || participant.kind !== 'participant') {
-        throw new Error(`Participant ${poolId} not found`);
+        throw new Error(`Participant ${poolId} not found. ${poolHint(working.document, poolId)}`);
       }
       if (!participant.processRef || !working.document.processes.has(participant.processRef)) {
         throw new Error(`Participant ${poolId} does not reference a process`);
@@ -1112,7 +1112,7 @@ export class SimpleBpmnEngine {
         this.fitExpandedFlowContainers(working, workingElement.id);
       }
       return workingElement;
-    }, undefined, true, false, expectedRevision);
+    }, undefined, true, false, expectedRevision, false, false, true);
   }
 
   async updateElementGeometry(
@@ -2530,7 +2530,14 @@ export class SimpleBpmnEngine {
      * only by save_as, where replacing the target is the caller's explicit
      * request rather than a compare-and-set rewrite of the active file.
      */
-    replaceTarget = false
+    replaceTarget = false,
+    /**
+     * Treat a mutation whose serialized result is byte-identical to the
+     * persisted document as a no-op: keep the in-memory working state, but
+     * neither rewrite the file nor advance the revision. A request that changes
+     * nothing should not invalidate every revision token the agent is holding.
+     */
+    skipUnchangedWrite = false
   ): Promise<T> {
     const batch = this.activeBatches.get(context.id);
     if (batch) {
@@ -2616,6 +2623,17 @@ export class SimpleBpmnEngine {
       const value = await mutation(working);
       const xml = await this.serializer.serialize(working.document);
       if (dryRun) return value;
+      // Only when this commit is not rebasing onto a different disk version:
+      // there, the bytes have to be written even though this document is
+      // unchanged.
+      if (skipUnchangedWrite
+        && xml === context.persistedXml
+        && expectedContent === context.persistedXml) {
+        context.document = working.document;
+        context.elements = working.elements;
+        context.connections = working.connections;
+        return value;
+      }
       const saveResult = await this.fileManager.saveBpmnFile(xml, {
         filename: targetFilename,
         overwrite: overwrite || replaceTarget,
@@ -3411,7 +3429,9 @@ export class SimpleBpmnEngine {
 
   private assertFlowScope(document: BpmnDocument, ownerId: string, scopeId: string): void {
     if (!document.processes.has(ownerId)) {
-      throw new Error(`Missing BPMN process owner: ${ownerId}`);
+      throw new Error(
+        `Missing BPMN process owner: ${ownerId}. ${ownerHint(document, ownerId)}`
+      );
     }
     if (scopeId === ownerId) {
       return;
@@ -3419,7 +3439,9 @@ export class SimpleBpmnEngine {
     const scope = document.elements.get(scopeId);
     if (!scope || !['bpmn:SubProcess', 'bpmn:Transaction'].includes(scope.type)
       || scope.ownerId !== ownerId) {
-      throw new Error(`Invalid BPMN scope: ${scopeId}`);
+      throw new Error(
+        `Invalid BPMN scope: ${scopeId}. ${scopeHint(document, ownerId, scopeId, scope)}`
+      );
     }
     if (scope.properties.isExpanded !== true) {
       throw new Error(`BPMN scope ${scopeId} must be expanded before adding child elements`);
@@ -4050,4 +4072,75 @@ function describeSemanticDifference(left: unknown, right: unknown, path = ''): s
   }
 
   return `${path || 'snapshot'}: ${describe(left)} became ${describe(right)}`;
+}
+
+/**
+ * Owner/scope rejections used to name only the id the caller passed, which is
+ * exactly the id that was wrong. Pools, their processes, and subprocesses are
+ * easy to confuse, so each hint says which id belongs in which argument.
+ */
+function ownerHint(document: BpmnDocument, ownerId: string): string {
+  const element = document.elements.get(ownerId);
+  if (element?.kind === 'participant') {
+    return element.processRef
+      ? `${ownerId} is a pool; pass its process id ${element.processRef} as ownerId.`
+      : `${ownerId} is a black-box pool and has no process; give it a process, or pass `
+        + 'the process id of a white-box pool as ownerId.';
+  }
+  if (element && ['bpmn:SubProcess', 'bpmn:Transaction'].includes(element.type)) {
+    return `${ownerId} is a ${element.type}; pass ${element.ownerId} as ownerId and `
+      + `${ownerId} as scopeId.`;
+  }
+  if (element) {
+    return `${ownerId} is a ${element.type}, not a process; pass ${element.ownerId} as ownerId.`;
+  }
+  const known = Array.from(document.processes.keys()).sort();
+  return `ownerId must be a process id${known.length > 0 ? `, one of: ${known.join(', ')}` : ''}. `
+    + 'add_pool returns the processId of the pool it creates.';
+}
+
+function scopeHint(
+  document: BpmnDocument,
+  ownerId: string,
+  scopeId: string,
+  scope: BpmnDocumentElement | undefined
+): string {
+  if (!scope) {
+    return document.processes.has(scopeId)
+      ? `${scopeId} is a process; pass it as ownerId and omit scopeId.`
+      : `No element ${scopeId} exists; scopeId names an expanded subprocess or transaction `
+        + 'inside ownerId, and defaults to ownerId itself.';
+  }
+  if (scope.kind === 'participant') {
+    return scope.processRef
+      ? `${scopeId} is a pool; pass its process id ${scope.processRef} as ownerId and omit scopeId.`
+      : `${scopeId} is a black-box pool and cannot contain elements.`;
+  }
+  if (!['bpmn:SubProcess', 'bpmn:Transaction'].includes(scope.type)) {
+    return `${scopeId} is a ${scope.type}; only an expanded subprocess or transaction `
+      + 'can be a scopeId.';
+  }
+  return `${scopeId} belongs to process ${scope.ownerId}, not ${ownerId}; pass `
+    + `${scope.ownerId} as ownerId.`;
+}
+
+function poolHint(document: BpmnDocument, poolId: string): string {
+  const owningParticipant = Array.from(document.elements.values()).find(
+    element => element.kind === 'participant' && element.processRef === poolId
+  );
+  if (owningParticipant) {
+    return `${poolId} is a process id; add_lane takes the pool elementId, which is `
+      + `${owningParticipant.id}.`;
+  }
+  const element = document.elements.get(poolId);
+  if (element) {
+    return `${poolId} is a ${element.type}; add_lane takes a pool (bpmn:Participant) elementId.`;
+  }
+  const pools = Array.from(document.elements.values())
+    .filter(candidate => candidate.kind === 'participant')
+    .map(candidate => candidate.id)
+    .sort();
+  return pools.length > 0
+    ? `add_lane takes a pool elementId, one of: ${pools.join(', ')}.`
+    : 'This diagram has no pools; add one with add_pool first.';
 }

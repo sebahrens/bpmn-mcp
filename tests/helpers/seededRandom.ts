@@ -37,12 +37,13 @@ export function createSeededRandom(seed: number): SeededRandom {
   };
 }
 
+// Only shapes inside the supported BPMN subset: a cylinder `[(...)]` is a
+// deliberate parse error, and `[[...]]` is a data object that no sequence flow
+// may touch, so neither belongs in a diagram generated to be error-free.
 const NODE_SHAPES: Array<(id: string, label: string) => string> = [
   (id, label) => `${id}((${label}))`,
   (id, label) => `${id}[${label}]`,
   (id, label) => `${id}{${label}}`,
-  (id, label) => `${id}[[${label}]]`,
-  (id, label) => `${id}[(${label})]`,
   id => id
 ];
 
@@ -68,9 +69,14 @@ export interface GeneratedDiagram {
 export function generateMermaidDiagram(random: SeededRandom): GeneratedDiagram {
   const direction = random.pick(['TD', 'TB', 'LR', 'RL', 'BT']);
   const nodeCount = 2 + random.int(7);
-  const nodeIds = Array.from({ length: nodeCount }, (_, index) => (
-    random.chance(0.3) ? `N${index}_${1 + random.int(3)}` : `N${index}`
-  ));
+  // IDs are drawn from a deliberately small pool so parallel edges between the
+  // same pair are common, and every base ID has an `_N` sibling: `N0` and
+  // `N0_2` in one diagram is exactly the shape that used to make the edge-ID
+  // allocator collide (mcp-bpmn-j21.9).
+  const nodeIds = Array.from({ length: nodeCount }, (_, index) => {
+    const base = `N${index % 4}`;
+    return random.chance(0.4) ? `${base}_${1 + random.int(2)}` : base;
+  });
   const uniqueIds = Array.from(new Set(nodeIds));
   const lines = [`flowchart ${direction}`];
 
@@ -78,6 +84,12 @@ export function generateMermaidDiagram(random: SeededRandom): GeneratedDiagram {
     const shape = NODE_SHAPES[random.int(NODE_SHAPES.length)];
     const label = index === 0 ? 'Start' : random.pick(LABEL_WORDS);
     lines.push(`  ${shape(id, label)}`);
+  }
+
+  // A data object is declared but never wired: BPMN forbids a sequence flow
+  // touching one, and the parser reports that as an error.
+  if (random.chance(0.25)) {
+    lines.push(`  Data_${uniqueIds.length}[[${random.pick(LABEL_WORDS)}]]`);
   }
 
   const edgeCount = 1 + random.int(uniqueIds.length * 2);

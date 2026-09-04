@@ -221,9 +221,9 @@ async function loadSelectedLayoutInSubprocess(
       process.stdout.write(JSON.stringify({
         error: {
           code: error?.code ?? 'LAYOUT_FAILED',
-          elementId: error && error.elementId,
+          elementId: error?.elementId,
           message: error?.message ?? String(error),
-          relatedElementIds: error && error.relatedElementIds
+          relatedElementIds: error?.relatedElementIds
         }
       }));
     }

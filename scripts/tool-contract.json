@@ -42,23 +42,23 @@
     "get_workspace",
     "select_workspace"
   ],
-  "contractFingerprint": "b312b1d81f733500758d16f0895fc6709d6efe74a1ffc895bb809a188ab6274a",
+  "contractFingerprint": "dfcde52d17c2db2dbb15dd62c6d4f8842d5f2bd061d4947da753bde4d0e60450",
   "schemaFingerprints": {
     "new_bpmn": {
       "input": "7e7d0607064fe25f15a494cadd85375c728be12777672e2d3f780a82e1961875",
-      "output": "7f22cfef0fa4bfda7c9e26be7f358f5fc7c1d752c2e0b687ff43398e73d59fc0"
+      "output": "5284a0c82392dc63bceaef62f538a8cf9eb93b63cae6d290132cf379f8b1a8c5"
     },
     "new_from_mermaid": {
       "input": "209ec250e4ea00210e07257865e56b64f48dfd33a6e77cd0035be2740bad2f7c",
-      "output": "3a6086524f92b8dad859e2287c72edf9aa2f2fbb4e267bc9b64559cf2256658b"
+      "output": "9697598cf6271b2cd09e279502cb6d9cd4a5db7f12e3a37174f2311c36c3f1aa"
     },
     "open_bpmn": {
       "input": "7587abc15d187397b8d68fe03f16befb84d338d6c996c9698ed095c172575e33",
-      "output": "614b9bbfb1f58569bbb2679324b0cc4dc988741c71ac3cdb61eaba8764ed3f59"
+      "output": "8ff6cef756b06e77e2c6e6b371e9b830836508ff72da6b94cecb79cfb6e8ec13"
     },
     "open_mermaid_file": {
       "input": "bf1d6854190e43f9b8100e2dcb41031ecc8bb26dc57c75bd3ed8afd3e74ac305",
-      "output": "20ec084901799abe636706c4b5df9186bb412ac5b2e964d9b9b7e29dbbf40649"
+      "output": "4f65ba89b1f919d0a93137aa786ec991c2c797cb1594451e5a60980d228afa81"
     },
     "save": {
       "input": "e3953439e8c37941081d153623aa62a4f5c3d66d40311fb5d141d83b8bb4149b",
@@ -74,7 +74,7 @@
     },
     "current": {
       "input": "99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa",
-      "output": "2a0a6eb0164a9307a455bfd9632180284dddd86d046dfd39234b266decb3608c"
+      "output": "7821129bc597a129899869727a8403ec6e30eb8edb1d33ac0c131630e461dd22"
     },
     "add_event": {
       "input": "d32c29bbc6c913b09d914bbacd44a48d3dbbbe025a729daba81cd1fa41fea510",
@@ -130,7 +130,7 @@
     },
     "update_element": {
       "input": "bf6f76f01f8188227ffb36867148610f2dabea4a72c4aa66ecb22341c667d3e7",
-      "output": "e3102812690314826dd9e07c1729271c766bf074458e5c7d6ce3e674a3095a80"
+      "output": "cc841fb5790d6c5535a8594f83dfbaf4faefb18ca1ad657567067747489f596a"
     },
     "update_connection": {
       "input": "1ed4c6834eee43a83d72f7e1f7a21279f15c797d0f06c73766e414918e6547c6",

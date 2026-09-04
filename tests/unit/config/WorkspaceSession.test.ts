@@ -72,15 +72,24 @@ describe('WorkspaceSession', () => {
   });
 
   it.each(['../escape', 'nested/../escape', './nested']) (
-    'rejects repository dot-segment escape %s',
+    'refuses repository dot-segment escape %s without applying it',
     async configuredPath => {
       await fs.writeFile(
         path.join(root, '.mcp-bpmn.json'),
         JSON.stringify({ path: configuredPath })
       );
 
-      expect(() => WorkspaceSession.fromLaunch(root, {}))
+      // mcp-bpmn-a3j.28: this used to assert that fromLaunch() throws, which is
+      // what killed the server during module import. The escape is still never
+      // applied; the refusal is now carried to the first workspace call.
+      const session = WorkspaceSession.fromLaunch(root, {});
+
+      expect(session.getInfo()).toMatchObject({ workspace: root, source: 'launch_cwd' });
+      expect(session.getStartupFailure())
+        .toContain('relative descendant without dot segments');
+      expect(() => session.resolveSelection('anywhere'))
         .toThrow('relative descendant without dot segments');
+      await expect(fs.readdir(root)).resolves.toEqual(['.mcp-bpmn.json']);
     }
   );
 
@@ -92,8 +101,13 @@ describe('WorkspaceSession', () => {
         path.join(root, '.mcp-bpmn.json'),
         JSON.stringify({ path: 'linked/configured' })
       );
-      expect(() => WorkspaceSession.fromLaunch(root, {}))
+      // mcp-bpmn-a3j.28: the config-driven refusal is carried out of module
+      // import rather than thrown there; nothing below the symlink is touched.
+      const configured = WorkspaceSession.fromLaunch(root, {});
+      expect(configured.getInfo()).toMatchObject({ workspace: root, source: 'launch_cwd' });
+      expect(() => configured.resolveSelection('linked/configured'))
         .toThrow('must not traverse symbolic links');
+      await expect(fs.readdir(outside)).resolves.toEqual([]);
       await fs.rm(path.join(root, '.mcp-bpmn.json'));
 
       const session = WorkspaceSession.fromLaunch(root, {});
@@ -157,6 +171,81 @@ describe('WorkspaceSession', () => {
     expect(() => session.resolveSelection('src')).toThrow('does not exist');
     expect(() => session.activateSelection(path.join(root, 'src')))
       .toThrow('descendant of the startup boundary');
+  });
+
+  describe('an unusable .mcp-bpmn.json', () => {
+    // fromLaunch() runs while src/server/index.ts is still being imported,
+    // before the transport exists, so throwing there kills the process with a
+    // stack trace on stderr and the client never gets a protocol response. The
+    // session degrades to the launch cwd and keeps the failure, which the next
+    // workspace call reports as an ordinary tool error.
+    const unusableConfigs: Array<[string, string]> = [
+      ['malformed JSON', '{not json'],
+      ['the wrong shape', JSON.stringify({ directory: 'diagrams' })],
+      ['a dot-segment escape', JSON.stringify({ path: '../escape' })]
+    ];
+
+    it.each(unusableConfigs)('starts on the launch cwd when the config is %s',
+      async (_label, contents) => {
+        await fs.writeFile(path.join(root, '.mcp-bpmn.json'), contents);
+
+        const session = WorkspaceSession.fromLaunch(root, {});
+
+        expect(session.getInfo()).toEqual({
+          launchCwd: root,
+          startupBoundary: root,
+          workspace: root,
+          source: 'launch_cwd'
+        });
+        expect(session.getStartupFailure()).toContain('.mcp-bpmn.json');
+      });
+
+    it('reports the failure to the MCP client as a tool error, not at import time', async () => {
+      await fs.writeFile(path.join(root, '.mcp-bpmn.json'), '{not json');
+      await fs.mkdir(path.join(root, 'diagrams'));
+
+      const session = WorkspaceSession.fromLaunch(root, {});
+      const handler = new BpmnRequestHandler(
+        new SimpleBpmnEngine(session.path),
+        undefined,
+        undefined,
+        undefined,
+        session
+      );
+
+      try {
+        const rejected = await handler.handleRequest('select_workspace', { path: 'diagrams' });
+
+        expect(rejected).toMatchObject({ isError: true });
+        expect(rejected.structuredContent).toMatchObject({
+          message: expect.stringContaining('must contain valid JSON')
+        });
+        // The server is still answering calls at all, which is the point.
+        const workspace = await handler.handleRequest('get_workspace', {});
+        expect(workspace.isError).toBeUndefined();
+        expect(workspace.structuredContent).toMatchObject({
+          workspace: root,
+          source: 'launch_cwd'
+        });
+      } finally {
+        await handler.shutdown();
+      }
+    });
+
+    it('keeps a usable repository config working and free of any startup failure', async () => {
+      await fs.writeFile(
+        path.join(root, '.mcp-bpmn.json'),
+        JSON.stringify({ path: 'wiki/assets' })
+      );
+      await fs.mkdir(path.join(root, 'wiki', 'assets', 'nested'), { recursive: true });
+
+      const session = WorkspaceSession.fromLaunch(root, {});
+
+      expect(session.getStartupFailure()).toBeUndefined();
+      expect(session.resolveSelection('nested'))
+        .toBe(path.join(root, 'wiki', 'assets', 'nested'));
+    });
+
   });
 
   it('switches only this handler session without changing process cwd', async () => {

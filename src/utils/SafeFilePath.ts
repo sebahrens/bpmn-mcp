@@ -971,6 +971,50 @@ export function errnoDetail(error: unknown): string | undefined {
   }
 }
 
+/**
+ * MS-DOS device names, which every Windows filesystem API still resolves ahead
+ * of any real file, with or without an extension: "CON.bpmn" opens the console
+ * rather than a file, so a save through /mnt/c under WSL2 - a supported
+ * platform - is silently discarded. Windows also ignores trailing spaces and
+ * dots when it matches them.
+ */
+const WINDOWS_RESERVED_DEVICE_NAMES = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'
+]);
+
+/** Unicode format characters: bidi overrides, isolates and marks, zero-width
+ * joiners, the soft hyphen. */
+const UNICODE_FORMAT_CHARACTER = /\p{Cf}/u;
+
+const C0_CONTROL_END = 0x1f;
+const DELETE_CHARACTER = 0x7f;
+const C1_CONTROL_END = 0x9f;
+
+function isWindowsReservedDeviceName(filename: string): boolean {
+  const device = filename.split('.', 1)[0].replace(/[ .]+$/u, '').toUpperCase();
+  return WINDOWS_RESERVED_DEVICE_NAMES.has(device);
+}
+
+/**
+ * True for a name carrying anything a listing cannot render: the C0 and C1
+ * control ranges, DEL, or a Unicode format character. Those let one stored
+ * diagram impersonate another in every interface an operator reads, and a bidi
+ * override reverses how the rest of the name is displayed.
+ */
+function hasInvisibleCharacter(filename: string): boolean {
+  for (const character of filename) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code <= C0_CONTROL_END
+      || (code >= DELETE_CHARACTER && code <= C1_CONTROL_END)
+      || UNICODE_FORMAT_CHARACTER.test(character)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function assertSafeFilename(filename: string, allowedExtensions: readonly string[]): void {
   if (typeof filename !== 'string'
     || filename.length === 0
@@ -982,6 +1026,19 @@ export function assertSafeFilename(filename: string, allowedExtensions: readonly
     || path.win32.isAbsolute(filename)
     || /^[a-zA-Z]:/.test(filename)) {
     throw new SafeFilePathError('Invalid filename', 'invalid');
+  }
+
+  if (hasInvisibleCharacter(filename)) {
+    throw new SafeFilePathError(
+      'Filename must not contain control or invisible formatting characters',
+      'invalid'
+    );
+  }
+  if (isWindowsReservedDeviceName(filename)) {
+    throw new SafeFilePathError(
+      'Filename must not be a reserved device name (CON, PRN, AUX, NUL, COM1-9, LPT1-9)',
+      'invalid'
+    );
   }
 
   const filenameBytes = Buffer.byteLength(filename, 'utf8');

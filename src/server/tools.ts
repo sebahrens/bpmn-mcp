@@ -661,6 +661,8 @@ const outputSchemas = {
   get_connection: outputConnection.extend({ revision }).strict(),
   update_element: z.object({
     elementId: outputBpmnId,
+    changed: z.boolean()
+      .describe('False when the requested values already matched; the revision then stands'),
     filename: outputFilename,
     ...outputMutationRevisions
   }).strict(),
@@ -1271,7 +1273,7 @@ export const toolDefinitions = {
   },
   update_element: {
     annotations: DESTRUCTIVE_UPDATE,
-    description: 'Update properties of an element in the current diagram',
+    description: 'Update the name, documentation, typed properties, or default flow of an element in the current diagram. At least one of those must be supplied. A request whose values already match leaves the file and the document revision untouched and reports changed:false',
     outputSchema: outputSchemas.update_element,
     schema: z.object({
       elementId: bpmnId().describe('ID of the element to update'),
@@ -1287,7 +1289,20 @@ export const toolDefinitions = {
         'Outgoing sequence-flow ID to make the element default, or null to clear its default flow'
       ),
       ...expectedRevisionField
-    }).strict()
+    }).strict().superRefine((update, context) => {
+      // A call naming only elementId used to bump the revision and rewrite the
+      // file while changing nothing, invalidating every revision token the
+      // agent held. It is a caller mistake, so it is rejected at the boundary.
+      const hasMutation = ['name', 'documentation', 'properties', 'defaultFlow'].some(
+        field => Object.prototype.hasOwnProperty.call(update, field)
+      );
+      if (!hasMutation) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'At least one of name, documentation, properties, or defaultFlow must be updated'
+        });
+      }
+    })
   },
   update_connection: {
     annotations: DESTRUCTIVE_UPDATE,
