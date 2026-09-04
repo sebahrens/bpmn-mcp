@@ -5,6 +5,7 @@ import { jest } from '@jest/globals';
 import BpmnModdle from 'bpmn-moddle';
 import { SimpleBpmnEngine } from '../../../src/core/SimpleBpmnEngine.js';
 import { applyCollaborationLayoutPolicy } from '../../../src/core/layout/CollaborationLayoutPolicy.js';
+import { ConnectionRouter } from '../../../src/core/layout/ConnectionRouter.js';
 import { validateBpmnGeometry } from '../../helpers/bpmnGeometry.js';
 
 interface Bounds {
@@ -102,10 +103,7 @@ describe('collaboration auto-layout policy', () => {
     await engine.applyAutoLayout(collaboration.id);
     const xml = await engine.exportXml(collaboration.id);
     const report = await validateBpmnGeometry(xml);
-    expect(report.diagnostics.filter(diagnostic =>
-      diagnostic.code !== 'SHAPE_OVERLAP'
-      || !diagnostic.ids.some(id => id.startsWith('Participant_'))
-    )).toEqual([]);
+    expect(report.diagnostics).toEqual([]);
 
     const definitions = (await new BpmnModdle().fromXML(xml)).rootElement;
     const shapes = new Map<string, Bounds>(definitions.diagrams[0].plane.planeElement
@@ -185,14 +183,84 @@ describe('collaboration auto-layout policy', () => {
     const shapes = new Map<string, Bounds>(definitions.diagrams[0].plane.planeElement
       .filter((item: any) => item.$type === 'bpmndi:BPMNShape')
       .map((item: any) => [item.bpmnElement.id, plainBounds(item.bounds)]));
+    // Pools share one width; the requested 600 stays a lower bound for the
+    // narrower pool, which the stack widens to the widest requested pool.
     expect(shapes.get(first.id)).toMatchObject({ width: 700, height: 180 });
-    expect(shapes.get(second.id)).toMatchObject({ width: 600, height: 160 });
+    expect(shapes.get(second.id)).toMatchObject({ width: 700, height: 160 });
     expect(overlaps(shapes.get(first.id)!, shapes.get(second.id)!)).toBe(false);
     const edge = definitions.diagrams[0].plane.planeElement.find(
       (item: any) => item.bpmnElement?.id === message.id
     );
     expect(onBoundary(plainPoint(edge.waypoint[0]), shapes.get(first.id)!)).toBe(true);
     expect(onBoundary(plainPoint(edge.waypoint.at(-1)), shapes.get(second.id)!)).toBe(true);
+  });
+
+  it('lays out an imported collaboration whose data object is not rendered', async () => {
+    const engine = new SimpleBpmnEngine(directory);
+    const source = await fs.readFile(
+      join(process.cwd(), 'tests', 'fixtures', 'agent-geometry', 'imperfect-collaboration.bpmn'),
+      'utf8'
+    );
+    const imported = await engine.importXml(source, 'imperfect-collaboration');
+
+    await expect(engine.applyAutoLayout(imported.id)).resolves.toBeDefined();
+
+    const report = await validateBpmnGeometry(await engine.exportXml(imported.id));
+    expect(report.diagnostics.map(item => item.code)).not.toContain('MISSING_SHAPE');
+  });
+
+  it('aligns pools on one left edge and one width, stretching their lanes', async () => {
+    const engine = new SimpleBpmnEngine(directory);
+    const collaboration = await engine.createProcess('Aligned pools', 'collaboration');
+    const wide = await engine.createElement(collaboration.id, {
+      id: 'Participant_Wide',
+      type: 'bpmn:Participant',
+      name: 'Wide pool',
+      position: { x: 280, y: 40 },
+      size: { width: 900, height: 200 }
+    });
+    const narrow = await engine.createElement(collaboration.id, {
+      id: 'Participant_Narrow',
+      type: 'bpmn:Participant',
+      name: 'Narrow pool',
+      position: { x: 80, y: 400 },
+      size: { width: 400, height: 200 }
+    });
+    if (wide.kind !== 'participant' || !wide.processRef
+      || narrow.kind !== 'participant' || !narrow.processRef) {
+      throw new Error('Expected collaboration participants');
+    }
+    for (const definition of [
+      { id: 'Wide_Start', type: 'bpmn:StartEvent' as const, ownerId: wide.processRef },
+      { id: 'Wide_End', type: 'bpmn:EndEvent' as const, ownerId: wide.processRef },
+      { id: 'Narrow_Start', type: 'bpmn:StartEvent' as const, ownerId: narrow.processRef },
+      { id: 'Narrow_End', type: 'bpmn:EndEvent' as const, ownerId: narrow.processRef }
+    ]) {
+      await engine.createElement(collaboration.id, { ...definition, position: { x: 5, y: 5 } });
+    }
+    await engine.connect(collaboration.id, 'Wide_Start', 'Wide_End');
+    await engine.connect(collaboration.id, 'Narrow_Start', 'Narrow_End');
+    const lane = await engine.addLane(
+      collaboration.id,
+      narrow.id,
+      'Only lane',
+      ['Narrow_Start', 'Narrow_End'],
+      'top'
+    );
+
+    await engine.applyAutoLayout(collaboration.id);
+
+    const shapes = new Map<string, Bounds>(Array.from(
+      collaboration.document.diagram.shapes.values(),
+      shape => [shape.elementId, boundsOf(collaboration, shape.elementId)]
+    ));
+    const pools = [shapes.get(wide.id)!, shapes.get(narrow.id)!];
+    expect(pools[0].x).toBe(pools[1].x);
+    expect(pools[0].width).toBe(pools[1].width);
+    expect(pools[0].width).toBeGreaterThanOrEqual(900);
+    const laneBounds = collaboration.document.lanes.get(lane.id)!;
+    expect(laneBounds.size.width).toBe(pools[1].width - 30);
+    expect(contains(pools[1], { ...laneBounds.position, ...laneBounds.size })).toBe(true);
   });
 
   it('places peer message-flow labels without overlapping each other', async () => {
@@ -261,11 +329,27 @@ describe('collaboration auto-layout policy', () => {
     const document = collaboration.document;
     const shapeValues = jest.spyOn(document.diagram.shapes, 'values');
     const edgeValues = jest.spyOn(document.diagram.edges, 'values');
+    const routedShapes: unknown[] = [];
+    const routedEdges: unknown[] = [];
+    const route = ConnectionRouter.prototype.route;
+    const routeSpy = jest.spyOn(ConnectionRouter.prototype, 'route')
+      .mockImplementation(function (this: ConnectionRouter, ...args) {
+        routedShapes.push(args[2].shapes);
+        routedEdges.push(args[2].edges);
+        return route.apply(this, args);
+      } as typeof route);
 
-    applyCollaborationLayoutPolicy(document, document);
+    try {
+      applyCollaborationLayoutPolicy(document, document);
+    } finally {
+      routeSpy.mockRestore();
+    }
 
     expect(shapeValues).toHaveBeenCalledTimes(1);
     expect(edgeValues).toHaveBeenCalledTimes(1);
+    expect(routedShapes).toHaveLength(4);
+    expect(new Set(routedShapes).size).toBe(1);
+    expect(new Set(routedEdges).size).toBe(1);
   });
 });
 
@@ -297,4 +381,10 @@ function onBoundary(point: { x: number; y: number }, bounds: Bounds): boolean {
   const onVertical = (point.x === bounds.x || point.x === bounds.x + bounds.width)
     && point.y >= bounds.y && point.y <= bounds.y + bounds.height;
   return onHorizontal || onVertical;
+}
+
+function boundsOf(collaboration: { document: { elements: Map<string, any>; lanes: Map<string, any> } }, id: string): Bounds {
+  const element = collaboration.document.elements.get(id) ?? collaboration.document.lanes.get(id);
+  if (!element) throw new Error(`Unknown element ${id}`);
+  return { ...element.position, ...element.size };
 }

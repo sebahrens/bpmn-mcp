@@ -1,11 +1,60 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import BpmnModdle from 'bpmn-moddle';
+import { TOOL_ERROR_CODES } from '../../src/utils/ToolError.js';
+
+// Failed tool calls carry a machine-readable `code` from this closed set
+// (mcp-bpmn-8u0.11). Agents branch on it instead of parsing English, so adding,
+// renaming, or dropping one is a wire-contract change and must show up as a
+// diff here rather than silently reaching clients.
+const EXPECTED_TOOL_ERROR_CODES = [
+  'no_current_diagram',
+  'invalid_arguments',
+  'element_not_found',
+  'connection_not_found',
+  'wrong_object_kind',
+  'owner_or_scope_invalid',
+  'invalid_bpmn',
+  'geometry_rejected',
+  'revision_conflict',
+  'geometry_conflict',
+  'semantic_conflict',
+  'routing_failed',
+  'file_exists',
+  'file_not_found',
+  'storage_unavailable',
+  'render_unavailable',
+  'limit_exceeded',
+  'server_shutting_down',
+  'unexpected_error'
+] as const;
+
+/** JSON-RPC error codes this server is expected to produce. */
+const JSON_RPC_METHOD_NOT_FOUND = -32601;
+const JSON_RPC_INTERNAL_ERROR = -32603;
+
+/**
+ * Shape every failed tool call must have: text content plus structured content
+ * carrying a taxonomy code and the same message.
+ */
+function expectToolError(result: any, code: string): any {
+  expect(result.isError).toBe(true);
+  expect(EXPECTED_TOOL_ERROR_CODES).toContain(result.structuredContent?.code);
+  expect(result.structuredContent).toMatchObject({
+    code,
+    message: expect.any(String)
+  });
+  expect(result.content).toEqual([
+    { type: 'text', text: `Error: ${result.structuredContent.message}` }
+  ]);
+  return result.structuredContent;
+}
 
 const STARTUP_MESSAGE = 'MCP-BPMN Server running on stdio';
 const STARTUP_TIMEOUT_MS = 3000;
@@ -17,134 +66,29 @@ const REAL_BROWSER_RESPONSE_TIMEOUT_MS = 25_000;
 
 jest.setTimeout(40_000);
 
-const EXPECTED_TOOL_NAMES = [
-  'new_bpmn',
-  'new_from_mermaid',
-  'open_bpmn',
-  'open_mermaid_file',
-  'save',
-  'save_as',
-  'close',
-  'current',
-  'add_event',
-  'add_activity',
-  'add_gateway',
-  'add_data_object',
-  'add_text_annotation',
-  'connect',
-  'add_association',
-  'add_pool',
-  'add_lane',
-  'list_elements',
-  'get_element',
-  'list_connections',
-  'get_connection',
-  'update_element',
-  'update_connection',
-  'update_element_geometry',
-  'update_connection_geometry',
-  'apply_geometry_patch',
-  'route_connection',
-  'delete_element',
-  'export',
-  'save_svg',
-  'save_png',
-  'validate',
-  'analyze_geometry',
-  'auto_layout',
-  'list_diagrams',
-  'delete_diagram_file',
-  'get_diagrams_path',
-  'get_workspace',
-  'select_workspace'
-] as const;
+// The reviewed MCP wire contract lives in scripts/tool-contract.json so that a
+// tool or schema change is one reviewable diff instead of three hand-copied
+// hash tables. Regenerate it with `npm run contract:update` and review the diff;
+// never regenerate it merely to silence a failure here.
+interface ToolContract {
+  toolNames: string[];
+  contractFingerprint: string;
+  schemaFingerprints: Record<string, { input: string; output: string }>;
+}
 
-// Fingerprints pin the complete advertised input schemas. A schema change must
-// therefore be reviewed and explicitly accepted here instead of silently
-// weakening e2e.
-const EXPECTED_SCHEMA_FINGERPRINTS: Record<string, string> = {
-  new_bpmn: 'c8d67446a39cc6e7bd278a6e656ac43e7dd873151b090660e3521839b361919b',
-  new_from_mermaid: 'bdf6ae5a0516b9425ce350bbeb53f5a9908aca7954c50a8a629a78e12ae4b6b8',
-  open_bpmn: '7587abc15d187397b8d68fe03f16befb84d338d6c996c9698ed095c172575e33',
-  open_mermaid_file: '45b8782a7743d24839dc7235199cde0ed9c661ea1a756448251d0432b801e065',
-  save: 'e3953439e8c37941081d153623aa62a4f5c3d66d40311fb5d141d83b8bb4149b',
-  save_as: '7776d32d4d8f27f75d90dda36f7a2dd6da991820c4444499965176e47b34a9e5',
-  close: '99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa',
-  current: '99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa',
-  add_event: 'e7d02f2eb7ed8ff409725ac57cf6c3aa7533253dabdaa9fa5698e6c5f7ffc2ca',
-  add_activity: '28047c2200d1bc4285c83c7f0c0973055987959bd23d917c751454f71dd5b1f2',
-  add_gateway: '6b90a1756c20772fe595355864c30b2fccfb5aa64863c08fb21bacb36f007d54',
-  add_data_object: 'c17986f49a040a837a7380c3e772f5c59961fcd38045a8456ca925fce1ddd900',
-  add_text_annotation: '7a0ccb8cca4dd0186e652b86644cd514dd17a73b2281530960cfb0152ceff388',
-  connect: '2f907c315ebe108e83269f200f4483e627924af5e01e05834f73664f86a0f6d5',
-  add_association: 'b3b5f6b89d87a1210a273980ba9c4c40eae60e4591f86dc0725a8ac44dabaa24',
-  add_pool: '550f30243a1967595a7dbf31813529298ae6d201a6e6892764094beba6960424',
-  add_lane: '3d7bae26730864137e5835e922c34a55a95cc4e74e983b815098baac7781729d',
-  list_elements: 'a6cd6d19adcc3d088f1740e0d298d2da71c13334dfadd81348fd2e75a0f19269',
-  get_element: '6a0b98f2c7a65860e11538c9226f98c244ee14ab94df83358dee8ba400c827fa',
-  list_connections: '0955a33a04979d10fe4e6d10d2e491e90b6421c44cd288980646cdcfc1a0ac0f',
-  get_connection: 'a8d2494864383f5456f5246b9db83755e7e386bc3c3e23a4731b229ff2cdfa86',
-  update_element: 'fc7b11fde0c85ea6ab0bf4b7256b6bdb4a59c55e8b24d4704de1c0cb06d78976',
-  update_connection: 'a21f42a43df5e3c44f71c416dca5ef832615d387245e750d13b2c01aea2e8413',
-  update_element_geometry: 'af731b8e3af773c333b56069b5b0612b84548b77ee0de1f91b3bf86138689a78',
-  update_connection_geometry: '23154fdaf45120b7811eab3f1937912df423cc8ac0c286aa9b2642f42add8c67',
-  apply_geometry_patch: 'b24ad1f84788b55f3a90c9a91a28b649ab58184286024b4c10b048ef5d543fa3',
-  route_connection: '97f02593e029053aad4ef8bfdf43002ab62be0f24e2660b87a784616cb2b3eec',
-  delete_element: '180e259778ae17811d6b473dd94661e2da2f7be52d8350c7d95afb09b2a05a06',
-  export: '5246d220ea6867c12b818a950bb411b641872c4ebae8daa7462d3939e1a63710',
-  save_svg: '63463e9bad4e8f8f17a905f0b237431048d40742c5990347dcba88e3385dd695',
-  save_png: '128f014b187ac80c6dfab3977a267fc3f0aabac2194ec689c42b03888496c5b1',
-  validate: '7480ee2efa429395b7cd39c1cc63b6323354ab4200eb9a2135ddbf9d6b9f07b8',
-  analyze_geometry: 'bbd7b771ec28732a75288fbd1b7a96af5dc4686983681ad8ecc95dc1fcc64eb7',
-  auto_layout: 'e102744408602f685882544dd368cef68f410c2545bae815796aa50ad91dee43',
-  list_diagrams: '7ee2be8c2aa4cf5ee19648606709df5d0bd35de2cc3d489dbbc34ee69d81b294',
-  delete_diagram_file: 'e2e4c99bc839f8567b6fbc158c5f6370b2bd906466477efad74a97738abe451d',
-  get_diagrams_path: '99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa',
-  get_workspace: '99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa',
-  select_workspace: 'cb23e8b6c4dfad30db9a249668a70d3b7eb18e21f1299adb2dbcfa0f15090fd9'
-};
+const TOOL_CONTRACT: ToolContract = JSON.parse(
+  readFileSync(path.resolve(process.cwd(), 'scripts/tool-contract.json'), 'utf8')
+) as ToolContract;
 
-const EXPECTED_OUTPUT_SCHEMA_FINGERPRINTS: Record<string, string> = {
-  new_bpmn: '04bf0364da0b9823385a2482fa8b9fed98182e2e28db3db602c1b35d8296d180',
-  new_from_mermaid: 'abc91ffdb190e1a0f54357efa2f059841b4af090cbad1df038b963d4a61d8cb3',
-  open_bpmn: 'c950412b9362a324d5aadb4de15e88e55d403dbabd80ca822e18a763e89326ce',
-  open_mermaid_file: '902e5e667eae807c7a05494155ade36923c276fa031ca3322f5c45c32704bbe8',
-  save: 'cce8979283b4f6d56e348dd8cdb401f5e5f94ccb656dd6e93d44581d10e79cc8',
-  save_as: 'cce8979283b4f6d56e348dd8cdb401f5e5f94ccb656dd6e93d44581d10e79cc8',
-  close: 'bb1f660f35dbe3378b10a47ecebe1a803b1bd437ccb3f280d1bd837d77e13aac',
-  current: '957f34a407215681221444baaaf02adff10f93d5a507592135bf88feebc47aaa',
-  add_event: 'd7e3c2de2b29bec9cc34c7849892fe7201ff687eb423d699353287d678022964',
-  add_activity: 'd7e3c2de2b29bec9cc34c7849892fe7201ff687eb423d699353287d678022964',
-  add_gateway: 'd7e3c2de2b29bec9cc34c7849892fe7201ff687eb423d699353287d678022964',
-  add_data_object: 'b0c5f7a6cb41a8cafd8f491d968efc98c19ff3748e29a87cbce6e4dae7210b19',
-  add_text_annotation: '87075ca424a6ec6d523e96a339c6a2c6ba75d1f8eb01cca28453c901dfc5889a',
-  connect: '67a04acd2405d0d07639fbf99eca3a11dde5a77d4255a920e932b49da3497d91',
-  add_association: 'b46defecc658ffbd49c16e3ce77584a6df835e00497bddf1bccb03661b2dd1a0',
-  add_pool: '91fc256a5c8c10d230a926252ba5d816d41f350a7a98d682239a6b5f76c55ebb',
-  add_lane: '70fdb3ef5c34986164384cf1b4f3b267ccaa75c88a702ecfbe30fb2e56106497',
-  list_elements: 'c9a126d8679efad62943b7979effeb020d66d54252d552f73f6fff6402f4293a',
-  get_element: '6bacfd2932098da88df335c374f8ddaa3d728f6c810b270da9856f7ace60c3fe',
-  list_connections: '7be4192a2906654bb980870e3b5bc5ba8dfbac8e6d13dd80376386da4dacb150',
-  get_connection: 'd7c972eafd878cfa1321ae3de8c8391fd88db5d7352bc16117aa24effa143592',
-  update_element: '7a9342ecc1c04552b07d66e8d30893a6a19940419c2e40a1a4f7779f0903bab6',
-  update_connection: 'd27c4cd3a1ae6e629e10a517f04153679f7df128773b6e2427085a33bfb7ce00',
-  update_element_geometry: 'c057fce71e7bd4f74d321e0aa39fc3948bb8367ad8b775794aa91dc08816f74c',
-  update_connection_geometry: '107dd91228c30411da079888af0c8baa9e1e09021cfc5f428b46c82e975fe654',
-  apply_geometry_patch: '28aaa10560531121a986edb44a9220ad88f23bdfbd9eb29c3f0dc3bc0125832e',
-  route_connection: 'c5d75104c94e3bee70e050c7cd0998ecc9555508d73cdfe9fa3d0145fe37451a',
-  delete_element: 'cb744fd33b21e9cf83a53dc2e36818647481910cd018e4491008353d2e71e330',
-  export: '62b4cdf277d72915b590cff5fe0a0fa2569d9a6ad756ed994fab000dc5582b01',
-  save_svg: '03d7e82d126d313d69758afad9a933dcd60f4eca906b19a260ccb6ca3b6d83b5',
-  save_png: '82a7fa1d59b5ff0a616e386ffe9b07be7367f8d41017faa5b9dd50bca2a7ee64',
-  validate: '51b040b98aa2c23860847c0deb71e59ae2ea0a44756fb947157a61e29a2931ac',
-  analyze_geometry: '726e0006fae222243be6da25c89d3823fe0375e2b28446e3c00e7d5ea4206495',
-  auto_layout: 'a27dd3a547ee7662516554c754956196eea5fe5ecb348aaf66fc6506e4c9c352',
-  list_diagrams: 'b70e5d844a9ff74f00dbc169404b2ff2334a47f9c3e790399733816919669ec8',
-  delete_diagram_file: '08820ad10e47a4d8c3ed02d5e7a489846dcc7efacb67a12ce3fa4559486ba8f9',
-  get_diagrams_path: 'fe84c056d57a34dde9e7f1e1aacf5ee9cf724dc231ec24f8acfc29b8cabce3dc',
-  get_workspace: '5c322f6ad5f4f47efdf0ca4e29ce43aca2dfd1ae458907639dfd5f190c71bb68',
-  select_workspace: 'bb83cdfb45ac5e7bfb201d5b869731a577b623e25e50be008910a2eab9961b75'
-};
+const EXPECTED_TOOL_NAMES = TOOL_CONTRACT.toolNames;
+
+const EXPECTED_SCHEMA_FINGERPRINTS: Record<string, string> = Object.fromEntries(
+  EXPECTED_TOOL_NAMES.map(name => [name, TOOL_CONTRACT.schemaFingerprints[name].input])
+);
+
+const EXPECTED_OUTPUT_SCHEMA_FINGERPRINTS: Record<string, string> = Object.fromEntries(
+  EXPECTED_TOOL_NAMES.map(name => [name, TOOL_CONTRACT.schemaFingerprints[name].output])
+);
 
 interface JsonRpcResponse {
   jsonrpc?: unknown;
@@ -219,6 +163,20 @@ function waitForProcessResult(
   });
 }
 
+// Puppeteer resolves its managed Chrome under $HOME/.cache/puppeteer. Tests that
+// isolate HOME must keep the real cache reachable, otherwise the renderer-backed
+// tools only work on hosts that happen to have a system Chrome installed.
+const PUPPETEER_CACHE_DIR = process.env.PUPPETEER_CACHE_DIR
+  ?? path.join(homedir(), '.cache', 'puppeteer');
+
+function isolatedHomeEnvironment(isolatedHome: string): NodeJS.ProcessEnv {
+  return {
+    HOME: isolatedHome,
+    USERPROFILE: isolatedHome,
+    PUPPETEER_CACHE_DIR
+  };
+}
+
 async function waitForFile(filename: string, timeoutMs = 1000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -230,6 +188,45 @@ async function waitForFile(filename: string, timeoutMs = 1000): Promise<void> {
     }
   }
   throw new Error(`Timed out waiting for ${filename}`);
+}
+
+/**
+ * A browser that never starts used to surface only as "Timed out waiting for
+ * .../browser.pid", hiding the actual launch failure inside the discarded tool
+ * response and the server's stderr. Fold both into the thrown error so the
+ * renderer prerequisite that broke is visible in the CI log.
+ */
+async function waitForBrowserMarker(
+  launch: ServerLaunch,
+  render: Promise<JsonRpcResponse>,
+  marker: string,
+  timeoutMs: number
+): Promise<void> {
+  try {
+    await waitForFile(marker, timeoutMs);
+    return;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    let pendingTimeout: NodeJS.Timeout | undefined;
+    const outcome = await Promise.race([
+      render.then(
+        response => `tool result: ${JSON.stringify(response)}`,
+        failure => `tool request failed: ${
+          failure instanceof Error ? failure.message : String(failure)
+        }`
+      ),
+      new Promise<string>(resolve => {
+        pendingTimeout = setTimeout(
+          () => resolve('tool result: still pending'),
+          2000
+        );
+      })
+    ]);
+    if (pendingTimeout) clearTimeout(pendingTimeout);
+    throw new Error(
+      `${detail}. ${outcome}. server stderr: ${launch.stderr() || '(empty)'}`
+    );
+  }
 }
 
 function isPidAlive(pid: number): boolean {
@@ -637,7 +634,12 @@ describe('MCP server process lifecycle', () => {
         method: 'tools/call',
         params: { name: 'export', arguments: { format: 'svg' } }
       }, REAL_BROWSER_RESPONSE_TIMEOUT_MS);
-      await waitForFile(marker, REAL_BROWSER_START_TIMEOUT_MS);
+      await waitForBrowserMarker(
+        launch,
+        render,
+        marker,
+        REAL_BROWSER_START_TIMEOUT_MS
+      );
       const browserPid = Number(await readFile(marker, 'utf8'));
       expect(isPidAlive(browserPid)).toBe(true);
 
@@ -802,8 +804,7 @@ describe('MCP Server End-to-End Tests', () => {
       path.resolve(process.cwd(), 'dist/server/index.js')
     ], {
       ...process.env,
-      HOME: isolatedHome,
-      USERPROFILE: isolatedHome,
+      ...isolatedHomeEnvironment(isolatedHome),
       MCP_BPMN_DIAGRAMS_PATH: diagramsDirectory
     }, STARTUP_TIMEOUT_MS, diagramsDirectory);
 
@@ -857,6 +858,7 @@ describe('MCP Server End-to-End Tests', () => {
           case 'update_connection_geometry':
           case 'apply_geometry_patch':
           case 'route_connection':
+          case 'build_process':
             expect(JSON.parse(text)).toEqual(structured);
             return;
           case 'validate': {
@@ -987,6 +989,39 @@ describe('MCP Server End-to-End Tests', () => {
         type: 'process',
         extensionProfile: 'portable'
       });
+      await call('close');
+
+      await call('new_bpmn', { name: 'Bulk build' });
+      const built = await call('build_process', {
+        nodes: [
+          { kind: 'event', ref: 'start', eventType: 'start', name: 'Request received' },
+          { kind: 'activity', ref: 'review', activityType: 'userTask', name: 'Review' },
+          { kind: 'gateway', ref: 'decide', gatewayType: 'exclusive', name: 'Approved?' },
+          { kind: 'activity', ref: 'pay', activityType: 'serviceTask', name: 'Pay' },
+          { kind: 'event', ref: 'done', eventType: 'end', name: 'Done' }
+        ],
+        flows: [
+          { source: 'start', target: 'review' },
+          { source: 'review', target: 'decide' },
+          { source: 'decide', target: 'pay', label: 'yes', condition: '${approved}' },
+          { source: 'decide', target: 'done', label: 'no', isDefault: true },
+          { source: 'pay', target: 'done' }
+        ]
+      });
+      expect(built.structuredContent).toMatchObject({
+        elementCount: 5,
+        connectionCount: 5,
+        filename: expect.stringMatching(/\.bpmn$/)
+      });
+      const builtByRef = new Map(
+        (built.structuredContent.elements as Array<{ ref: string; elementId: string; type: string }>)
+          .map(element => [element.ref, element])
+      );
+      expect([...builtByRef.keys()].sort()).toEqual(['decide', 'done', 'pay', 'review', 'start']);
+      expect(builtByRef.get('review')!.type).toBe('bpmn:UserTask');
+      expect(builtByRef.get('decide')!.type).toBe('bpmn:ExclusiveGateway');
+      // Caller-side refs must never become BPMN ids on the wire.
+      for (const element of builtByRef.values()) expect(element.elementId).not.toBe(element.ref);
       await call('close');
 
       const mermaidCreation = await call('new_from_mermaid', {
@@ -1583,11 +1618,13 @@ describe('MCP Server End-to-End Tests', () => {
         method: 'tools/call',
         params: { name: 'add_event', arguments: { eventType: 'start' } }
       }), requestId - 1);
-      expect(expectedToolError).toMatchObject({
-        content: [{ type: 'text', text: expect.stringContaining('Error: No current context') }],
-        isError: true
+      // A tool needing an active diagram fails at the tool level, not the
+      // protocol level, and names the recovery action (mcp-bpmn-8u0.11).
+      expect(expectToolError(expectedToolError, 'no_current_diagram')).toEqual({
+        code: 'no_current_diagram',
+        message: 'No diagram is currently open',
+        recovery: expect.stringContaining('new_bpmn')
       });
-      expect(expectedToolError.structuredContent).toBeUndefined();
 
       const selectedWorkspace = await call('select_workspace', { path: 'selected' });
       expect(selectedWorkspace.structuredContent).toMatchObject({
@@ -1705,8 +1742,7 @@ describe('MCP Server End-to-End Tests', () => {
     );
     const launch = launchServer(process.execPath, ['--import', delayFixturePath, serverPath], {
       ...process.env,
-      HOME: isolatedHome,
-      USERPROFILE: isolatedHome,
+      ...isolatedHomeEnvironment(isolatedHome),
       MCP_BPMN_DIAGRAMS_PATH: diagramsDirectory
     });
 
@@ -1857,8 +1893,7 @@ describe('MCP Server End-to-End Tests', () => {
     const serverPath = path.resolve(process.cwd(), 'dist/server/index.js');
     const launch = launchServer(process.execPath, [serverPath], {
       ...process.env,
-      HOME: isolatedHome,
-      USERPROFILE: isolatedHome,
+      ...isolatedHomeEnvironment(isolatedHome),
       MCP_BPMN_DIAGRAMS_PATH: diagramsDirectory
     });
 
@@ -2075,9 +2110,11 @@ describe('MCP Server End-to-End Tests', () => {
         method: 'tools/call',
         params: { name: 'delete_element', arguments: { elementId: 'Flow_Missing' } }
       }), 18);
-      expect(unknownConnection).toEqual({
-        content: [{ type: 'text', text: 'Error: Element Flow_Missing not found' }],
-        isError: true
+      expect(expectToolError(unknownConnection, 'element_not_found')).toEqual({
+        code: 'element_not_found',
+        message: 'Element Flow_Missing not found',
+        elementId: 'Flow_Missing',
+        recovery: expect.stringContaining('list_elements')
       });
       expect(textContent(await callTool(launch, 19, 'export', {
         format: 'xml',
@@ -2090,9 +2127,14 @@ describe('MCP Server End-to-End Tests', () => {
         method: 'tools/call',
         params: { name: 'invalid_tool_name', arguments: {} }
       }), 20);
-      expect(expectedToolError).toEqual({
-        content: [{ type: 'text', text: 'Error: Unknown tool: invalid_tool_name' }],
-        isError: true
+      // An unrecognised tool name is a caller mistake, so it is reported at the
+      // tool level with the invalid_arguments code rather than as a JSON-RPC
+      // "Method not found": tools/call itself exists.
+      expect(expectToolError(expectedToolError, 'invalid_arguments')).toEqual({
+        code: 'invalid_arguments',
+        message: 'Unknown tool: invalid_tool_name',
+        recovery: expect.stringContaining('tools/list'),
+        tool: 'invalid_tool_name'
       });
 
       const files = await readdir(diagramsDirectory);
@@ -2107,20 +2149,167 @@ describe('MCP Server End-to-End Tests', () => {
   });
 });
 
+/**
+ * Negative MCP protocol shapes (mcp-bpmn-5e7.11).
+ *
+ * Every other e2e case throws on a JSON-RPC error, so the failure half of the
+ * wire contract was never observed: an agent that sends a bad name, a bad
+ * argument type, or a malformed line has to be able to tell a protocol fault
+ * from a tool fault, and to keep using the same session afterwards. These pin
+ * both the JSON-RPC codes and the tool-level error shape, and re-assert that
+ * the session is still usable after each one.
+ */
+describe('MCP protocol error shapes', () => {
+  it('pins the closed set of tool error codes', () => {
+    expect([...TOOL_ERROR_CODES]).toEqual([...EXPECTED_TOOL_ERROR_CODES]);
+    expect(new Set(TOOL_ERROR_CODES).size).toBe(TOOL_ERROR_CODES.length);
+  });
+
+  it('separates protocol faults from tool faults and stays usable after each', async () => {
+    const diagramsDirectory = await mkdtemp(path.join(tmpdir(), 'mcp-bpmn-protocol-e2e-'));
+    const serverPath = path.resolve(process.cwd(), 'dist/server/index.js');
+    const launch = launchServer(process.execPath, [serverPath], {
+      ...process.env,
+      ...isolatedHomeEnvironment(path.join(diagramsDirectory, 'home')),
+      MCP_BPMN_DIAGRAMS_PATH: diagramsDirectory
+    });
+    let requestId = 2;
+    const request = (method: string, params: Record<string, unknown>) => {
+      const id = requestId++;
+      return sendRequest(launch, { jsonrpc: '2.0', id, method, params })
+        .then(response => ({ id, response }));
+    };
+    const expectProtocolError = (
+      { id, response }: { id: number; response: JsonRpcResponse },
+      code: number
+    ) => {
+      expect(response.jsonrpc).toBe('2.0');
+      expect(response.id).toBe(id);
+      expect(response.result).toBeUndefined();
+      expect(response.error).toMatchObject({
+        code,
+        message: expect.any(String)
+      });
+      return response.error!;
+    };
+
+    try {
+      await launch.ready;
+      await initializeServer(launch, 'mcp-bpmn-protocol-e2e');
+
+      // 1. A method the server never registered. Only `tools` is advertised, so
+      //    every resources/* method is Method not found rather than an empty list.
+      for (const method of ['nonexistent/method', 'resources/list', 'resources/read']) {
+        expectProtocolError(
+          await request(method, method === 'resources/read' ? { uri: 'bpmn://missing' } : {}),
+          JSON_RPC_METHOD_NOT_FOUND
+        );
+      }
+      expect(expectProtocolError(
+        await request('nonexistent/method', {}),
+        JSON_RPC_METHOD_NOT_FOUND
+      ).message).toBe('Method not found');
+
+      // 2. tools/call whose own params are malformed never reaches a tool, so it
+      //    fails at the protocol layer. The SDK reports these as internal errors
+      //    rather than -32602; the code is pinned as observed.
+      const malformedParams = expectProtocolError(
+        await request('tools/call', { arguments: {} }),
+        JSON_RPC_INTERNAL_ERROR
+      );
+      expect(String(malformedParams.message)).toContain('"name"');
+      const nonObjectArguments = expectProtocolError(
+        await request('tools/call', { name: 'new_bpmn', arguments: 'not-an-object' }),
+        JSON_RPC_INTERNAL_ERROR
+      );
+      expect(String(nonObjectArguments.message)).toContain('"arguments"');
+
+      // 3. A well-formed tools/call for an unknown tool is a *tool* result: the
+      //    request succeeded, the call did not.
+      const unknownTool = expectProtocolSuccess(
+        (await request('tools/call', { name: 'no_such_tool', arguments: {} })).response,
+        requestId - 1
+      );
+      expect(expectToolError(unknownTool, 'invalid_arguments')).toEqual({
+        code: 'invalid_arguments',
+        message: 'Unknown tool: no_such_tool',
+        recovery: expect.stringContaining('tools/list'),
+        tool: 'no_such_tool'
+      });
+
+      // 4. A known tool with a wrong-typed argument fails the same way, and the
+      //    message names the offending argument path so the agent can fix it.
+      const wrongType = expectProtocolSuccess(
+        (await request('tools/call', {
+          name: 'new_bpmn',
+          arguments: { name: 42 }
+        })).response,
+        requestId - 1
+      );
+      const wrongTypeError = expectToolError(wrongType, 'invalid_arguments');
+      expect(wrongTypeError.message).toContain('name: Expected string, received number');
+      expect(wrongTypeError.tool).toBe('new_bpmn');
+      const unknownArgument = expectProtocolSuccess(
+        (await request('tools/call', {
+          name: 'new_bpmn',
+          arguments: { name: 'Fine', unexpected: true }
+        })).response,
+        requestId - 1
+      );
+      expect(expectToolError(unknownArgument, 'invalid_arguments').message)
+        .toContain('unexpected');
+
+      // A rejected call must not have created a diagram.
+      expect((await readdir(diagramsDirectory)).filter(entry => entry.endsWith('.bpmn')))
+        .toEqual([]);
+
+      // 5. A line that is not JSON, and a line that is JSON but not JSON-RPC,
+      //    are dropped with a diagnostic on stderr and no response at all.
+      const stderrBefore = launch.stderr();
+      launch.process.stdin.write('this is not json\n');
+      launch.process.stdin.write('{"hello":"world"}\n');
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline
+        && !(launch.stderr().slice(stderrBefore.length).includes('SyntaxError')
+          && launch.stderr().slice(stderrBefore.length).includes('ZodError'))) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      const stderrAfter = launch.stderr().slice(stderrBefore.length);
+      expect(stderrAfter).toContain('[MCP-BPMN Server Error]');
+      expect(stderrAfter).toContain('SyntaxError');
+      expect(stderrAfter).toContain('ZodError');
+      expect(hasExited(launch.process)).toBe(false);
+
+      // 6. The session survives all of the above and still serves real work.
+      const listed = expectProtocolSuccess(
+        (await request('tools/list', {})).response,
+        requestId - 1
+      );
+      expect(listed.tools.map((tool: { name: string }) => tool.name).sort())
+        .toEqual([...EXPECTED_TOOL_NAMES].sort());
+      const created = await callTool(launch, requestId++, 'new_bpmn', {
+        name: 'After protocol errors'
+      });
+      expect(created.structuredContent.filename).toEqual(expect.any(String));
+    } finally {
+      await stopServer(launch.process);
+      await rm(diagramsDirectory, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('cross-process optimistic persistence', () => {
   it('rejects a stale MCP server and succeeds after reopening the winning file', async () => {
     const diagramsDirectory = await mkdtemp(path.join(tmpdir(), 'mcp-bpmn-revision-e2e-'));
     const serverPath = path.resolve(process.cwd(), 'dist/server/index.js');
     const first = launchServer(process.execPath, [serverPath], {
       ...process.env,
-      HOME: path.join(diagramsDirectory, 'first-home'),
-      USERPROFILE: path.join(diagramsDirectory, 'first-home'),
+      ...isolatedHomeEnvironment(path.join(diagramsDirectory, 'first-home')),
       MCP_BPMN_DIAGRAMS_PATH: diagramsDirectory
     });
     const second = launchServer(process.execPath, [serverPath], {
       ...process.env,
-      HOME: path.join(diagramsDirectory, 'second-home'),
-      USERPROFILE: path.join(diagramsDirectory, 'second-home'),
+      ...isolatedHomeEnvironment(path.join(diagramsDirectory, 'second-home')),
       MCP_BPMN_DIAGRAMS_PATH: diagramsDirectory
     });
 

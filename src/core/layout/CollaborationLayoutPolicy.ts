@@ -41,10 +41,11 @@ interface DiagramLookup {
  * Existing node positions are deliberately replaced by auto-layout. Existing
  * participant and lane dimensions are lower bounds, however, so an explicitly
  * requested/imported container is never shrunk. Disconnected nodes remain in
- * their owner process, black-box participants retain their requested bounds,
- * and participants are restacked after expansion. Message flows are routed
- * only after that final container placement and therefore never affect the
- * sequence-flow ranks inside a process.
+ * their owner process, black-box participants keep their requested bounds as
+ * lower bounds, and participants are restacked after expansion onto a shared
+ * left edge and a shared width. Message flows are routed only after that final
+ * container placement and therefore never affect the sequence-flow ranks
+ * inside a process.
  */
 export function applyCollaborationLayoutPolicy(
   requested: BpmnDocument,
@@ -64,34 +65,68 @@ export function applyCollaborationLayoutPolicy(
 
   for (const participant of participants) {
     const constraint = requested.elements.get(participant.id);
+    // A size the caller never asked for is not a constraint. Treating the
+    // 600x250 type default as a floor left one-row pools mostly empty.
+    const requestedSize = constraint?.sizeManaged ? undefined : constraint?.size;
     participant.size.width = Math.max(
       participant.size.width,
-      constraint?.size.width || 0,
+      requestedSize?.width || 0,
       COLLABORATION_LAYOUT_POLICY.participantMinWidth
     );
     participant.size.height = Math.max(
       participant.size.height,
-      constraint?.size.height || 0,
+      requestedSize?.height || 0,
       participant.processRef
         ? COLLABORATION_LAYOUT_POLICY.whiteBoxParticipantMinHeight
         : COLLABORATION_LAYOUT_POLICY.participantMinHeight
     );
-    expandParticipantAroundOwnedGeometry(participant, laidOut);
+    expandParticipantAroundOwnedGeometry(participant, laidOut, constraint?.sizeManaged === true);
     applyLaneConstraints(participant, requested, laidOut, diagramLookup);
   }
 
+  // Pools of a collaboration form one stack: they share a left edge and a
+  // width, so the diagram does not read as ragged columns of whitespace.
+  const alignedX = participants.reduce(
+    (minimum, participant) => Math.min(minimum, participant.position.x),
+    Infinity
+  );
+  const alignedWidth = participants.reduce(
+    (maximum, participant) => Math.max(maximum, participant.size.width),
+    0
+  );
   let nextY = participants.reduce(
     (minimum, participant) => Math.min(minimum, participant.position.y),
     Infinity
   );
   for (const participant of participants) {
-    const translation = { x: 0, y: nextY - participant.position.y };
+    const translation = {
+      x: alignedX - participant.position.x,
+      y: nextY - participant.position.y
+    };
     translateParticipant(participant, translation, laidOut, diagramLookup);
+    participant.size.width = alignedWidth;
+    stretchParticipantLanes(participant, laidOut);
     nextY = participant.position.y + participant.size.height
       + COLLABORATION_LAYOUT_POLICY.participantGap;
   }
 
   routeCollaborationConnections(laidOut, diagramLookup);
+}
+
+function stretchParticipantLanes(
+  participant: Extract<BpmnDocumentElement, { kind: 'participant' }>,
+  document: BpmnDocument
+): void {
+  if (!participant.processRef) return;
+  const laneSet = Array.from(document.laneSets.values()).find(candidate =>
+    candidate.processId === participant.processRef && candidate.parentLaneId === undefined
+  );
+  for (const laneId of laneSet?.laneIds ?? []) {
+    const lane = document.lanes.get(laneId);
+    if (lane) {
+      lane.size.width = participant.size.width - COLLABORATION_LAYOUT_POLICY.participantHeaderWidth;
+    }
+  }
 }
 
 function applyLaneConstraints(
@@ -220,7 +255,14 @@ function adjustProcessConnectionRoutes(
 
 function expandParticipantAroundOwnedGeometry(
   participant: Extract<BpmnDocumentElement, { kind: 'participant' }>,
-  document: BpmnDocument
+  document: BpmnDocument,
+  /**
+   * True when the pool's size came from the type default rather than the
+   * caller. The laid-out participant is a fresh parse of the layout output and
+   * carries no provenance of its own, so it is passed in from the requested
+   * document.
+   */
+  sizeManaged: boolean
 ): void {
   if (!participant.processRef) return;
   const owned = [
@@ -241,14 +283,26 @@ function expandParticipantAroundOwnedGeometry(
     (maximum, bounds) => Math.max(maximum, bounds.y + bounds.height),
     -Infinity
   );
-  participant.size.width = Math.max(
-    participant.size.width,
-    maxRight - participant.position.x
-  );
-  participant.size.height = Math.max(
-    participant.size.height,
-    maxBottom - participant.position.y
-  );
+  const contentWidth = maxRight - participant.position.x;
+  const contentHeight = maxBottom - participant.position.y;
+  if (sizeManaged) {
+    // The pool carries a type default nobody asked for, so it is free to
+    // shrink to what it actually contains, down to the readable minimum.
+    // Sizes the caller chose are only ever grown, never reduced.
+    participant.size.width = Math.max(
+      contentWidth,
+      COLLABORATION_LAYOUT_POLICY.participantMinWidth
+    );
+    participant.size.height = Math.max(
+      contentHeight,
+      participant.processRef
+        ? COLLABORATION_LAYOUT_POLICY.whiteBoxParticipantMinHeight
+        : COLLABORATION_LAYOUT_POLICY.participantMinHeight
+    );
+    return;
+  }
+  participant.size.width = Math.max(participant.size.width, contentWidth);
+  participant.size.height = Math.max(participant.size.height, contentHeight);
 }
 
 function translateParticipant(
@@ -326,6 +380,10 @@ function routeCollaborationConnections(
   diagramLookup: DiagramLookup
 ): void {
   const router = new ConnectionRouter();
+  // Indexed once for the whole pass: both arrays hold the live DI records, so
+  // a label placed for one message flow is an obstacle for the next one.
+  const shapes = Array.from(diagramLookup.shapesByElement.values());
+  const edges = Array.from(diagramLookup.edgesByConnection.values());
 
   for (const connection of document.connections.values()) {
     if (connection.type !== 'bpmn:MessageFlow') continue;
@@ -333,8 +391,8 @@ function routeCollaborationConnections(
       avoidElementIds: [],
       avoidConnectionIds: [],
       clearance: COLLABORATION_LAYOUT_POLICY.routeClearance,
-      shapes: Array.from(diagramLookup.shapesByElement.values()),
-      edges: Array.from(diagramLookup.edgesByConnection.values())
+      shapes,
+      edges
     });
     const selected = candidates.find(candidate => candidate.diagnostics.length === 0)
       ?? candidates[0];

@@ -6,6 +6,7 @@ import { SimpleBpmnEngine } from '../../src/core/SimpleBpmnEngine.js';
 import { diagramContext } from '../../src/core/DiagramContext.js';
 import { BpmnRequestHandler } from '../../src/server/handlers.js';
 import {
+  parseToolRequest,
   toolDefinitions,
   toolNames,
   tools,
@@ -13,6 +14,7 @@ import {
 } from '../../src/server/tools.js';
 import { FileManager } from '../../src/utils/FileManager.js';
 import { IdGenerator } from '../../src/utils/IdGenerator.js';
+import { TOOL_ERROR_CODES } from '../../src/utils/ToolError.js';
 
 type ReviewedAnnotations = Required<Pick<
   ToolAnnotations,
@@ -86,6 +88,7 @@ const EXPECTED_ANNOTATIONS = {
   validate: READ_ONLY,
   analyze_geometry: READ_ONLY,
   auto_layout: DESTRUCTIVE_UPDATE,
+  build_process: ADDITIVE,
   list_diagrams: READ_ONLY,
   delete_diagram_file: DESTRUCTIVE_UPDATE,
   get_diagrams_path: READ_ONLY,
@@ -269,5 +272,150 @@ describe('MCP tool behavior annotations', () => {
     const repeated = await handler.handleRequest('delete_diagram_file', { filename });
     expect(repeated.isError).toBe(true);
     await expect(fs.access(join(directory, filename))).rejects.toThrow();
+  });
+});
+
+describe('structured tool errors', () => {
+  const errorCases: Array<{ label: string; tool: ToolName; args: unknown; code: string }> = [
+    {
+      label: 'a tool needing a diagram before one is open',
+      tool: 'list_elements',
+      args: {},
+      code: 'no_current_diagram'
+    },
+    {
+      label: 'an argument that fails schema validation',
+      tool: 'add_activity',
+      args: { activityType: 'notAType', name: 'x' },
+      code: 'invalid_arguments'
+    },
+    {
+      label: 'an unknown element id',
+      tool: 'get_element',
+      args: { elementId: 'Nope_1' },
+      code: 'element_not_found'
+    },
+    {
+      label: 'an unknown connection id',
+      tool: 'get_connection',
+      args: { connectionId: 'Nope_1' },
+      code: 'connection_not_found'
+    }
+  ];
+
+  it.each(errorCases)('reports $label with a machine-readable code', async ({ tool, args, code }) => {
+    const directory = await fs.mkdtemp(join(tmpdir(), 'mcp-bpmn-errors-'));
+    IdGenerator.reset();
+    diagramContext.clear();
+    const handler = new BpmnRequestHandler(new SimpleBpmnEngine(directory));
+    try {
+      if (code !== 'no_current_diagram') {
+        await handler.handleRequest('new_bpmn', { name: 'Errors' });
+      }
+
+      const result = await handler.handleRequest(tool, args);
+
+      expect(result.isError).toBe(true);
+      const structured = result.structuredContent as Record<string, unknown> | undefined;
+      expect(structured).toBeDefined();
+      expect(structured!.code).toBe(code);
+      expect(typeof structured!.message).toBe('string');
+      expect(TOOL_ERROR_CODES).toContain(structured!.code);
+    } finally {
+      diagramContext.clear();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('gives every advertised tool a structured failure when called with no diagram open', async () => {
+    const directory = await fs.mkdtemp(join(tmpdir(), 'mcp-bpmn-errors-all-'));
+    IdGenerator.reset();
+    diagramContext.clear();
+    const handler = new BpmnRequestHandler(new SimpleBpmnEngine(directory));
+    try {
+      const offenders: string[] = [];
+      for (const name of toolNames) {
+        const result = await handler.handleRequest(name, {});
+        if (!result.isError) continue;
+        const structured = result.structuredContent as Record<string, unknown> | undefined;
+        if (!structured || !TOOL_ERROR_CODES.includes(structured.code as never)) {
+          offenders.push(`${name}: ${JSON.stringify(structured?.code ?? null)}`);
+        }
+      }
+
+      expect(offenders).toEqual([]);
+    } finally {
+      diagramContext.clear();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('advertised schema cost', () => {
+  // tools/list is sent to the model before it can do anything, so its size is
+  // a per-session tax on every agent. It was 168 KB before the expanded XML
+  // NCName pattern was dropped from every id-valued field; the error branch
+  // each outputSchema now advertises costs some of that back, and is required
+  // for clients to accept error results at all. This bound is deliberately
+  // close to the current size so a regression is noticed; raise it
+  // consciously when the tool surface grows.
+  const MAX_TOOLS_LIST_BYTES = 140_000;
+
+  it('keeps the advertised tool list within its size budget', () => {
+    const advertised = JSON.stringify(tools);
+
+    expect(advertised.length).toBeLessThan(MAX_TOOLS_LIST_BYTES);
+  });
+
+  it('does not embed the expanded XML NCName character class in any schema', () => {
+    // The runtime still enforces NCName; only the multi-hundred-byte pattern
+    // is kept out of the advertised schema.
+    const advertised = JSON.stringify(tools);
+
+    expect(advertised).not.toContain('\\u02FF');
+    expect(advertised).not.toContain('uD7FF');
+  });
+
+  it('advertises an output schema that accepts this server error payload', async () => {
+    // Regression guard: MCP clients validate structuredContent against the
+    // advertised outputSchema even when isError is true. A tool that reports a
+    // machine-readable failure must therefore advertise that shape, or strict
+    // clients reject the entire response with -32602 and the agent sees
+    // nothing at all.
+    const { default: Ajv } = await import('ajv');
+    const ajv = new Ajv({ strict: false, allErrors: true });
+    const sampleError = {
+      code: 'element_not_found',
+      message: 'Element Nope_1 not found',
+      recovery: 'List elements with list_elements and use an id from that result.',
+      elementId: 'Nope_1'
+    };
+
+    const rejecting = tools
+      .filter(tool => tool.outputSchema
+        && !ajv.compile(tool.outputSchema as object)(sampleError))
+      .map(tool => tool.name);
+
+    expect(rejecting).toEqual([]);
+  });
+
+  it('still advertises the success shape for every tool', async () => {
+    const { default: Ajv } = await import('ajv');
+    const ajv = new Ajv({ strict: false, allErrors: true });
+
+    // The success branch must still reject an obviously wrong success payload,
+    // so the union does not degenerate into "accepts anything".
+    const nonsense = { definitelyNotAField: 1 };
+    const accepting = tools
+      .filter(tool => tool.outputSchema
+        && ajv.compile(tool.outputSchema as object)(nonsense))
+      .map(tool => tool.name);
+
+    expect(accepting).toEqual([]);
+  });
+
+  it('still rejects an identifier that is not an XML NCName', () => {
+    expect(() => parseToolRequest('get_element', { elementId: '1bad id' })).toThrow(/NCName/);
+    expect(() => parseToolRequest('get_element', { elementId: 'Task_1' })).not.toThrow();
   });
 });

@@ -1,3 +1,4 @@
+import { isGenericEventLabel } from '../converters/ASTTypes.js';
 import type { MermaidAST, MermaidNode, NodeType } from '../converters/ASTTypes.js';
 import type { ConversionResult } from '../converters/types.js';
 import type {
@@ -302,9 +303,11 @@ export class SimpleBpmnGenerator {
   }
 
   private elementName(node: MermaidNode, elementId: string): string | undefined {
+    // Only a label that *is* the generic keyword ("Start", "END", "finish") is
+    // dropped. A label that merely contains one ("Send Invoice", "Order
+    // Started", "Restart") is the author's name and is always kept.
     if (node.type === 'start' || node.type === 'end') {
-      const genericName = node.type === 'start' ? /start/i : /end/i;
-      if (node.label === elementId || genericName.test(node.label)) {
+      if (node.label === elementId || isGenericEventLabel(node.type, node.label)) {
         return undefined;
       }
     }

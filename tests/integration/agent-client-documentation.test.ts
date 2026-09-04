@@ -63,7 +63,7 @@ describe('agent client installation documentation', () => {
   it('maps every documented shell command to automated or explicit smoke evidence', () => {
     const owners = [
       { command: /^(git clone|cd |npm ci$)/, evidence: 'checkout preparation' },
-      { command: /^(pwd -P|command -v|node -p|export PUPPETEER_EXECUTABLE_PATH=)/,
+      { command: /^(pwd -P|command -v|node -p|export (PUPPETEER_EXECUTABLE_PATH|MCP_BPMN_BROWSER_ARGS)=)/,
         evidence: 'environment probes' },
       { command: /^make (install(?: |$)|install-codex|install-claude|update|doctor|uninstall)/,
         evidence: 'npm run test:installer' },
@@ -126,6 +126,12 @@ describe('agent client installation documentation', () => {
     expect(installation).toContain('XML-only operation');
     expect(installation).toContain('PUPPETEER_EXECUTABLE_PATH');
     expect(installation).toContain('does not persist `PUPPETEER_EXECUTABLE_PATH`');
+    // The root/sandbox failure mode is the one agent runtimes actually hit, and
+    // it used to be reported as a missing browser.
+    expect(readme).toContain('MCP_BPMN_BROWSER_ARGS');
+    expect(readme).toContain('--no-sandbox --disable-setuid-sandbox');
+    expect(troubleshooting).toContain('MCP_BPMN_BROWSER_ARGS');
+    expect(troubleshooting).toContain('Running as root\nwithout --no-sandbox is not supported');
     expect(troubleshooting).toMatch(/Do not\s+hand-edit `~\/.codex\/config\.toml`/);
     expect(troubleshooting).toContain('make doctor PREFIX="$HOME/.local/share/mcp-bpmn-work"');
     expect(troubleshooting).toContain('make install-codex FORCE=1');

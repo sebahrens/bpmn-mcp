@@ -22,6 +22,15 @@ export function isBpmnId(value: unknown): value is string {
   return typeof value === 'string' && BPMN_ID_PATTERN.test(value);
 }
 
+// Camunda 7 binds callable references late, through an expression rather than
+// a QName. The body is opaque to this server; only the delimiters are checked.
+const EXPRESSION_PATTERN = /^[$#]\{[\s\S]*\}$/;
+
+/** Whether a value is a Camunda-style deferred-binding expression. */
+export function isBpmnExpression(value: unknown): value is string {
+  return typeof value === 'string' && EXPRESSION_PATTERN.test(value);
+}
+
 export function isBpmnQName(value: unknown): value is string {
   return typeof value === 'string' && BPMN_QNAME_PATTERN.test(value);
 }

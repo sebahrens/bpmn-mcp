@@ -30,6 +30,14 @@ serialization use `bpmn-moddle`. SVG export is rendered by `bpmn-js` through
 `BpmnSvgRenderer`. Mermaid input is parsed into the project's AST, converted to
 the shared layout model, and then serialized as BPMN.
 
+`BpmnSvgRenderer.launchBrowser` resolves its Chrome command line through
+`resolveBrowserLaunchArgs` in [`src/config/index.ts`](src/config/index.ts):
+`MCP_BPMN_BROWSER_ARGS` replaces the arguments when it is set, and otherwise the
+renderer adds `--no-sandbox --disable-setuid-sandbox` when the process runs as
+uid 0, because Chrome refuses to start as root with its sandbox enabled. The
+rendered page loads a local document with a `default-src 'none'` policy and makes
+no network requests, so the sandbox is not the boundary that isolates it.
+
 ### Extension profile status
 
 Portable BPMN core is the default serialization contract. The opt-in Camunda 7
@@ -59,37 +67,25 @@ including parity between advertised tools, validators, and dispatchers.
 
 All argument objects are strict: unknown fields are rejected. `position`
 requires both numeric `x` and `y`; `size` requires both numeric `width` and
-`height`.
+`height`. Mutating tools additionally accept optimistic-concurrency arguments
+(`expectedRevision` and, on connection and geometry tools, `expectedSemanticRevision`,
+`expectedGeometryRevision`, `expectedBounds`, or `expectedWaypoints`).
 
-| Tool | Required arguments | Optional arguments and runtime defaults |
-| --- | --- | --- |
-| `new_bpmn` | `name` | `type`: `process`, `extensionProfile`: `portable` |
-| `new_from_mermaid` | `name`, `mermaidCode` | `extensionProfile`: `portable` |
-| `open_bpmn` | `filename` | none |
-| `open_mermaid_file` | `filename` | `extensionProfile`: `portable` |
-| `save` | none | none |
-| `save_as` | `filename` | none |
-| `close` | none | none |
-| `current` | none | none |
-| `add_event` | `eventType` | `name`, `eventDefinition`, `eventDefinitionPayload`, `cancelActivity`, `position`, `attachTo`, `ownerId`, `scopeId` |
-| `add_activity` | `activityType`, `name` | `position`, `properties`, `ownerId`, `scopeId` |
-| `add_gateway` | `gatewayType` | `name`, `position`, `ownerId`, `scopeId` |
-| `add_data_object` | `name` | `position`, `isCollection`: `false`, `itemSubjectRef`, `ownerId`, `scopeId` |
-| `add_text_annotation` | `text` | `textFormat`, `position`, `size`, `associatedElementId` |
-| `connect` | `sourceId`, `targetId` | `label`, `condition`, `conditionLanguage`, `conditionType`, `isDefault`: `false` |
-| `add_association` | `sourceId`, `targetId` | `associationDirection`: `None` |
-| `add_pool` | `name` | `position`, `size`, `blackBox`: `false` |
-| `add_lane` | `poolId`, `name`, `flowNodeIds` | `position`: `bottom` |
-| `list_elements` | none | `elementType`, `limit`: `100`, `offset`: `0` |
-| `get_element` | `elementId` | none |
-| `update_element` | `elementId` | `name`, `properties`, `defaultFlow` |
-| `delete_element` | `elementId` | none |
-| `export` | none | `format`: `xml`, `formatted`: `true` |
-| `validate` | none | `level`: `full` |
-| `auto_layout` | none | `algorithm`: `horizontal` |
-| `list_diagrams` | none | `limit`: `100`, `offset`: `0` |
-| `delete_diagram_file` | `filename` | none |
-| `get_diagrams_path` | none | none |
+The advertised inventory is not duplicated here. Read it from the source of
+truth instead:
+
+- `toolDefinitions` in [`src/server/tools.ts`](src/server/tools.ts) for the
+  authoritative names, arguments, enums, and defaults.
+- `tools/list` over MCP, or `scripts/tool-contract.json`, for the JSON Schema
+  actually advertised to clients.
+- The [README API reference](README.md#-api-reference) for prose and worked
+  arguments, one `#### \`tool_name\`` heading per tool. `npm run test:package`
+  and `tests/integration/tool-inventory.test.ts` fail if that inventory drifts
+  from `tools/list`.
+
+A hand-maintained table here previously listed 27 of the 39 advertised tools and
+none of their revision arguments, which is exactly the drift the rule below
+warns about.
 
 The exact enums, nested event-definition fields, string limits, geometry
 limits, and typed property schemas belong in `toolDefinitions`; do not copy

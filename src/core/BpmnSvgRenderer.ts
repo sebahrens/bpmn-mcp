@@ -2,6 +2,10 @@ import { existsSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import puppeteer, { type Browser, type LaunchOptions } from 'puppeteer';
+import {
+  BROWSER_ARGS_ENVIRONMENT_VARIABLE,
+  resolveBrowserLaunchArgs
+} from '../config/index.js';
 
 const moduleAnchor = process.argv[1] && existsSync(process.argv[1])
   ? realpathSync(process.argv[1])
@@ -407,6 +411,8 @@ content="default-src 'none'; style-src 'unsafe-inline'">
     };
     const executablePath = await resolveBrowserExecutable();
     if (executablePath) options.executablePath = executablePath;
+    const launchArguments = resolveBrowserLaunchArgs();
+    if (launchArguments.length > 0) options.args = launchArguments;
     try {
       return await puppeteer.launch(options);
     } catch (error) {
@@ -414,6 +420,9 @@ content="default-src 'none'; style-src 'unsafe-inline'">
       throw new Error(
         'SVG export requires Chrome or Chromium. Install Puppeteer\'s managed browser '
         + 'or set PUPPETEER_EXECUTABLE_PATH to a working executable. '
+        + `Chrome launch arguments come from ${BROWSER_ARGS_ENVIRONMENT_VARIABLE} `
+        + '(space separated); Chrome cannot start as root unless that list disables '
+        + 'its sandbox, which this server does by default under uid 0. '
         + `Browser launch failed: ${detail}`,
         { cause: error }
       );

@@ -137,6 +137,78 @@ describe('Mermaid conversion semantics', () => {
     });
   });
 
+  it.each([
+    [
+      'trailing keywords',
+      'flowchart TD\n  A((Order Started)) --> B[Pack] --> C((Send Invoice))',
+      'Order Started',
+      'Send Invoice',
+      'Order Started'
+    ],
+    [
+      'leading keywords',
+      'flowchart TD\n  A((Start Order)) --> B[Pack] --> C((Order Ended))',
+      'Start Order',
+      'Order Ended',
+      'Start Order'
+    ],
+    [
+      'exact keywords',
+      'flowchart TD\n  A((Start)) --> B[Pack] --> C((End))',
+      undefined,
+      undefined,
+      'Converted Process'
+    ]
+  ])(
+    'keeps event names and the process name for %s',
+    async (_name, source, startName, endName, processName) => {
+      const result = await converter.convert(source, { autoLayout: false });
+      const parsed = await moddle.fromXML(result.xml);
+      const process = parsed.rootElement.rootElements.find(
+        (root: any) => root.$type === 'bpmn:Process'
+      );
+
+      expect(parsed.warnings).toEqual([]);
+      expect(parsed.elementsById.StartEvent_A.name).toBe(startName);
+      expect(parsed.elementsById.EndEvent_C.name).toBe(endName);
+      expect(parsed.elementsById.Task_B.name).toBe('Pack');
+      expect(process.name).toBe(processName);
+    }
+  );
+
+  it('converts a semicolon-terminated diagram exactly like its newline form', async () => {
+    const semicolons = await converter.convert(
+      'graph TD; A((Start)) --> B[Pack]; B --> C((End));',
+      { autoLayout: false }
+    );
+    const newlines = await converter.convert(
+      'graph TD\n  A((Start)) --> B[Pack]\n  B --> C((End))',
+      { autoLayout: false }
+    );
+
+    expect(semicolons.xml).toBe(newlines.xml);
+    expect(semicolons.stats).toEqual({ nodeCount: 3, edgeCount: 2 });
+  });
+
+  it('rejects a cross-subgraph gateway edge with the author Mermaid ids, not BPMN ids', async () => {
+    const source = [
+      'flowchart TD',
+      'subgraph a[A]',
+      '  S((Start)) --> T[Task] --> G{Which?}',
+      'end',
+      'subgraph b[B]',
+      '  U[Work] --> E((End))',
+      'end',
+      'G --> U'
+    ].join('\n');
+
+    await expect(converter.convert(source)).rejects.toThrow(
+      /8:3 \[UNSUPPORTED_EDGE_ENDPOINT\].*Mermaid node G is a gateway/
+    );
+    await expect(converter.convert(source)).rejects.not.toThrow(/Gateway_G|MessageFlow_/);
+    await expect(converter.canConvert(source)).resolves.toMatchObject({ valid: false });
+  });
+
   it('preserves parallel edges and their labels in BPMN conversion', async () => {
     const source = [
       'flowchart TD',

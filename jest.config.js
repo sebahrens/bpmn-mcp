@@ -48,6 +48,22 @@ export default {
   // covered by mcp-bpmn-21p. Unreachable legacy modules are ignored above so
   // their direct characterization tests cannot inflate the aggregate report.
   coverageThreshold: {
+    // The MCP request surface is the contract agents actually call. Floors sit a
+    // few points under the measured numbers so an unrelated refactor does not
+    // fail the gate, while a real regression still does. `npm run check` and CI
+    // enforce them through `npm run test:all`, which now collects coverage.
+    './src/server/tools.ts': {
+      statements: 60,
+      branches: 33,
+      functions: 85,
+      lines: 58,
+    },
+    './src/server/handlers.ts': {
+      statements: 90,
+      branches: 78,
+      functions: 92,
+      lines: 90,
+    },
     './src/core/SimpleBpmnEngine.ts': {
       statements: 60,
       branches: 60,
@@ -59,6 +75,16 @@ export default {
       branches: 65,
       functions: 85,
       lines: 80,
+    },
+    // Eleven of the validator's rules had no test at all (mcp-bpmn-5e7.6), which
+    // is how a cross-scope false positive shipped. Every rule now has a
+    // triggering case and a legal twin; this floor keeps a newly added rule from
+    // arriving unexercised. Measured 94.69/87.37/100/94.71.
+    './src/core/BpmnValidator.ts': {
+      statements: 90,
+      branches: 82,
+      functions: 95,
+      lines: 90,
     },
     './src/converters/MermaidParser.ts': {
       statements: 90,

@@ -7,10 +7,25 @@ export type NodeType =
   | 'data'
   | 'terminator';
 
-export type EdgeType = 
+export type EdgeType =
   | 'directed'
   | 'labeled'
   | 'dotted';
+
+/**
+ * Labels that carry no information beyond the event semantics they already
+ * imply. Matching is exact on the trimmed, lower-cased label: an incidental
+ * substring ("Restart", "Send Invoice", "Pending") is a real name and must be
+ * preserved. Shared so that type inference and BPMN naming agree.
+ */
+export const GENERIC_EVENT_LABELS: Record<'start' | 'end', ReadonlySet<string>> = {
+  start: new Set(['start', 'begin']),
+  end: new Set(['end', 'stop', 'finish'])
+};
+
+export function isGenericEventLabel(type: 'start' | 'end', label: string): boolean {
+  return GENERIC_EVENT_LABELS[type].has(label.trim().toLowerCase());
+}
 
 export interface MermaidNode {
   id: string;

@@ -50,6 +50,7 @@ const TOOL_CONTRACTS: Record<string, ToolContract> = {
   validate: { owner: 'handler', caseId: 'C6/G5' },
   analyze_geometry: { owner: 'handler', caseId: 'C6' },
   auto_layout: { owner: 'engine', caseId: 'C4/C6/G4' },
+  build_process: { owner: 'engine', caseId: 'C1/C2' },
   list_diagrams: { owner: 'engine', caseId: 'C5' },
   delete_diagram_file: { owner: 'engine', caseId: 'C5' },
   get_diagrams_path: { owner: 'engine', caseId: 'C5' },
@@ -285,7 +286,8 @@ describe('live engine contract', () => {
 
     await engine.updateElement(context.id, task.id, { name: 'After & checked' });
     expect(context.elements.get(task.id)?.name).toBe('After & checked');
-    expect(await engine.deleteElement(context.id, task.id)).toBe(2);
+    expect(await engine.deleteElement(context.id, task.id))
+      .toMatchObject({ removedConnectionCount: 2, removedElementIds: [task.id] });
     expect(context.connections.size).toBe(0);
 
     await engine.connect(context.id, start.id, end.id, 'direct');

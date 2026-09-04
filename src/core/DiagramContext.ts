@@ -1,4 +1,5 @@
 import { BpmnExtensionProfile, ProcessContext } from '../types/index.js';
+import { ToolError } from '../utils/ToolError.js';
 
 export interface DiagramInfo {
   name: string;
@@ -28,13 +29,11 @@ export class DiagramContext {
    */
   getCurrent(): ProcessContext {
     if (!this.currentContext) {
-      throw new Error(
-        'No current context. Please create a diagram first with:\n' +
-        '  - new_bpmn(name) to create a new BPMN diagram\n' +
-        '  - new_from_mermaid(name, mermaidCode) to convert from Mermaid\n' +
-        '  - open_bpmn(filename) to open an existing BPMN file\n' +
-        '  - open_mermaid_file(filename) to convert a Mermaid file'
-      );
+      throw new ToolError('no_current_diagram', 'No diagram is currently open', {
+        recovery: 'Open or create one first: new_bpmn(name), '
+          + 'new_from_mermaid(name, mermaidCode), open_bpmn(filename), '
+          + 'or open_mermaid_file(filename).'
+      });
     }
     return this.currentContext;
   }

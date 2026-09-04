@@ -56,6 +56,39 @@ export const DEFAULT_RESOURCE_LIMITS: Readonly<ResourceLimits> = Object.freeze({
 
 export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 15_000;
 
+/**
+ * Chrome's setuid sandbox refuses to start under uid 0, so every container,
+ * devcontainer, CI runner and cloud sandbox that runs the server as root fails
+ * the browser launch with "Running as root without --no-sandbox is not
+ * supported". Disabling the sandbox is safe here because the renderer only ever
+ * loads a local, network-isolated document, and it is the documented Chrome
+ * remedy for root execution.
+ */
+export const ROOT_BROWSER_LAUNCH_ARGS: readonly string[] = Object.freeze([
+  '--no-sandbox',
+  '--disable-setuid-sandbox'
+]);
+
+export const BROWSER_ARGS_ENVIRONMENT_VARIABLE = 'MCP_BPMN_BROWSER_ARGS';
+
+/**
+ * Resolve the Chrome command-line arguments used for SVG/PNG rendering.
+ *
+ * `MCP_BPMN_BROWSER_ARGS` fully replaces the defaults when it is set, including
+ * when it is set to an empty string, which is the escape hatch for hosts that
+ * want the sandbox kept even under root.
+ */
+export function resolveBrowserLaunchArgs(
+  environment: NodeJS.ProcessEnv = process.env
+): string[] {
+  const configured = environment[BROWSER_ARGS_ENVIRONMENT_VARIABLE];
+  if (configured !== undefined) {
+    return configured.split(/\s+/).filter(argument => argument.length > 0);
+  }
+
+  return process.getuid?.() === 0 ? [...ROOT_BROWSER_LAUNCH_ARGS] : [];
+}
+
 function positiveIntegerFromEnvironment(name: string, fallback: number): number {
   const value = process.env[name];
   if (value === undefined) {

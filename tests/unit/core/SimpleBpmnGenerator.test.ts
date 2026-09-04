@@ -91,6 +91,37 @@ describe('SimpleBpmnGenerator collaboration semantics', () => {
     expect(parsed.elementsById.DataObjectReference_Record_di.bpmnElement).toBe(reference);
   });
 
+  it.each([
+    ['start', 'Order Started', 'Order Started'],
+    ['start', 'Restart', 'Restart'],
+    ['start', 'Start', undefined],
+    ['start', '  BEGIN  ', undefined],
+    ['end', 'Send Invoice', 'Send Invoice'],
+    ['end', 'Pending', 'Pending'],
+    ['end', 'End', undefined],
+    ['end', 'finish', undefined]
+  ] as Array<['start' | 'end', string, string | undefined]>)(
+    'names a %s event from the label %p',
+    async (type, label, expectedName) => {
+      const ast: MermaidAST = {
+        type: 'flowchart',
+        direction: 'TD',
+        nodes: [{ id: 'N', type, label }],
+        edges: [],
+        subgraphs: []
+      };
+      const result = await new SimpleBpmnGenerator().generateBpmn(ast, 'Event naming');
+      const parsed = await moddle.fromXML(result.xml);
+      const elementId = type === 'start' ? 'StartEvent_N' : 'EndEvent_N';
+
+      expect(parsed.warnings).toEqual([]);
+      expect(parsed.elementsById[elementId].$type).toBe(
+        type === 'start' ? 'bpmn:StartEvent' : 'bpmn:EndEvent'
+      );
+      expect(parsed.elementsById[elementId].name).toBe(expectedName);
+    }
+  );
+
   it('rejects subgraph diagrams with missing or ambiguous node ownership', async () => {
     const missingOwner = twoSubgraphAst();
     missingOwner.subgraphs[1].nodes = ['SellerReceive'];

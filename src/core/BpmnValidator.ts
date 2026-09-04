@@ -270,7 +270,15 @@ export class BpmnValidator {
       associations: []
     };
     containers.push(indexed);
-    semanticById.set(container.id, { element: container, ownerId, scopeId });
+    // A subprocess has already been indexed by its parent, with the parent's
+    // scope: the subprocess node itself lives in the enclosing scope even
+    // though the elements it contains do not. Overwriting that entry here with
+    // the subprocess's own id would make every sequence flow into or out of a
+    // subprocess, and every lane referencing one, look like a scope violation.
+    // Only the root container reaches this without a prior entry.
+    if (!semanticById.has(container.id)) {
+      semanticById.set(container.id, { element: container, ownerId, scopeId });
+    }
 
     for (const item of container.flowElements || []) {
       semanticById.set(item.id, { element: item, ownerId, scopeId });
@@ -288,6 +296,26 @@ export class BpmnValidator {
         indexed.associations.push(artifact);
       }
       semanticById.set(artifact.id, { element: artifact, ownerId, scopeId });
+    }
+    // Lanes are BaseElements of this scope and are legal association
+    // endpoints, so they have to be resolvable by id. Without this an
+    // association drawn from a lane reports its endpoints as missing.
+    this.indexLaneSets(container.laneSets, ownerId, scopeId, semanticById);
+  }
+
+  private indexLaneSets(
+    laneSets: any[] | undefined,
+    ownerId: string,
+    scopeId: string,
+    semanticById: Map<string, SemanticElement>
+  ): void {
+    for (const laneSet of laneSets || []) {
+      for (const lane of laneSet.lanes || []) {
+        semanticById.set(lane.id, { element: lane, ownerId, scopeId });
+        if (lane.childLaneSet) {
+          this.indexLaneSets([lane.childLaneSet], ownerId, scopeId, semanticById);
+        }
+      }
     }
   }
 
@@ -400,6 +428,25 @@ export class BpmnValidator {
             code: 'BPMN_MESSAGE_FLOW_OUTSIDE_COLLABORATION',
             severity: 'error',
             message: 'Message flow endpoints must belong to this collaboration',
+            elementId: flow.id
+          });
+        }
+        // A message flow is directional: its source throws and its target
+        // catches. A start event never throws and an end event never catches,
+        // so neither can sit at that end of a message flow.
+        if (source.element.$type === 'bpmn:StartEvent') {
+          this.addIssue(issues, {
+            code: 'BPMN_INVALID_MESSAGE_FLOW_DIRECTION',
+            severity: 'error',
+            message: 'Message flow cannot originate from a start event, which cannot throw a message',
+            elementId: flow.id
+          });
+        }
+        if (target.element.$type === 'bpmn:EndEvent') {
+          this.addIssue(issues, {
+            code: 'BPMN_INVALID_MESSAGE_FLOW_DIRECTION',
+            severity: 'error',
+            message: 'Message flow cannot target an end event, which cannot catch a message',
             elementId: flow.id
           });
         }

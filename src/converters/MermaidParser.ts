@@ -1,3 +1,4 @@
+import { GENERIC_EVENT_LABELS } from './ASTTypes.js';
 import type {
   EdgeType,
   MermaidAST,
@@ -55,6 +56,12 @@ interface OpenSubgraph {
   location: SourceLocation;
 }
 
+/** One `;`-separated statement, with its 0-based start offset in the raw line. */
+interface Statement {
+  text: string;
+  index: number;
+}
+
 export class MermaidParser {
   private readonly directionPattern = /^(graph|flowchart)\s+(TD|TB|LR|RL|BT)\s*$/i;
   private readonly subgraphPattern = /^subgraph\s+(\w+)\s*\[([^\]]+)\]\s*$/i;
@@ -83,125 +90,138 @@ export class MermaidParser {
 
     for (let index = 0; index < lines.length; index++) {
       const source = lines[index];
-      const leadingWhitespace = source.length - source.trimStart().length;
-      const trimmed = source.trim();
-      const location: SourceLocation = {
+      const lineTrimmed = source.trim();
+      const lineLocation: SourceLocation = {
         line: index + 1,
-        column: leadingWhitespace + 1,
+        column: source.length - source.trimStart().length + 1,
         source
       };
 
-      if (!trimmed) continue;
+      if (!lineTrimmed) continue;
 
-      if (trimmed.startsWith('%%{')) {
+      // Comments are evaluated per line, before statement splitting, so that a
+      // semicolon inside comment prose never starts a new statement.
+      if (lineTrimmed.startsWith('%%{')) {
         warnings.push(this.warning(
           'UNSUPPORTED_DIRECTIVE',
-          location,
+          lineLocation,
           'Unsupported Mermaid initialization directive; ignored'
         ));
+        firstContentLocation ??= lineLocation;
+        continue;
+      }
+      if (lineTrimmed.startsWith('%%')) continue;
+
+      for (const statement of this.splitStatements(source)) {
+        const trimmed = statement.text;
+        const location: SourceLocation = {
+          line: index + 1,
+          column: statement.index + 1,
+          source
+        };
+
+        // A trailing comment ends the line: everything after it is prose.
+        if (trimmed.startsWith('%%')) break;
+
         firstContentLocation ??= location;
-        continue;
-      }
-      if (trimmed.startsWith('%%')) continue;
 
-      firstContentLocation ??= location;
-
-      if (/^(graph|flowchart)(?:\b|TD|TB|LR|RL|BT)/i.test(trimmed)) {
-        const directionMatch = trimmed.match(this.directionPattern);
-        if (!directionMatch) {
-          errors.push(this.error(
-            'MALFORMED_HEADER',
-            this.at(location, this.headerErrorIndex(trimmed)),
-            'Expected "graph" or "flowchart" followed by TD, TB, LR, RL, or BT'
-          ));
-        } else {
-          ast.direction = directionMatch[2].toUpperCase() as MermaidAST['direction'];
-          recognizedDocumentSyntax = true;
+        if (/^(graph|flowchart)(?:\b|TD|TB|LR|RL|BT)/i.test(trimmed)) {
+          const directionMatch = trimmed.match(this.directionPattern);
+          if (!directionMatch) {
+            errors.push(this.error(
+              'MALFORMED_HEADER',
+              this.at(location, this.headerErrorIndex(trimmed)),
+              'Expected "graph" or "flowchart" followed by TD, TB, LR, RL, or BT'
+            ));
+          } else {
+            ast.direction = directionMatch[2].toUpperCase() as MermaidAST['direction'];
+            recognizedDocumentSyntax = true;
+          }
+          continue;
         }
-        continue;
-      }
 
-      if (this.otherDiagramPattern.test(trimmed)) {
-        errors.push(this.error(
-          'UNKNOWN_SYNTAX',
-          location,
-          'Only Mermaid graph and flowchart diagrams can be converted to BPMN'
-        ));
-        continue;
-      }
-
-      if (/^subgraph\b/i.test(trimmed)) {
-        const match = trimmed.match(this.subgraphPattern);
-        if (!match) {
+        if (this.otherDiagramPattern.test(trimmed)) {
           errors.push(this.error(
-            'MALFORMED_SUBGRAPH',
-            this.at(location, this.subgraphErrorIndex(trimmed)),
-            'Expected subgraph syntax: subgraph <id>[<title>]'
+            'UNKNOWN_SYNTAX',
+            location,
+            'Only Mermaid graph and flowchart diagrams can be converted to BPMN'
           ));
           continue;
         }
 
-        const subgraph: MermaidSubgraph = {
-          id: match[1],
-          title: match[2].trim(),
-          nodes: []
-        };
-        if (openSubgraphs.length > 0) {
-          errors.push(this.error(
-            'UNSUPPORTED_NESTED_SUBGRAPH',
-            location,
-            'Nested Mermaid subgraphs are not supported for BPMN conversion'
-          ));
-        }
-        ast.subgraphs.push(subgraph);
-        subgraphLocations.set(subgraph, location);
-        openSubgraphs.push({ id: subgraph.id, location });
-        recognizedDocumentSyntax = true;
-        continue;
-      }
+        if (/^subgraph\b/i.test(trimmed)) {
+          const match = trimmed.match(this.subgraphPattern);
+          if (!match) {
+            errors.push(this.error(
+              'MALFORMED_SUBGRAPH',
+              this.at(location, this.subgraphErrorIndex(trimmed)),
+              'Expected subgraph syntax: subgraph <id>[<title>]'
+            ));
+            continue;
+          }
 
-      if (/^end\b/i.test(trimmed)) {
-        if (trimmed !== 'end') {
-          errors.push(this.error(
-            'MALFORMED_SUBGRAPH',
-            this.at(location, 3),
-            'Subgraph terminator must be exactly "end"'
-          ));
-        } else if (openSubgraphs.length === 0) {
-          errors.push(this.error(
-            'UNEXPECTED_SUBGRAPH_END',
-            location,
-            'Unexpected subgraph terminator without a matching subgraph'
-          ));
-        } else {
-          openSubgraphs.pop();
+          const subgraph: MermaidSubgraph = {
+            id: match[1],
+            title: match[2].trim(),
+            nodes: []
+          };
+          if (openSubgraphs.length > 0) {
+            errors.push(this.error(
+              'UNSUPPORTED_NESTED_SUBGRAPH',
+              location,
+              'Nested Mermaid subgraphs are not supported for BPMN conversion'
+            ));
+          }
+          ast.subgraphs.push(subgraph);
+          subgraphLocations.set(subgraph, location);
+          openSubgraphs.push({ id: subgraph.id, location });
+          recognizedDocumentSyntax = true;
+          continue;
         }
-        continue;
-      }
 
-      const directiveMatch = trimmed.match(this.unsupportedDirectivePattern);
-      if (directiveMatch) {
-        warnings.push(this.warning(
-          'UNSUPPORTED_DIRECTIVE',
+        if (/^end\b/i.test(trimmed)) {
+          if (trimmed !== 'end') {
+            errors.push(this.error(
+              'MALFORMED_SUBGRAPH',
+              this.at(location, 3),
+              'Subgraph terminator must be exactly "end"'
+            ));
+          } else if (openSubgraphs.length === 0) {
+            errors.push(this.error(
+              'UNEXPECTED_SUBGRAPH_END',
+              location,
+              'Unexpected subgraph terminator without a matching subgraph'
+            ));
+          } else {
+            openSubgraphs.pop();
+          }
+          continue;
+        }
+
+        const directiveMatch = trimmed.match(this.unsupportedDirectivePattern);
+        if (directiveMatch) {
+          warnings.push(this.warning(
+            'UNSUPPORTED_DIRECTIVE',
+            location,
+            `Unsupported Mermaid directive "${directiveMatch[1]}"; ignored`
+          ));
+          continue;
+        }
+
+        this.parseStructuralLine(
+          trimmed,
           location,
-          `Unsupported Mermaid directive "${directiveMatch[1]}"; ignored`
-        ));
-        continue;
+          ast,
+          nodeMap,
+          nodeLocations,
+          edgeLocations,
+          edgeIdOccurrences,
+          openSubgraphs,
+          errors,
+          warnings
+        );
+        recognizedDocumentSyntax ||= this.hasDeclarationlessStructure(trimmed);
       }
-
-      this.parseStructuralLine(
-        trimmed,
-        location,
-        ast,
-        nodeMap,
-        nodeLocations,
-        edgeLocations,
-        edgeIdOccurrences,
-        openSubgraphs,
-        errors,
-        warnings
-      );
-      recognizedDocumentSyntax ||= this.hasDeclarationlessStructure(trimmed);
     }
 
     for (const openSubgraph of openSubgraphs) {
@@ -232,6 +252,66 @@ export class MermaidParser {
       errors,
       warnings
     };
+  }
+
+  /**
+   * Splits a raw line into `;`-separated Mermaid statements, the canonical
+   * separator in Mermaid's own documentation. Semicolons inside shapes
+   * (`[...]`, `{...}`, `(...)`), quoted text, edge labels (`|...|`) or HTML
+   * entities (`&#59;`, `&amp;#59;`) belong to the label and never split.
+   * Each statement keeps its 0-based offset in the line so that diagnostics
+   * still report the author's real column.
+   */
+  private splitStatements(source: string): Statement[] {
+    const statements: Statement[] = [];
+    let depth = 0;
+    let inQuotes = false;
+    let inEdgeLabel = false;
+    let segmentStart = 0;
+
+    const push = (start: number, end: number): void => {
+      const segment = source.slice(start, end);
+      const text = segment.trim();
+      if (text) statements.push({ text, index: start + (segment.length - segment.trimStart().length) });
+    };
+
+    for (let cursor = 0; cursor < source.length; cursor++) {
+      const character = source[cursor];
+      if (character === '"') {
+        inQuotes = !inQuotes;
+        continue;
+      }
+      if (inQuotes) continue;
+      if (character === '&') {
+        const entity = source.slice(cursor).match(/^&#?[0-9A-Za-z]+;/);
+        if (entity) {
+          cursor += entity[0].length - 1;
+          continue;
+        }
+      }
+      if (character === '[' || character === '(' || character === '{') {
+        depth++;
+        continue;
+      }
+      if (character === ']' || character === ')' || character === '}') {
+        if (depth > 0) depth--;
+        continue;
+      }
+      // A trailing comment ends the statement text; semicolons inside its prose
+      // are not separators.
+      if (character === '%' && source[cursor + 1] === '%' && depth === 0 && !inEdgeLabel) break;
+      if (character === '|' && depth === 0) {
+        inEdgeLabel = !inEdgeLabel;
+        continue;
+      }
+      if (character === ';' && depth === 0 && !inEdgeLabel) {
+        push(segmentStart, cursor);
+        segmentStart = cursor + 1;
+      }
+    }
+    push(segmentStart, source.length);
+
+    return statements;
   }
 
   private parseStructuralLine(
@@ -487,8 +567,8 @@ export class MermaidParser {
   }
 
   private inferNodeTypes(ast: MermaidAST): void {
-    const startKeywords = new Set(['start', 'begin']);
-    const endKeywords = new Set(['end', 'stop', 'finish']);
+    const startKeywords = GENERIC_EVENT_LABELS.start;
+    const endKeywords = GENERIC_EVENT_LABELS.end;
 
     for (const node of ast.nodes) {
       if (node.type !== 'terminator' && node.type !== 'process') continue;
@@ -525,6 +605,31 @@ export class MermaidParser {
     const subgraphIds = new Set<string>();
     const ownerByNode = new Map<string, string>();
 
+    for (const subgraph of ast.subgraphs) {
+      const subgraphLocation = subgraphLocations.get(subgraph) ?? fallbackLocation;
+      if (subgraphIds.has(subgraph.id)) {
+        errors.push(this.error(
+          'DUPLICATE_SUBGRAPH',
+          subgraphLocation,
+          `Duplicate Mermaid subgraph ID: ${subgraph.id}`
+        ));
+      }
+      subgraphIds.add(subgraph.id);
+
+      for (const nodeId of subgraph.nodes) {
+        const existingOwner = ownerByNode.get(nodeId);
+        if (existingOwner && existingOwner !== subgraph.id) {
+          errors.push(this.error(
+            'MULTIPLE_SUBGRAPH_OWNERS',
+            subgraphLocation,
+            `Mermaid node ${nodeId} belongs to multiple subgraphs`
+          ));
+        } else {
+          ownerByNode.set(nodeId, subgraph.id);
+        }
+      }
+    }
+
     for (const edge of ast.edges) {
       const edgeLocation = edgeLocations.get(edge) ?? fallbackLocation;
       if (edgeIds.has(edge.id)) {
@@ -550,31 +655,16 @@ export class MermaidParser {
           edgeLocation,
           `Edge ${edge.id} cannot connect a BPMN flow to a data object`
         ));
+        continue;
       }
-    }
-
-    for (const subgraph of ast.subgraphs) {
-      const subgraphLocation = subgraphLocations.get(subgraph) ?? fallbackLocation;
-      if (subgraphIds.has(subgraph.id)) {
-        errors.push(this.error(
-          'DUPLICATE_SUBGRAPH',
-          subgraphLocation,
-          `Duplicate Mermaid subgraph ID: ${subgraph.id}`
-        ));
-      }
-      subgraphIds.add(subgraph.id);
-
-      for (const nodeId of subgraph.nodes) {
-        const existingOwner = ownerByNode.get(nodeId);
-        if (existingOwner && existingOwner !== subgraph.id) {
-          errors.push(this.error(
-            'MULTIPLE_SUBGRAPH_OWNERS',
-            subgraphLocation,
-            `Mermaid node ${nodeId} belongs to multiple subgraphs`
-          ));
-        } else {
-          ownerByNode.set(nodeId, subgraph.id);
-        }
+      const crossBoundaryFailure = this.crossBoundaryEndpointFailure(
+        edge,
+        sourceNode,
+        targetNode,
+        ownerByNode
+      );
+      if (crossBoundaryFailure) {
+        errors.push(this.error('UNSUPPORTED_EDGE_ENDPOINT', edgeLocation, crossBoundaryFailure));
       }
     }
 
@@ -645,6 +735,44 @@ export class MermaidParser {
         ));
       }
     }
+  }
+
+  /**
+   * A Mermaid edge between two subgraphs becomes a BPMN message flow. BPMN
+   * only lets message flows touch interaction nodes, and forbids a start event
+   * as source or an end event as target. Rejecting those here — against the
+   * author's own Mermaid ids, with a line and column — replaces an opaque
+   * failure raised much later against generated BPMN ids.
+   */
+  private crossBoundaryEndpointFailure(
+    edge: MermaidEdge,
+    sourceNode: MermaidNode | undefined,
+    targetNode: MermaidNode | undefined,
+    ownerByNode: Map<string, string>
+  ): string | undefined {
+    if (!sourceNode || !targetNode) return undefined;
+    const sourceOwner = ownerByNode.get(sourceNode.id);
+    const targetOwner = ownerByNode.get(targetNode.id);
+    if (!sourceOwner || !targetOwner || sourceOwner === targetOwner) return undefined;
+
+    const crossing = `Edge ${edge.id} cannot cross subgraphs "${sourceOwner}" and "${targetOwner}"`;
+    if (sourceNode.type === 'decision' || targetNode.type === 'decision') {
+      const gateway = sourceNode.type === 'decision' ? sourceNode : targetNode;
+      return `${crossing} because Mermaid node ${gateway.id} is a gateway; `
+        + 'a BPMN message flow cannot start or end at a gateway. '
+        + 'Connect the subgraphs with a task or event instead.';
+    }
+    if (sourceNode.type === 'start') {
+      return `${crossing} because Mermaid node ${sourceNode.id} is a start event; `
+        + 'a BPMN message flow cannot start at a start event. '
+        + 'Send the message from a task or an end event instead.';
+    }
+    if (targetNode.type === 'end') {
+      return `${crossing} because Mermaid node ${targetNode.id} is an end event; `
+        + 'a BPMN message flow cannot end at an end event. '
+        + 'Receive the message at a task or a start event instead.';
+    }
+    return undefined;
   }
 
   private warning(code: ParseWarningCode, location: SourceLocation, message: string): ParseWarning {

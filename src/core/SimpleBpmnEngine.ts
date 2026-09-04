@@ -20,6 +20,9 @@ import {
   BpmnMultiInstanceLoopCharacteristics,
   BpmnEdgeModel,
   BpmnShapeModel,
+  BuildFlowRequest,
+  BuildNodeRequest,
+  BuildProcessResult,
   ConnectionGeometryState,
   ConnectionGeometryUpdate,
   ConnectionRouteUpdate,
@@ -36,7 +39,7 @@ import {
   Size
 } from '../types/index.js';
 import { IdGenerator } from '../utils/IdGenerator.js';
-import { assertBpmnId } from '../utils/BpmnId.js';
+import { assertBpmnId, isBpmnExpression } from '../utils/BpmnId.js';
 import {
   BpmnFileTooLargeError,
   FileManager,
@@ -219,6 +222,17 @@ export interface ConnectionRouteMutationResult {
   };
 }
 
+/** What a delete_element mutation removed. */
+export interface DeleteElementResult {
+  /** Connections removed because an endpoint disappeared. */
+  removedConnectionCount: number;
+  /**
+   * Elements removed, requested element first. Empty when a connection was
+   * deleted, since connections are not elements and their endpoints survive.
+   */
+  removedElementIds: string[];
+}
+
 export function connectionGeometryRevision(
   connectionId: string,
   edge: {
@@ -323,7 +337,8 @@ export class SimpleBpmnEngine {
   async createProcess(
     name: string,
     type: 'process' | 'collaboration' = 'process',
-    extensionProfile: BpmnExtensionProfile = 'portable'
+    extensionProfile: BpmnExtensionProfile = 'portable',
+    filename?: string
   ): Promise<ProcessContext> {
     if (type !== 'process' && type !== 'collaboration') {
       throw new Error(`Unsupported BPMN root type: ${String(type)}`);
@@ -331,7 +346,7 @@ export class SimpleBpmnEngine {
 
     const rootId = this.generateUniqueId(undefined, type === 'process' ? 'Process' : 'Collaboration');
     const context = createProcessContext(rootId, name, type, extensionProfile);
-    context.filename = this.defaultFilename(context);
+    this.assignInitialFilename(context, filename);
 
     await this.commitMutation(context, () => undefined, undefined, false, true);
     this.processes.set(rootId, context);
@@ -362,6 +377,10 @@ export class SimpleBpmnEngine {
         y: 200
       };
       const size = definition.size || getDefaultElementSize(type);
+      // Record whether the caller actually asked for this size. Auto-layout
+      // honours a requested size as a lower bound, so a type default must not
+      // masquerade as intent.
+      const sizeManaged = definition.size === undefined;
       const properties = { ...(definition.properties || {}) };
       if (['bpmn:SubProcess', 'bpmn:Transaction'].includes(type)
         && properties.isExpanded === undefined) {
@@ -407,6 +426,7 @@ export class SimpleBpmnEngine {
           processRef,
           position,
           size,
+          sizeManaged,
           properties
         };
         this.assertElementProperties(working, type, properties, element.ownerId, element.scopeId);
@@ -425,11 +445,11 @@ export class SimpleBpmnEngine {
         element = isBpmnFlowNodeType(type)
           ? {
               kind: 'flowNode', id: elementId, type, name: definition.name, ownerId, scopeId,
-              position, size, properties
+              position, size, sizeManaged, properties
             }
           : {
               kind: 'artifact', id: elementId, type, name: definition.name, ownerId, scopeId,
-              position, size, properties
+              position, size, sizeManaged, properties
             };
         this.assertElementProperties(working, type, properties, element.ownerId, element.scopeId);
       }
@@ -463,6 +483,90 @@ export class SimpleBpmnEngine {
       }
       return element;
     }, undefined, true, false, expectedRevision);
+  }
+
+  /**
+   * Create many elements and the flows between them as one transaction.
+   *
+   * Nodes are addressed by caller-chosen refs so a flow can name an element the
+   * same request is creating; a flow endpoint that is not a ref is treated as
+   * the id of an element already in the diagram. Every step runs through the
+   * ordinary creation paths, so the same validation applies as when the tools
+   * are called one at a time. Nothing is written unless all of it succeeds.
+   */
+  async buildProcess(
+    processId: string,
+    plan: { nodes: BuildNodeRequest[]; flows: BuildFlowRequest[] },
+    expectedRevision?: string
+  ): Promise<BuildProcessResult> {
+    const context = this.getProcess(processId);
+
+    const duplicateRef = plan.nodes
+      .map(node => node.ref)
+      .find((ref, index, refs) => refs.indexOf(ref) !== index);
+    if (duplicateRef !== undefined) {
+      throw new Error(`Duplicate node ref "${duplicateRef}"`);
+    }
+    const collidingRef = plan.nodes.find(node => context.elements.has(node.ref));
+    if (collidingRef) {
+      throw new Error(
+        `Node ref "${collidingRef.ref}" is also the id of an existing element; `
+        + 'choose a ref that is not an existing element id'
+      );
+    }
+
+    return this.runBatch(context, async () => {
+      const idByRef = new Map<string, string>();
+      const elements: BuildProcessResult['elements'] = [];
+
+      for (const [index, node] of plan.nodes.entries()) {
+        const { ref, ...definition } = node;
+        let created: BpmnDocumentElement;
+        try {
+          created = await this.createElement(processId, definition);
+        } catch (error) {
+          throw new Error(
+            `nodes[${index}] (ref "${ref}"): ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+        idByRef.set(ref, created.id);
+        elements.push({ ref, elementId: created.id, type: created.type });
+      }
+
+      const resolve = (endpoint: string, index: number, side: 'source' | 'target'): string => {
+        const byRef = idByRef.get(endpoint);
+        if (byRef) return byRef;
+        if (context.elements.has(endpoint)) return endpoint;
+        throw new Error(
+          `flows[${index}].${side} "${endpoint}" is neither a ref in this request `
+          + 'nor the id of an existing element'
+        );
+      };
+
+      const connections: BuildProcessResult['connections'] = [];
+      for (const [index, flow] of plan.flows.entries()) {
+        const { source, target, label, ...options } = flow;
+        const sourceId = resolve(source, index, 'source');
+        const targetId = resolve(target, index, 'target');
+        let connection: BpmnDocumentConnection;
+        try {
+          connection = await this.connect(processId, sourceId, targetId, label, options);
+        } catch (error) {
+          throw new Error(
+            `flows[${index}] (${source} -> ${target}): `
+            + `${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+        connections.push({
+          connectionId: connection.id,
+          type: connection.type,
+          sourceId: connection.source,
+          targetId: connection.target
+        });
+      }
+
+      return { elements, connections };
+    }, expectedRevision);
   }
 
   async addDataObject(
@@ -1696,7 +1800,7 @@ export class SimpleBpmnEngine {
     processId: string,
     elementId: string,
     expectedRevision?: string
-  ): Promise<number> {
+  ): Promise<DeleteElementResult> {
     const context = this.getProcess(processId);
     return this.commitMutation(context, working => {
       const connection = working.connections.get(elementId);
@@ -1713,7 +1817,7 @@ export class SimpleBpmnEngine {
             candidate.defaultFlowManaged = true;
           }
         }
-        return 1;
+        return { removedConnectionCount: 1, removedElementIds: [] };
       }
       const lane = working.document.lanes.get(elementId);
       if (lane) {
@@ -1723,7 +1827,7 @@ export class SimpleBpmnEngine {
           candidate => candidate.kind === 'participant' && candidate.processRef === processRef
         );
         if (participant?.kind === 'participant') this.layoutPoolLanes(working, participant.id);
-        return 0;
+        return { removedConnectionCount: 0, removedElementIds: [] };
       }
       const element = working.elements.get(elementId);
       if (!element) {
@@ -1814,8 +1918,58 @@ export class SimpleBpmnEngine {
           candidate.defaultFlowManaged = true;
         }
       }
-      return connectionsToDelete.length;
+      this.clearReferencesToDeletedElements(working, idsToDelete);
+      return {
+        removedConnectionCount: connectionsToDelete.length,
+        // Every element the cascade removed, the requested one first, so a
+        // caller can report exactly what disappeared instead of only counting
+        // connections.
+        removedElementIds: [
+          elementId,
+          ...Array.from(idsToDelete).filter(id => id !== elementId).sort(compareStableText)
+        ]
+      };
     }, undefined, true, false, expectedRevision);
+  }
+
+  /**
+   * Drop property-level references from surviving elements to elements that
+   * were just deleted.
+   *
+   * Sequence-flow and containment references are cascaded elsewhere, but a
+   * compensation event's activityRef and a multi-instance activity's loop data
+   * references point at arbitrary elements. Left dangling, they serialize into
+   * unresolvable references and the whole mutation is rolled back with an
+   * error that never names the element holding the stale reference. Both
+   * properties are optional in BPMN, so clearing them leaves a valid model.
+   */
+  private clearReferencesToDeletedElements(
+    working: ProcessContext,
+    deletedIds: ReadonlySet<string>
+  ): void {
+    for (const candidate of working.elements.values()) {
+      const payload = candidate.properties.eventDefinitionPayload as
+        Record<string, unknown> | undefined;
+      if (payload && typeof payload.activityRef === 'string'
+        && deletedIds.has(payload.activityRef)) {
+        const { activityRef: _removed, ...retained } = payload;
+        candidate.properties = {
+          ...candidate.properties,
+          eventDefinitionPayload: retained
+        };
+      }
+
+      const multiInstance = candidate.properties.multiInstance as
+        Record<string, unknown> | undefined;
+      if (!multiInstance) continue;
+      const staleLoopReferences = (['loopDataInputRef', 'loopDataOutputRef'] as const)
+        .filter(property => typeof multiInstance[property] === 'string'
+          && deletedIds.has(multiInstance[property] as string));
+      if (staleLoopReferences.length === 0) continue;
+      const retained = { ...multiInstance };
+      for (const property of staleLoopReferences) delete retained[property];
+      candidate.properties = { ...candidate.properties, multiInstance: retained };
+    }
   }
 
   async deleteAssociation(
@@ -1851,20 +2005,26 @@ export class SimpleBpmnEngine {
 
   async saveAs(processId: string, filename: string, expectedRevision?: string): Promise<string> {
     const context = this.getProcess(processId);
-    const normalizedFilename = extname(filename) === ''
-      && !filename.toLowerCase().endsWith('.bpmn')
-      ? `${filename}.bpmn`
-      : filename;
+    const normalizedFilename = normalizeBpmnFilename(filename);
+    const previousFilename = context.filename;
+    const previousWasPlaceholder = context.filenameManaged === true;
     await this.commitMutation(
       context,
       working => {
         working.filename = normalizedFilename;
+        working.filenameManaged = false;
       },
       normalizedFilename,
       false,
       false,
       expectedRevision
     );
+    // The old file was a server-generated placeholder for this same diagram,
+    // so keeping it would leave two files claiming to be the same process.
+    // A name the caller chose is never removed on their behalf.
+    if (previousWasPlaceholder && previousFilename && previousFilename !== normalizedFilename) {
+      await this.deleteDiagram(previousFilename).catch(() => undefined);
+    }
     return normalizedFilename;
   }
 
@@ -1883,7 +2043,8 @@ export class SimpleBpmnEngine {
   async importXml(
     xml: string,
     name?: string,
-    authoredProfile?: BpmnExtensionProfile
+    authoredProfile?: BpmnExtensionProfile,
+    requestedFilename?: string
   ): Promise<ProcessContext> {
     if (typeof xml !== 'string') {
       throw new Error('BPMN import rejected: XML input must be text');
@@ -1910,10 +2071,25 @@ export class SimpleBpmnEngine {
       context.extensionProfile = authoredProfile;
       context.document.extensionProfile = authoredProfile;
     }
-    context.filename = this.defaultFilename(context);
+    this.assignInitialFilename(context, requestedFilename);
     await this.commitMutation(context, () => undefined, undefined, false, true);
     this.processes.set(context.id, context);
     return context;
+  }
+
+  /**
+   * Give a freshly created diagram its autosave target, recording whether the
+   * caller chose the name. A generated name is normalized the same way
+   * save_as normalizes one, so both paths produce a `.bpmn` file.
+   */
+  private assignInitialFilename(context: ProcessContext, requested?: string): void {
+    if (requested === undefined) {
+      context.filename = this.defaultFilename(context);
+      context.filenameManaged = true;
+      return;
+    }
+    context.filename = normalizeBpmnFilename(requested);
+    context.filenameManaged = false;
   }
 
   getProcess(processId: string): ProcessContext {
@@ -2185,6 +2361,42 @@ export class SimpleBpmnEngine {
    * performs structural validation; the atomic file write completes before the
    * new XML becomes visible in memory. Any failure restores the full model.
    */
+  /**
+   * Working copies of diagrams currently inside a batch, keyed by process id.
+   *
+   * While a batch is open, nested mutations join it instead of taking the
+   * process lock and writing on their own. That is what makes a multi-element
+   * build one transaction: one lock, one serialization, one file write, and no
+   * partially built diagram left behind if a later step fails.
+   */
+  private readonly activeBatches = new Map<string, ProcessContext>();
+
+  /**
+   * Run several mutations as one transaction.
+   *
+   * The body may call the ordinary mutation methods on this engine; each will
+   * detect the open batch and apply itself to the shared working copy. Nothing
+   * is persisted until the body returns, and a throw anywhere inside leaves the
+   * diagram exactly as it was.
+   */
+  private async runBatch<T>(
+    context: ProcessContext,
+    body: () => Promise<T>,
+    expectedRevision?: string
+  ): Promise<T> {
+    if (this.activeBatches.has(context.id)) {
+      throw new Error(`A batch is already open for process ${context.id}`);
+    }
+    return this.commitMutation(context, async working => {
+      this.activeBatches.set(context.id, working);
+      try {
+        return await body();
+      } finally {
+        this.activeBatches.delete(context.id);
+      }
+    }, undefined, true, false, expectedRevision);
+  }
+
   private async commitMutation<T>(
     context: ProcessContext,
     mutation: (working: ProcessContext) => T | Promise<T>,
@@ -2194,6 +2406,23 @@ export class SimpleBpmnEngine {
     expectedRevision?: string,
     dryRun = false
   ): Promise<T> {
+    const batch = this.activeBatches.get(context.id);
+    if (batch) {
+      // Join the enclosing transaction. Persistence arguments belong to the
+      // outer commit; a nested optimistic guard would compare against a
+      // revision that cannot change mid-batch, so it is rejected rather than
+      // silently ignored.
+      if (expectedRevision !== undefined && expectedRevision !== context.revision) {
+        throw new DocumentRevisionConflictError(
+          context.filename ?? '',
+          expectedRevision,
+          context.revision || undefined,
+          'revision_mismatch'
+        );
+      }
+      if (dryRun) throw new Error('Dry-run mutations cannot run inside a batch');
+      return await mutation(batch);
+    }
     return this.withProcessLock(context.id, async () => {
       if (!allowUnregistered && this.processes.get(context.id) !== context) {
         throw new Error(`Process ${context.id} not found`);
@@ -2918,6 +3147,12 @@ export class SimpleBpmnEngine {
     };
   }
 
+  /**
+   * Compare the BPMN semantics a layout pass must leave untouched. Layout
+   * runs by serializing, laying out, and re-parsing, so this comparison has to
+   * ignore differences that the round trip itself introduces rather than
+   * differences the layout engine caused.
+   */
   private assertLayoutSemanticsUnchanged(
     current: BpmnDocument,
     candidate: BpmnDocument
@@ -2956,14 +3191,7 @@ export class SimpleBpmnEngine {
           name: element.name,
           ownerId: element.ownerId,
           scopeId: element.scopeId,
-          // Expansion is BPMN DI state, while blackBox is the tool-level
-          // shorthand for an absent participant processRef. Layout adapters
-          // may legitimately add or change either representation detail.
-          properties: Object.fromEntries(Object.entries(element.properties)
-            .filter(([key]) => key !== 'isExpanded'
-              && !(element.kind === 'participant' && key === 'blackBox')
-              && !(element.type === 'bpmn:DataObjectReference'
-                && (key === 'isCollection' || key === 'itemSubjectRef')))),
+          properties: comparableElementProperties(element),
           processRef: element.kind === 'participant' ? element.processRef : undefined,
           defaultFlow: element.kind === 'flowNode' ? element.defaultFlow : undefined
         })),
@@ -2986,8 +3214,13 @@ export class SimpleBpmnEngine {
     // semantic snapshot so prototype identity and absent-vs-undefined fields
     // cannot make unchanged BPMN semantics look different.
     const normalize = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
-    if (!isDeepStrictEqual(normalize(snapshot(current)), normalize(snapshot(candidate)))) {
-      throw new Error('Layout output changed BPMN semantics');
+    const before = normalize(snapshot(current));
+    const after = normalize(snapshot(candidate));
+    if (!isDeepStrictEqual(before, after)) {
+      const difference = describeSemanticDifference(before, after);
+      throw new Error(
+        `Layout output changed BPMN semantics${difference ? ` at ${difference}` : ''}`
+      );
     }
   }
 
@@ -3162,8 +3395,15 @@ export class SimpleBpmnEngine {
       if (type !== 'bpmn:CallActivity') {
         throw new Error('calledElement is only valid on bpmn:CallActivity');
       }
-      if (!isBpmnQName(properties.calledElement)) {
-        throw new Error('calledElement must be a valid BPMN QName');
+      // A QName is the portable form. Camunda 7 additionally binds the
+      // callable process late through an expression, so accept that only when
+      // the document actually uses the camunda7 profile.
+      const allowsExpression = context.extensionProfile === 'camunda7';
+      if (!isBpmnQName(properties.calledElement)
+        && !(allowsExpression && isBpmnExpression(properties.calledElement))) {
+        throw new Error(allowsExpression
+          ? 'calledElement must be a valid BPMN QName or a ${...} expression'
+          : 'calledElement must be a valid BPMN QName; ${...} expressions require extensionProfile camunda7');
       }
     }
 
@@ -3543,8 +3783,83 @@ export interface DiagramListingPage {
   diagrams: DiagramListing[];
 }
 
+/** Append the .bpmn extension when a caller-supplied name carries none. */
+function normalizeBpmnFilename(filename: string): string {
+  return extname(filename) === '' && !filename.toLowerCase().endsWith('.bpmn')
+    ? `${filename}.bpmn`
+    : filename;
+}
+
 function compareStableText(left: string, right: string): number {
   if (left < right) return -1;
   if (left > right) return 1;
   return 0;
+}
+
+/** BPMN's default for bpmn:TextAnnotation textFormat (BPMN 2.0 §10.4.1). */
+const DEFAULT_TEXT_ANNOTATION_FORMAT = 'text/plain';
+
+/**
+ * Element properties reduced to the parts a layout pass must preserve.
+ *
+ * Two kinds of noise are removed. Representation details that layout adapters
+ * may legitimately rewrite (DI expansion state, the blackBox shorthand for an
+ * absent participant processRef, data-object reference bookkeeping) are
+ * dropped. Schema defaults that bpmn-moddle materializes on parse are applied
+ * to both sides, so an annotation authored without an explicit textFormat
+ * still compares equal to the same annotation read back carrying the BPMN
+ * default. A genuinely different textFormat is still detected.
+ */
+function comparableElementProperties(element: BpmnDocumentElement): Record<string, unknown> {
+  const properties: Record<string, unknown> = Object.fromEntries(
+    Object.entries(element.properties).filter(([key]) => key !== 'isExpanded'
+      && !(element.kind === 'participant' && key === 'blackBox')
+      && !(element.type === 'bpmn:DataObjectReference'
+        && (key === 'isCollection' || key === 'itemSubjectRef')))
+  );
+  if (element.type === 'bpmn:TextAnnotation' && properties.textFormat === undefined) {
+    properties.textFormat = DEFAULT_TEXT_ANNOTATION_FORMAT;
+  }
+  return properties;
+}
+
+/**
+ * Locate the first differing path between two JSON-normalized snapshots so a
+ * layout rejection can name the element and field that changed instead of
+ * failing opaquely. Returns undefined when the values are equal.
+ */
+function describeSemanticDifference(left: unknown, right: unknown, path = ''): string | undefined {
+  if (isDeepStrictEqual(left, right)) return undefined;
+
+  const describe = (value: unknown): string => {
+    if (value === undefined) return 'absent';
+    const text = JSON.stringify(value) ?? String(value);
+    return text.length > 80 ? `${text.slice(0, 79)}…` : text;
+  };
+
+  if (Array.isArray(left) && Array.isArray(right)) {
+    if (left.length !== right.length) {
+      return `${path || 'snapshot'} (${left.length} entries before, ${right.length} after)`;
+    }
+    for (let index = 0; index < left.length; index += 1) {
+      const nested = describeSemanticDifference(left[index], right[index], `${path}[${index}]`);
+      if (nested) return nested;
+    }
+    return path || 'snapshot';
+  }
+
+  const isPlainObject = (value: unknown): value is Record<string, unknown> => (
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+  );
+  if (isPlainObject(left) && isPlainObject(right)) {
+    // An id field identifies the owning object far better than an array index.
+    const label = typeof left.id === 'string' ? `${path}(${left.id})` : path;
+    for (const key of new Set([...Object.keys(left), ...Object.keys(right)])) {
+      const nested = describeSemanticDifference(left[key], right[key], label ? `${label}.${key}` : key);
+      if (nested) return nested;
+    }
+    return label || 'snapshot';
+  }
+
+  return `${path || 'snapshot'}: ${describe(left)} became ${describe(right)}`;
 }

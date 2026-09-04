@@ -70,9 +70,6 @@
       <bpmndi:BPMNShape id="Data_Request_di" bpmnElement="Data_Request">
         <dc:Bounds x="300" y="450" width="36" height="50" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Data_Request_Object_di" bpmnElement="Data_Request_Object">
-        <dc:Bounds x="875" y="650" width="36" height="50" />
-      </bpmndi:BPMNShape>
       <bpmndi:BPMNEdge id="Upper_Flow_1_di" bpmnElement="Upper_Flow_1">
         <di:waypoint x="136" y="148" />
         <di:waypoint x="350" y="148" />

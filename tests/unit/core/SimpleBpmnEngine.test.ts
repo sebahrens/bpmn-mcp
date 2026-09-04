@@ -1613,7 +1613,8 @@ describe('SimpleBpmnEngine schema-aware document model', () => {
     expect(context.connections.has(first.id)).toBe(false);
 
     const second = await engine.addAssociation(context.id, annotation.id, task.id, 'One');
-    await expect(engine.deleteElement(context.id, annotation.id)).resolves.toBe(1);
+    await expect(engine.deleteElement(context.id, annotation.id))
+      .resolves.toMatchObject({ removedConnectionCount: 1 });
     expect(context.elements.has(annotation.id)).toBe(false);
     expect(context.elements.has(task.id)).toBe(true);
     expect(context.connections.has(second.id)).toBe(false);
@@ -1775,12 +1776,13 @@ describe('SimpleBpmnEngine schema-aware document model', () => {
 
     const result = await handler.handleRequest('delete_element', { elementId: connection.id });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       content: [{
         type: 'text',
         text: `Error: Connection ${connection.id} has unsupported type bpmn:DataAssociation`
       }],
-      isError: true
+      isError: true,
+      structuredContent: { code: 'invalid_bpmn' }
     });
     expect(context.connections.get(connection.id)).toBe(connection);
     expect(context.elements.has(source.id)).toBe(true);
@@ -1978,7 +1980,8 @@ describe('SimpleBpmnEngine schema-aware document model', () => {
     await engine.connect(context.id, outside.id, subprocess.id);
     await engine.connect(context.id, child.id, childEnd.id);
 
-    await expect(engine.deleteElement(context.id, subprocess.id)).resolves.toBe(2);
+    await expect(engine.deleteElement(context.id, subprocess.id))
+      .resolves.toMatchObject({ removedConnectionCount: 2 });
     expect(context.elements.has(outside.id)).toBe(true);
     expect(context.elements.has(subprocess.id)).toBe(false);
     expect(context.elements.has(nested.id)).toBe(false);
@@ -2303,12 +2306,373 @@ describe('SimpleBpmnEngine schema-aware document model', () => {
     expect(summarize(secondDefinitions)).toEqual(firstSummary);
 
     const removed = await engine.deleteElement(imported.id, task.id);
-    expect(removed).toBe(1);
+    expect(removed.removedConnectionCount).toBe(1);
+    expect(removed.removedElementIds).toEqual([task.id]);
     const afterDelete = (await moddle.fromXML(await engine.exportXml(imported.id))).rootElement;
     expect(findSemantic(afterDelete, task.id)).toBeUndefined();
     expect(findSemantic(afterDelete, flow.id)).toBeUndefined();
     expect(afterDelete.diagrams[0].plane.bpmnElement.id).toBe(imported.id);
     expect(afterDelete.diagrams[0].plane.planeElement.map((item: any) => item.bpmnElement.id))
       .toEqual([start.id]);
+  });
+
+  const buildAnnotatedProcess = async (): Promise<string> => {
+    const context = await engine.createProcess('Annotated', 'process', 'portable');
+    const start = await engine.createElement(context.id, {
+      type: 'bpmn:StartEvent',
+      name: 'Start',
+      position: { x: 100, y: 100 }
+    });
+    const task = await engine.createElement(context.id, {
+      type: 'bpmn:UserTask',
+      name: 'Review',
+      position: { x: 250, y: 100 }
+    });
+    const end = await engine.createElement(context.id, {
+      type: 'bpmn:EndEvent',
+      name: 'End',
+      position: { x: 400, y: 100 }
+    });
+    await engine.connect(context.id, start.id, task.id);
+    await engine.connect(context.id, task.id, end.id);
+    return context.id;
+  };
+
+  it('lays out a diagram containing a text annotation authored without an explicit textFormat', async () => {
+    const processId = await buildAnnotatedProcess();
+    const { annotation } = await engine.addTextAnnotation(processId, 'Needs sign-off');
+    expect(annotation.properties.textFormat).toBeUndefined();
+
+    await expect(engine.applyAutoLayout(processId)).resolves.toBeDefined();
+
+    // A second annotation added after the first layout must not reintroduce the
+    // authored-vs-parsed asymmetry that previously failed here.
+    await engine.addTextAnnotation(processId, 'Second note');
+    await expect(engine.applyAutoLayout(processId)).resolves.toBeDefined();
+  });
+
+  it('lays out a diagram whose annotation carries an explicit textFormat', async () => {
+    const processId = await buildAnnotatedProcess();
+    await engine.addTextAnnotation(processId, 'Explicit', { textFormat: 'text/plain' });
+
+    await expect(engine.applyAutoLayout(processId)).resolves.toBeDefined();
+  });
+
+  it('still rejects a layout pass that changes BPMN semantics, naming the field that differs', async () => {
+    const processId = await buildAnnotatedProcess();
+    await engine.addTextAnnotation(processId, 'Note');
+    const current = (engine as any).getProcess(processId).document;
+
+    // Round-trip defaulting is tolerated, but a textFormat the layout pass
+    // genuinely rewrote is a real semantic change and must still be caught.
+    const rewritten = {
+      ...current,
+      elements: new Map(Array.from(
+        current.elements.entries() as Iterable<[string, any]>,
+        ([id, element]) => [
+          id,
+          element.type === 'bpmn:TextAnnotation'
+            ? { ...element, properties: { ...element.properties, textFormat: 'text/html' } }
+            : element
+        ]
+      ))
+    };
+
+    expect(() => (engine as any).assertLayoutSemanticsUnchanged(current, rewritten))
+      .toThrow(/textFormat/);
+  });
+
+  it('omits waitForCompletion from compensation events that do not set it', async () => {
+    const context = await engine.createProcess('Compensation', 'process', 'portable');
+    const task = await engine.createElement(context.id, {
+      type: 'bpmn:Task',
+      name: 'Book',
+      position: { x: 100, y: 100 }
+    });
+    await engine.createElement(context.id, {
+      type: 'bpmn:IntermediateThrowEvent',
+      name: 'Compensate',
+      position: { x: 250, y: 100 },
+      properties: {
+        eventDefinition: 'compensation',
+        eventDefinitionPayload: { activityRef: task.id }
+      }
+    });
+    await engine.createElement(context.id, {
+      type: 'bpmn:EndEvent',
+      name: 'Compensated',
+      position: { x: 400, y: 100 },
+      properties: { eventDefinition: 'compensation' }
+    });
+
+    const xml = await engine.exportXml(context.id);
+    expect(xml).not.toContain('waitForCompletion="undefined"');
+    expect(xml).toContain('compensateEventDefinition');
+
+    const definitions = (await moddle.fromXML(xml)).rootElement;
+    const process = definitions.rootElements.find((root: any) => root.id === context.id);
+    const compensationDefinitions = (process.flowElements || [])
+      .filter((item: any) => (item.eventDefinitions || [])
+        .some((definition: any) => definition.$type === 'bpmn:CompensateEventDefinition'))
+      .map((item: any) => item.eventDefinitions[0]);
+    expect(compensationDefinitions).toHaveLength(2);
+    for (const definition of compensationDefinitions) {
+      // moddle materializes the schema default on parse; what matters is that
+      // the serialized attribute is never the string "undefined".
+      expect([true, false, undefined]).toContain(definition.waitForCompletion);
+    }
+  });
+
+  describe('deleting elements that other objects still reference', () => {
+    const dataAssociationXml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  id="Definitions_Data" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:process id="Process_Data" isExecutable="true">
+    <bpmn:dataObject id="DataObject_In" />
+    <bpmn:dataObjectReference id="DataRef_In" name="Input" dataObjectRef="DataObject_In" />
+    <bpmn:dataObject id="DataObject_Out" />
+    <bpmn:dataObjectReference id="DataRef_Out" name="Output" dataObjectRef="DataObject_Out" />
+    <bpmn:task id="Task_Review" name="Review">
+      <bpmn:dataInputAssociation id="DataInputAssociation_1">
+        <bpmn:sourceRef>DataRef_In</bpmn:sourceRef>
+      </bpmn:dataInputAssociation>
+      <bpmn:dataOutputAssociation id="DataOutputAssociation_1">
+        <bpmn:targetRef>DataRef_Out</bpmn:targetRef>
+      </bpmn:dataOutputAssociation>
+    </bpmn:task>
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="Diagram_Data">
+    <bpmndi:BPMNPlane id="Plane_Data" bpmnElement="Process_Data">
+      <bpmndi:BPMNShape id="Task_Review_di" bpmnElement="Task_Review">
+        <dc:Bounds x="240" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="DataRef_In_di" bpmnElement="DataRef_In">
+        <dc:Bounds x="100" y="100" width="36" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="DataRef_Out_di" bpmnElement="DataRef_Out">
+        <dc:Bounds x="420" y="100" width="36" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="DataInputAssociation_1_di" bpmnElement="DataInputAssociation_1">
+        <di:waypoint x="136" y="125" /><di:waypoint x="240" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="DataOutputAssociation_1_di" bpmnElement="DataOutputAssociation_1">
+        <di:waypoint x="340" y="140" /><di:waypoint x="420" y="125" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>`;
+
+    it('deletes an activity that owns data input and output associations', async () => {
+      const imported = await engine.importXml(dataAssociationXml, 'Data associations');
+
+      await expect(engine.deleteElement(imported.id, 'Task_Review')).resolves.toBeDefined();
+
+      const xml = await engine.exportXml(imported.id);
+      expect(xml).not.toContain('Task_Review');
+      // The DI edges for the nested associations must go with them; leaving
+      // them behind is what previously failed the reference verification.
+      expect(xml).not.toContain('DataInputAssociation_1');
+      expect(xml).not.toContain('DataOutputAssociation_1');
+      // Unrelated objects survive.
+      expect(xml).toContain('DataRef_In');
+      expect(xml).toContain('DataRef_Out');
+    });
+
+    it('deletes an activity referenced by a compensation event, clearing the stale activityRef', async () => {
+      const context = await engine.createProcess('Compensation delete', 'process', 'portable');
+      const task = await engine.createElement(context.id, {
+        type: 'bpmn:Task',
+        name: 'Book',
+        position: { x: 100, y: 100 }
+      });
+      const thrower = await engine.createElement(context.id, {
+        type: 'bpmn:IntermediateThrowEvent',
+        name: 'Compensate',
+        position: { x: 250, y: 100 },
+        properties: {
+          eventDefinition: 'compensation',
+          eventDefinitionPayload: { activityRef: task.id }
+        }
+      });
+
+      await expect(engine.deleteElement(context.id, task.id)).resolves.toBeDefined();
+
+      const reloaded = (engine as any).getProcess(context.id);
+      expect(reloaded.elements.has(task.id)).toBe(false);
+      const payload = reloaded.elements.get(thrower.id).properties.eventDefinitionPayload;
+      expect(payload.activityRef).toBeUndefined();
+
+      const xml = await engine.exportXml(context.id);
+      expect(xml).toContain('compensateEventDefinition');
+      expect(xml).not.toContain('activityRef');
+    });
+
+    it('deletes a data object reference used as a multi-instance loop reference', async () => {
+      const context = await engine.createProcess('Loop delete', 'process', 'portable');
+      const dataReference = await engine.addDataObject(context.id, 'Orders', {});
+      const activity = await engine.createElement(context.id, {
+        type: 'bpmn:Task',
+        name: 'Handle order',
+        position: { x: 250, y: 100 },
+        properties: {
+          multiInstance: {
+            isSequential: false,
+            loopDataInputRef: dataReference.reference.id
+          }
+        }
+      });
+
+      await expect(engine.deleteElement(context.id, dataReference.reference.id))
+        .resolves.toBeDefined();
+
+      const reloaded = (engine as any).getProcess(context.id);
+      const multiInstance = reloaded.elements.get(activity.id).properties.multiInstance;
+      expect(multiInstance.loopDataInputRef).toBeUndefined();
+      expect(multiInstance.isSequential).toBe(false);
+      await expect(engine.exportXml(context.id)).resolves.toContain('multiInstanceLoopCharacteristics');
+    });
+  });
+
+  describe('call activity calledElement binding', () => {
+    const callActivityXml = (calledElement: string): string => `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  id="Definitions_Call" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:process id="Process_Call" isExecutable="true">
+    <bpmn:callActivity id="CallActivity_1" name="Notify" calledElement="${calledElement}" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="Diagram_Call">
+    <bpmndi:BPMNPlane id="Plane_Call" bpmnElement="Process_Call">
+      <bpmndi:BPMNShape id="CallActivity_1_di" bpmnElement="CallActivity_1">
+        <dc:Bounds x="100" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>`;
+
+    it.each([
+      ['a late-bound expression', '${notifyProcess}'],
+      ['a hash expression', '#{notifyProcess}'],
+      ['a plain QName', 'NotifyProcess'],
+      ['a namespaced QName', 'ext:NotifyProcess']
+    ])('imports a call activity bound by %s and preserves it through export', async (_label, called) => {
+      const imported = await engine.importXml(callActivityXml(called), 'Called');
+
+      expect(imported.elements.get('CallActivity_1')?.properties.calledElement).toBe(called);
+      const exported = await engine.exportXml(imported.id);
+      expect(exported).toContain(`calledElement="${called.replace(/&/g, '&amp;')}"`);
+    });
+
+    it('accepts an expression authored under the camunda7 profile', async () => {
+      const context = await engine.createProcess('Camunda call', 'process', 'camunda7');
+      const call = await engine.createElement(context.id, {
+        type: 'bpmn:CallActivity',
+        name: 'Notify',
+        position: { x: 100, y: 100 },
+        properties: { calledElement: '${notifyProcess}' }
+      });
+
+      expect(call.properties.calledElement).toBe('${notifyProcess}');
+      expect(await engine.exportXml(context.id)).toContain('calledElement="${notifyProcess}"');
+    });
+
+    it('rejects an expression authored under the portable profile and names the profile', async () => {
+      const context = await engine.createProcess('Portable call', 'process', 'portable');
+
+      await expect(engine.createElement(context.id, {
+        type: 'bpmn:CallActivity',
+        name: 'Notify',
+        position: { x: 100, y: 100 },
+        properties: { calledElement: '${notifyProcess}' }
+      })).rejects.toThrow(/camunda7/);
+    });
+
+    it('still rejects a malformed calledElement under either profile', async () => {
+      for (const profile of ['portable', 'camunda7'] as const) {
+        const context = await engine.createProcess(`Bad call ${profile}`, 'process', profile);
+        await expect(engine.createElement(context.id, {
+          type: 'bpmn:CallActivity',
+          name: 'Notify',
+          position: { x: 100, y: 100 },
+          properties: { calledElement: 'not a qname' }
+        })).rejects.toThrow(/calledElement/);
+      }
+    });
+  });
+
+  it('never serializes a JavaScript undefined into a BPMN attribute', async () => {
+    const context = await engine.createProcess('Definition matrix', 'process', 'portable');
+    const task = await engine.createElement(context.id, {
+      type: 'bpmn:Task',
+      name: 'Anchor',
+      position: { x: 100, y: 100 }
+    });
+    const cases: Array<{ type: string; properties: Record<string, unknown> }> = [
+      { type: 'bpmn:IntermediateThrowEvent', properties: { eventDefinition: 'message' } },
+      { type: 'bpmn:IntermediateThrowEvent', properties: { eventDefinition: 'signal' } },
+      { type: 'bpmn:IntermediateThrowEvent', properties: { eventDefinition: 'escalation' } },
+      {
+        type: 'bpmn:IntermediateCatchEvent',
+        properties: {
+          eventDefinition: 'timer',
+          eventDefinitionPayload: { timer: { type: 'timeDuration', expression: 'PT5M' } }
+        }
+      },
+      {
+        type: 'bpmn:IntermediateCatchEvent',
+        properties: {
+          eventDefinition: 'conditional',
+          eventDefinitionPayload: { condition: { expression: '${ready}' } }
+        }
+      },
+      {
+        type: 'bpmn:IntermediateThrowEvent',
+        properties: {
+          eventDefinition: 'compensation',
+          eventDefinitionPayload: { activityRef: task.id }
+        }
+      }
+    ];
+    for (const [index, { type, properties }] of cases.entries()) {
+      await engine.createElement(context.id, {
+        type: type as any,
+        name: `Event ${index}`,
+        position: { x: 250 + index * 120, y: 100 },
+        properties
+      });
+    }
+
+    const xml = await engine.exportXml(context.id);
+    expect(xml).not.toContain('="undefined"');
+    expect(xml).not.toContain('="null"');
+  });
+
+  it('preserves an explicitly requested compensation waitForCompletion value', async () => {
+    const context = await engine.createProcess('Compensation wait', 'process', 'portable');
+    const task = await engine.createElement(context.id, {
+      type: 'bpmn:Task',
+      name: 'Book',
+      position: { x: 100, y: 100 }
+    });
+    const thrower = await engine.createElement(context.id, {
+      type: 'bpmn:IntermediateThrowEvent',
+      name: 'Compensate',
+      position: { x: 250, y: 100 },
+      properties: {
+        eventDefinition: 'compensation',
+        eventDefinitionPayload: { activityRef: task.id, waitForCompletion: true }
+      }
+    });
+
+    const xml = await engine.exportXml(context.id);
+    expect(xml).not.toContain('waitForCompletion="undefined"');
+
+    const definitions = (await moddle.fromXML(xml)).rootElement;
+    expect(findSemantic(definitions, thrower.id).eventDefinitions[0].waitForCompletion).toBe(true);
   });
 });

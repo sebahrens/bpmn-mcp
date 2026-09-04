@@ -137,6 +137,26 @@ On macOS, doctor also checks the standard Google Chrome and Chromium application
 paths. On Linux/WSL it checks common Chrome/Chromium commands and Puppeteer's
 managed download. Do not configure a Windows browser executable from WSL.
 
+## SVG render fails with a Chrome sandbox error
+
+If the browser is installed but the launch diagnostic ends in `Running as root
+without --no-sandbox is not supported` or another sandbox failure, Chrome is
+present and the sandbox is what cannot start. The server already launches Chrome
+with `--no-sandbox --disable-setuid-sandbox` when it runs as uid 0, so this
+remains only where the sandbox is blocked for a non-root user — commonly hosts
+that restrict unprivileged user namespaces, such as Ubuntu 24.04 runners and
+hardened containers. Set the launch arguments explicitly for the client session:
+
+```sh
+export MCP_BPMN_BROWSER_ARGS="--no-sandbox --disable-setuid-sandbox"
+make doctor
+```
+
+`MCP_BPMN_BROWSER_ARGS` is a space-separated list that replaces the default
+arguments entirely; an empty string launches Chrome with none. Like
+`PUPPETEER_EXECUTABLE_PATH`, the installer does not add it to MCP registrations,
+so export it in the environment the agent client is started from.
+
 ## Uninstall did not remove an item
 
 This is normally a safety decision. Uninstall preserves conflicting

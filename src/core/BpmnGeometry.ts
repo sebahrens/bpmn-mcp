@@ -137,6 +137,18 @@ interface SemanticElement {
   ownerProcessId?: string;
 }
 
+/**
+ * Semantic elements that BPMN never renders on a plane. A bpmn:DataObject is
+ * the non-visual backing definition of a bpmn:DataObjectReference; only the
+ * reference carries a BPMNShape, so requiring DI for the definition would
+ * report every diagram that stores data as geometry-invalid.
+ */
+const NON_VISUAL_ELEMENT_TYPES = new Set([
+  'bpmn:DataObject',
+  'bpmn:DataStore',
+  'bpmn:Property'
+]);
+
 interface SemanticIndex {
   elements: Map<string, SemanticElement>;
   participantByProcess: Map<string, string>;
@@ -646,6 +658,7 @@ function validateCompleteness(
   const shapeIds = new Set(geometry.shapes.map(shape => shape.id));
   const edgeIds = new Set(geometry.edges.map(edge => edge.id));
   for (const element of semantic.elements.values()) {
+    if (NON_VISUAL_ELEMENT_TYPES.has(element.type)) continue;
     if ((element.kind === 'shape' || element.kind === 'container') && !shapeIds.has(element.id)) {
       diagnostics.push(diagnostic('MISSING_SHAPE', `Missing BPMNShape for ${element.type} ${element.id}`, [element.id]));
     } else if (element.kind === 'edge' && !edgeIds.has(element.id)) {
@@ -759,12 +772,17 @@ function validateShapeAndLabelOverlaps(
   clearance: number,
   tolerance: number
 ): void {
+  const shapesById = uniqueShapesById(geometry.shapes);
+  const shapeAncestors = containerAncestorIndex(shapesById);
+  const labelContainerAncestors = labelAncestorIndex(geometry, shapeAncestors);
   for (let leftIndex = 0; leftIndex < geometry.shapes.length; leftIndex++) {
     const left = geometry.shapes[leftIndex];
     if (!finiteBounds(left.bounds)) continue;
     for (let rightIndex = leftIndex + 1; rightIndex < geometry.shapes.length; rightIndex++) {
       const right = geometry.shapes[rightIndex];
-      if (left.planeId !== right.planeId || !finiteBounds(right.bounds) || legalShapeOverlap(left, right)) continue;
+      if (left.planeId !== right.planeId
+        || !finiteBounds(right.bounds)
+        || legalShapeOverlap(left, right, shapeAncestors)) continue;
       const appliedClearance = CONTAINER_TYPES.has(left.type) || CONTAINER_TYPES.has(right.type) ? 0 : clearance;
       if (rectanglesCollide(left.bounds, right.bounds, 0, 0)) {
         diagnostics.push(diagnostic(
@@ -809,8 +827,12 @@ function validateShapeAndLabelOverlaps(
 
   for (const label of geometry.labels) {
     if (!finiteBounds(label.bounds)) continue;
+    const ancestors = labelContainerAncestors.get(label.id) ?? new Set<string>();
     for (const shape of geometry.shapes) {
-      if (label.planeId !== shape.planeId || label.ownerId === shape.id || !finiteBounds(shape.bounds)) continue;
+      if (label.planeId !== shape.planeId
+        || label.ownerId === shape.id
+        || ancestors.has(shape.id)
+        || !finiteBounds(shape.bounds)) continue;
       if (rectanglesCollide(label.bounds, shape.bounds, 0, 0)) {
         diagnostics.push(diagnostic(
           'LABEL_OVERLAP',
@@ -911,6 +933,16 @@ function validateEdgeEdgeCrossings(
         continue;
       }
 
+      const overlap = collinearEdgeOverlap(left, right, tolerance);
+      if (overlap) {
+        diagnostics.push(diagnostic(
+          'EDGE_EDGE_CROSSING',
+          `Edge ${left.id} segment ${overlap[0]} runs along edge ${right.id} segment ${overlap[1]} for ${formatNumber(overlap[2])}px`,
+          [left.id, right.id].sort()
+        ));
+        continue;
+      }
+
       let closeSegments: [number, number, number] | undefined;
       for (let leftSegment = 0;
         leftSegment < left.waypoints.length - 1 && !closeSegments;
@@ -950,6 +982,67 @@ function validateEdgeEdgeCrossings(
   }
 }
 
+/**
+ * Two connectors that run along each other are as unreadable as two that
+ * cross, and `segmentsProperlyCross` deliberately ignores parallel segments.
+ * Report the longest collinear overlap that is not the legal shared dock of
+ * two connectors of the same kind (for example two flows out of one gateway).
+ */
+function collinearEdgeOverlap(
+  left: GeometryEdge,
+  right: GeometryEdge,
+  tolerance: number
+): [number, number, number] | undefined {
+  for (let leftSegment = 0; leftSegment < left.waypoints.length - 1; leftSegment += 1) {
+    const leftStart = left.waypoints[leftSegment];
+    const leftEnd = left.waypoints[leftSegment + 1];
+    if (!finitePoint(leftStart) || !finitePoint(leftEnd)) continue;
+    for (let rightSegment = 0; rightSegment < right.waypoints.length - 1; rightSegment += 1) {
+      const rightStart = right.waypoints[rightSegment];
+      const rightEnd = right.waypoints[rightSegment + 1];
+      if (!finitePoint(rightStart) || !finitePoint(rightEnd)
+        || segmentsShareSemanticDock(left, leftSegment, right, rightSegment, tolerance)) continue;
+      const overlap = collinearOverlapLength(
+        leftStart,
+        leftEnd,
+        rightStart,
+        rightEnd,
+        tolerance
+      );
+      if (overlap > tolerance) return [leftSegment, rightSegment, overlap];
+    }
+  }
+  return undefined;
+}
+
+function collinearOverlapLength(
+  leftStart: GeometryPoint,
+  leftEnd: GeometryPoint,
+  rightStart: GeometryPoint,
+  rightEnd: GeometryPoint,
+  tolerance: number
+): number {
+  const deltaX = leftEnd.x - leftStart.x;
+  const deltaY = leftEnd.y - leftStart.y;
+  const length = Math.hypot(deltaX, deltaY);
+  if (length <= tolerance) return 0;
+  const unitX = deltaX / length;
+  const unitY = deltaY / length;
+  const offset = (point: GeometryPoint): number =>
+    Math.abs(unitX * (point.y - leftStart.y) - unitY * (point.x - leftStart.x));
+  if (offset(rightStart) > tolerance || offset(rightEnd) > tolerance) return 0;
+  const project = (point: GeometryPoint): number =>
+    unitX * (point.x - leftStart.x) + unitY * (point.y - leftStart.y);
+  const low = Math.min(project(rightStart), project(rightEnd));
+  const high = Math.max(project(rightStart), project(rightEnd));
+  return Math.max(0, Math.min(length, high) - Math.max(0, low));
+}
+
+/**
+ * Connectors of the same kind may legally leave or enter one element at the
+ * same point. A message flow that docks where a sequence flow already docks is
+ * a layout defect, so the exemption is limited to same-kind connectors.
+ */
 function segmentsShareSemanticDock(
   left: GeometryEdge,
   leftSegment: number,
@@ -957,6 +1050,7 @@ function segmentsShareSemanticDock(
   rightSegment: number,
   tolerance: number
 ): boolean {
+  if (left.type !== right.type) return false;
   const leftDocks = edgeSegmentDocks(left, leftSegment);
   const rightDocks = edgeSegmentDocks(right, rightSegment);
   return leftDocks.some(leftDock => rightDocks.some(rightDock =>
@@ -1020,13 +1114,65 @@ function isEndpointAncestor(
   });
 }
 
-function legalShapeOverlap(left: GeometryShape, right: GeometryShape): boolean {
-  return left.parentId === right.id
-    || right.parentId === left.id
-    || left.attachedToId === right.id
+/**
+ * A shape may always sit inside one of its own containers. Ancestry is resolved
+ * by walking parentId (node -> lane -> participant, node -> expanded subprocess
+ * -> participant) rather than by guessing from BPMN types, so a grandparent
+ * pool never collides with a lane-parented node while a foreign pool still does.
+ */
+function legalShapeOverlap(
+  left: GeometryShape,
+  right: GeometryShape,
+  ancestors: Map<string, Set<string>>
+): boolean {
+  return left.attachedToId === right.id
     || right.attachedToId === left.id
-    || (left.type === 'bpmn:Participant' && right.type === 'bpmn:Lane')
-    || (right.type === 'bpmn:Participant' && left.type === 'bpmn:Lane');
+    || ancestors.get(left.id)?.has(right.id) === true
+    || ancestors.get(right.id)?.has(left.id) === true;
+}
+
+/** Container ancestors of every shape, keyed by shape ID. */
+function containerAncestorIndex(
+  shapes: Map<string, GeometryShape>
+): Map<string, Set<string>> {
+  const index = new Map<string, Set<string>>();
+  for (const shape of shapes.values()) {
+    const ancestors = new Set<string>();
+    let current: GeometryShape | undefined = shape;
+    while (current?.parentId && !ancestors.has(current.parentId)) {
+      ancestors.add(current.parentId);
+      current = shapes.get(current.parentId);
+    }
+    index.set(shape.id, ancestors);
+  }
+  return index;
+}
+
+/**
+ * Container ancestors of every label owner. A shape label inherits the owning
+ * shape's containers; an edge label inherits the containers of both endpoints,
+ * so an in-pool sequence-flow label never collides with the pool, lane, or
+ * expanded subprocess it is drawn inside.
+ */
+function labelAncestorIndex(
+  geometry: BpmnGeometry,
+  shapeAncestors: Map<string, Set<string>>
+): Map<string, Set<string>> {
+  const edgesById = new Map(geometry.edges.map(edge => [edge.id, edge]));
+  const index = new Map<string, Set<string>>();
+  for (const label of geometry.labels) {
+    const owned = shapeAncestors.get(label.ownerId);
+    if (owned) {
+      index.set(label.id, owned);
+      continue;
+    }
+    const edge = edgesById.get(label.ownerId);
+    index.set(label.id, new Set([
+      ...(edge?.sourceId ? shapeAncestors.get(edge.sourceId) ?? [] : []),
+      ...(edge?.targetId ? shapeAncestors.get(edge.targetId) ?? [] : [])
+    ]));
+  }
+  return index;
 }
 
 function uniqueShapesById(shapes: GeometryShape[]): Map<string, GeometryShape> {

@@ -10,6 +10,7 @@ import {
   type BpmnLayoutAdapter
 } from '../core/layout/BpmnLayoutAdapter.js';
 import type { ConversionResult } from './types.js';
+import { isGenericEventLabel } from './ASTTypes.js';
 import type { 
   MermaidAST,
   ParseResult
@@ -274,11 +275,14 @@ export class MermaidConverter {
 
 
   private generateProcessName(ast: MermaidAST): string {
-    const startNode = ast.nodes.find(n => n.type === 'start');
-    if (startNode) {
-      return startNode.label.replace(/start|begin/gi, '').trim() || 'Converted Process';
+    // The start label is used verbatim. Stripping "start"/"begin" out of it
+    // mangled ordinary names ("Order Started" became "Order ed"), so a label
+    // that is only the generic keyword falls back to the neutral name instead.
+    const startLabel = ast.nodes.find(n => n.type === 'start')?.label.trim() ?? '';
+    if (!startLabel || isGenericEventLabel('start', startLabel)) {
+      return 'Converted Process';
     }
-    return 'Converted Process';
+    return startLabel;
   }
 
   private parseFailure(errors: readonly string[]): Error {

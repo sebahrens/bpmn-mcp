@@ -50,6 +50,7 @@ The following commands are the supported contributor entry points:
 | `npm test` | Run the normal source-level suites and renderer suite; compiled output is not used. |
 | `npm run test:all` | Remove `dist/`, rebuild, and run every suite, including e2e and renderer tests. |
 | `npm run test:package` | Clean, build, pack, install, and initialize the published entry points in a temporary directory. |
+| `npm run contract:update` | Rebuild `dist/` and regenerate `scripts/tool-contract.json`, the reviewed MCP tool inventory and schema fingerprints. |
 | `npm run clean` | Remove generated `dist/` output. |
 | `npm run check` | Run the complete clean contributor/CI gate: type-check, lint, build, all tests, package smoke, and the production dependency audit. |
 
@@ -62,6 +63,16 @@ npm run check
 
 The production dependency audit is part of this gate. Audit findings may
 require a maintainer decision; do not weaken or bypass a check to make it pass.
+
+`npm run test:all`, and therefore `npm run check`, collects coverage and enforces
+the per-file thresholds in `jest.config.js`.
+
+Changing the MCP tool surface — adding or removing a tool, or editing any tool's
+input or output schema — also changes `scripts/tool-contract.json`. Regenerate it
+with `npm run contract:update`, add every new tool to the README API reference
+under its own `#### \`tool_name\`` heading in advertised order, and review the
+resulting diff: it is the reviewed wire contract, not a cache. Never regenerate
+it only to silence a failing check.
 
 ### Generated and temporary files
 
@@ -115,9 +126,11 @@ breaking change must be called out explicitly in the changelog and pull
 request.
 
 `package.json` is the source of truth for the package version; keep its lockfile
-metadata in sync. A standalone `VERSION` file is not used. `CHANGELOG.md` keeps
-an `Unreleased` section, and released entries must identify a repository tag so
-their contents can be verified from Git history.
+metadata, `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json` in sync.
+A standalone `VERSION` file is not used. `CHANGELOG.md` keeps an `Unreleased`
+section, and released entries must identify the commits they cover so their
+contents can be verified from Git history. The maintainer creates the matching
+`v<version>` tag when publishing the release.
 
 Repository maintainers own release decisions. Only they may select a version,
 move `Unreleased` entries into a dated release section, update package metadata,

@@ -44,6 +44,14 @@ compatible Chrome or Chromium executable before starting the server. Rendering
 is headless, limited to one concurrent render per server instance, and has a
 twenty-second timeout.
 
+Chrome refuses to start as root, and container, devcontainer, CI, and cloud
+sandbox images commonly run the server as uid 0. The server therefore launches
+Chrome with `--no-sandbox --disable-setuid-sandbox` when `process.getuid()` is
+`0`. Set `MCP_BPMN_BROWSER_ARGS` to a space-separated argument list to replace
+that default anywhere else the sandbox cannot start — for example on hosts that
+restrict unprivileged user namespaces — or to an empty string to launch Chrome
+with no extra arguments at all.
+
 ### Install for Codex and Claude Code
 
 ```bash
@@ -661,6 +669,37 @@ bends, and length while preserving every unrelated DI object.
 If no acceptable route exists, the tool returns a `routing_failed` error with
 ranked candidate geometry, score breakdowns, and diagnostics without mutation.
 
+#### `build_process`
+Create many elements and the flows between them in one atomic call. Each node
+carries a caller-chosen `ref` that flows in the same request use to name it; the
+server assigns the real BPMN IDs and returns the mapping. A flow endpoint that is
+not a `ref` is treated as the ID of an element already in the diagram. The same
+validation applies as for the individual `add_*` and `connect` tools, and nothing
+is written unless every step succeeds. Run `auto_layout` afterwards to place the
+result.
+
+```javascript
+{
+  nodes: [
+    { kind: "event", ref: "start", eventType: "start", name: "Request received" },
+    { kind: "activity", ref: "review", activityType: "userTask", name: "Review" },
+    { kind: "gateway", ref: "decide", gatewayType: "exclusive", name: "Approved?" },
+    { kind: "activity", ref: "pay", activityType: "serviceTask", name: "Pay" },
+    { kind: "event", ref: "done", eventType: "end", name: "Done" }
+  ],
+  flows: [
+    { source: "start", target: "review" },
+    { source: "review", target: "decide" },
+    { source: "decide", target: "pay", label: "yes", condition: "${approved}" },
+    { source: "decide", target: "done", label: "no", isDefault: true },
+    { source: "pay", target: "done" }
+  ]
+}
+```
+
+Returns `elements` (each with its `ref`, assigned `elementId` and BPMN `type`),
+`connections`, and the usual revision fields.
+
 #### `delete_element`
 Delete an element and its incident connections. Passing an association ID
 deletes only that association and leaves its endpoints intact; deleting an
@@ -690,26 +729,41 @@ result, and returns an embedded `image/svg+xml` resource. It requires an
 available Chrome/Chromium executable and retains the visible bpmn.io
 attribution described under [License](#-license).
 
-#### `save_svg` and `save_png`
-Render the current diagram and atomically persist a separate SVG or PNG
-artifact in the managed workspace. The required filename must use the matching
-`.svg` or `.png` extension. Existing files are preserved unless `overwrite` is
-explicitly true.
+#### `save_svg`
+Render the current diagram and atomically persist a separate SVG artifact in the
+managed workspace. The required filename must use the `.svg` extension. Existing
+files are preserved unless `overwrite` is explicitly true.
 
 ```javascript
 {
-  filename: "order-review.svg", // or order-review.png for save_png
+  filename: "order-review.svg",
   overwrite: false // optional; defaults to false
 }
 ```
 
+SVG artifacts use the same sanitization and visible bpmn.io attribution as
+`export`.
+
+#### `save_png`
+Render the current diagram and atomically persist a separate PNG artifact in the
+managed workspace. The required filename must use the `.png` extension. Existing
+files are preserved unless `overwrite` is explicitly true.
+
+```javascript
+{
+  filename: "order-review.png",
+  overwrite: false // optional; defaults to false
+}
+```
+
+PNG is rasterized from the same sanitized SVG that `save_svg` writes.
+
 Both tools render from the active BPMN snapshot without changing its XML,
-revision, or active `.bpmn` filename. SVG uses the same sanitization and visible
-bpmn.io attribution as `export`; PNG is rasterized from that sanitized SVG.
-Rendered output is capped at 5 MiB by default and can be configured with
-`MCP_BPMN_MAX_ARTIFACT_BYTES`. Filenames are basename-only and traversal-safe.
-`list_diagrams` and `delete_diagram_file` continue to operate only on BPMN XML
-files, keeping diagram and rendered-artifact operations explicit.
+revision, or active `.bpmn` filename. Rendered output is capped at 5 MiB by
+default and can be configured with `MCP_BPMN_MAX_ARTIFACT_BYTES`. Filenames are
+basename-only and traversal-safe. `list_diagrams` and `delete_diagram_file`
+continue to operate only on BPMN XML files, keeping diagram and
+rendered-artifact operations explicit.
 
 #### `validate`
 Validate the current diagram structure.
@@ -842,21 +896,24 @@ No current context. Please create a diagram first with:
 // Step 1: Create a new process (sets it as current context)
 await new_bpmn({ name: "Approval Workflow" });
 
-// Step 2: Add elements (all operations apply to current diagram)
-await add_event({ eventType: "start", name: "Request Received" });
-await add_activity({ activityType: "userTask", name: "Review Request" });
-await add_gateway({ gatewayType: "exclusive", name: "Approved?" });
-await add_activity({ activityType: "serviceTask", name: "Process Approval" });
-await add_activity({ activityType: "userTask", name: "Handle Rejection" });
-await add_event({ eventType: "end", name: "Complete" });
+// Step 2: Add elements. Every add_* result carries the generated `elementId`;
+// keep it instead of guessing. IDs come from per-type session counters, and a
+// rejected call still consumes a number, so "StartEvent_1" only holds on a
+// server that has never failed a call.
+const start = await add_event({ eventType: "start", name: "Request Received" });
+const review = await add_activity({ activityType: "userTask", name: "Review Request" });
+const decision = await add_gateway({ gatewayType: "exclusive", name: "Approved?" });
+const approve = await add_activity({ activityType: "serviceTask", name: "Process Approval" });
+const reject = await add_activity({ activityType: "userTask", name: "Handle Rejection" });
+const complete = await add_event({ eventType: "end", name: "Complete" });
 
-// Step 3: Connect elements
-await connect({ sourceId: "StartEvent_1", targetId: "UserTask_1" });
-await connect({ sourceId: "UserTask_1", targetId: "ExclusiveGateway_1" });
-await connect({ sourceId: "ExclusiveGateway_1", targetId: "ServiceTask_1", label: "Yes" });
-await connect({ sourceId: "ExclusiveGateway_1", targetId: "UserTask_2", label: "No" });
-await connect({ sourceId: "ServiceTask_1", targetId: "EndEvent_1" });
-await connect({ sourceId: "UserTask_2", targetId: "EndEvent_1" });
+// Step 3: Connect elements using the returned IDs
+await connect({ sourceId: start.elementId, targetId: review.elementId });
+await connect({ sourceId: review.elementId, targetId: decision.elementId });
+await connect({ sourceId: decision.elementId, targetId: approve.elementId, label: "Yes" });
+await connect({ sourceId: decision.elementId, targetId: reject.elementId, label: "No" });
+await connect({ sourceId: approve.elementId, targetId: complete.elementId });
+await connect({ sourceId: reject.elementId, targetId: complete.elementId });
 
 // Step 4: Apply auto-layout for proper positioning
 await auto_layout();
@@ -887,10 +944,18 @@ await new_from_mermaid({
 // Step 2: Apply auto-layout (Mermaid conversion includes basic layout)
 await auto_layout();
 
-// Step 3: Make additional edits if needed
-await update_element({ 
-  elementId: "UserTask_1", 
-  properties: { assignee: "reviewer" }
+// Step 3: Look up the imported IDs before editing. Mermaid node keys become the
+// ID suffix, and every Mermaid box becomes a plain `bpmn:Task`, so this import
+// yields StartEvent_A, Task_B, Gateway_C, Task_D, Task_E, and EndEvent_F.
+const { elements } = await list_elements({});
+const review = elements.find(element => element.name === "Review Request");
+
+// `assignee` is rejected on `bpmn:Task` ("assignee is only valid on
+// bpmn:UserTask"), so rename here and add a real user task with add_activity
+// when you need user-task properties.
+await update_element({
+  elementId: review.id,
+  name: "Review Request (SLA 2 days)"
 });
 
 // Step 4: Save and export
@@ -954,7 +1019,8 @@ Resource limits can be tuned with `MCP_BPMN_MAX_IMPORT_BYTES`,
 `MCP_BPMN_MAX_LAYOUT_BYTES`, `MCP_BPMN_MAX_CONCURRENT_LAYOUTS`,
 `MCP_BPMN_MAX_LISTING_ITEMS`, `MCP_BPMN_MAX_LISTING_METADATA_BYTES`, and
 `MCP_BPMN_LAYOUT_TIMEOUT_MS`. The graceful shutdown deadline can be overridden
-with `MCP_BPMN_SHUTDOWN_TIMEOUT_MS`. Defaults are 5 MiB per imported/layout input and
+with `MCP_BPMN_SHUTDOWN_TIMEOUT_MS`, and the Chrome command line used for SVG and
+PNG rendering with `MCP_BPMN_BROWSER_ARGS`. Defaults are 5 MiB per imported/layout input and
 per listing metadata page, 2,000 layout elements/connections, density 10, two concurrent layout
 subprocesses, 10,000 listing candidates, and 5,000 ms. The layout defaults
 come from local sparse/dense benchmarks: 2,000/1,999 completed in about 1.4s,

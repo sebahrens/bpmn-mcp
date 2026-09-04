@@ -628,3 +628,157 @@ describe('MermaidParser diagnostics', () => {
     expect(result.errors.every(error => error.line > 0 && error.column > 0)).toBe(true);
   });
 });
+
+describe('MermaidParser semicolon statement terminators', () => {
+  const parser = new MermaidParser();
+
+  it('accepts a semicolon-terminated header and statements', () => {
+    const result = parser.parse('graph TD;\n  A((Start)) --> B[Work];\n  B --> C((End));');
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.direction).toBe('TD');
+    expect(result.ast?.nodes.map(node => node.id)).toEqual(['A', 'B', 'C']);
+    expect(result.ast?.edges.map(edge => edge.id)).toEqual(['A_to_B', 'B_to_C']);
+  });
+
+  it('parses several statements sharing one physical line', () => {
+    const result = parser.parse('graph LR; A((Start)) --> B[Work]; B --> C((End));');
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.direction).toBe('LR');
+    expect(result.ast?.nodes.map(node => node.type)).toEqual(['start', 'process', 'end']);
+    expect(result.ast?.edges).toHaveLength(2);
+  });
+
+  it('reports a diagnostic at the author column of a later statement on the same line', () => {
+    const result = parser.parse('flowchart TD; A --> B; C -> D');
+
+    expect(result.ast).toBeUndefined();
+    expect(result.errors.map(({ code, line, column }) => ({ code, line, column }))).toEqual([
+      { code: 'MALFORMED_EDGE', line: 1, column: 26 }
+    ]);
+    expect(result.errors[0].source).toBe('flowchart TD; A --> B; C -> D');
+  });
+
+  it('keeps semicolons that belong to shapes, quotes, edge labels, and HTML entities', () => {
+    const result = parser.parse([
+      'flowchart TD;',
+      '  A["Pause; resume"] --> B[Ship &amp;#59; invoice];',
+      '  B -->|approved; audited| C{Ready; set?};'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.nodes).toEqual([
+      { id: 'A', type: 'process', label: '"Pause; resume"' },
+      { id: 'B', type: 'process', label: 'Ship &amp;#59; invoice' },
+      { id: 'C', type: 'decision', label: 'Ready; set?' }
+    ]);
+    expect(result.ast?.edges.map(edge => edge.label)).toEqual([undefined, 'approved; audited']);
+  });
+
+  it('accepts semicolons on subgraph declarations and terminators', () => {
+    const result = parser.parse([
+      'graph LR;',
+      '  subgraph buyer[Buyer];',
+      '    S((Start)) --> T[Send order];',
+      '  end;',
+      '  subgraph seller[Seller];',
+      '    U[Receive order] --> E((End));',
+      '  end;',
+      '  T --> U;'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.subgraphs.map(subgraph => subgraph.id)).toEqual(['buyer', 'seller']);
+    expect(result.ast?.subgraphs.map(subgraph => subgraph.nodes)).toEqual([['S', 'T'], ['U', 'E']]);
+  });
+
+  it('keeps semicolons inside comments out of statement splitting', () => {
+    const result = parser.parse([
+      'flowchart TD;',
+      '  %% ship; then invoice',
+      '  A((Start)) --> B((End)); %% done; finally'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.nodes.map(node => node.id)).toEqual(['A', 'B']);
+    expect(result.ast?.edges.map(edge => edge.id)).toEqual(['A_to_B']);
+  });
+});
+
+describe('MermaidParser cross-subgraph edge endpoints', () => {
+  const parser = new MermaidParser();
+  const diagram = (rootEdge: string): string => [
+    'flowchart TD',
+    'subgraph a[A]',
+    '  S((Start)) --> T[Task] --> G{Which?}',
+    'end',
+    'subgraph b[B]',
+    '  U[Work] --> E((End))',
+    'end',
+    rootEdge
+  ].join('\n');
+
+  it.each([
+    [
+      'a gateway source',
+      'G --> U',
+      'Edge G_to_U cannot cross subgraphs "a" and "b" because Mermaid node G is a gateway'
+    ],
+    [
+      'a gateway target',
+      'U --> G',
+      'Edge U_to_G cannot cross subgraphs "b" and "a" because Mermaid node G is a gateway'
+    ],
+    [
+      'a start-event source',
+      'S --> U',
+      'Edge S_to_U cannot cross subgraphs "a" and "b" because Mermaid node S is a start event'
+    ],
+    [
+      'an end-event target',
+      'T --> E',
+      'Edge T_to_E cannot cross subgraphs "a" and "b" because Mermaid node E is an end event'
+    ]
+  ])('rejects %s with the author Mermaid ids and a source location', (_name, rootEdge, message) => {
+    const result = parser.parse(diagram(rootEdge));
+    const endpointErrors = result.errors.filter(error => error.code === 'UNSUPPORTED_EDGE_ENDPOINT');
+
+    expect(result.ast).toBeUndefined();
+    expect(endpointErrors).toEqual([
+      expect.objectContaining({
+        severity: 'error',
+        code: 'UNSUPPORTED_EDGE_ENDPOINT',
+        line: 8,
+        column: 3,
+        source: rootEdge,
+        message: expect.stringContaining(message)
+      })
+    ]);
+    expect(endpointErrors[0].message).not.toMatch(/Gateway_|StartEvent_|EndEvent_|Task_|MessageFlow_/);
+  });
+
+  it.each([
+    ['task to task', 'T --> U'],
+    ['end event as the message source', 'E --> T'],
+    ['start event as the message target', 'U --> S']
+  ])('keeps a BPMN-valid cross-subgraph edge with %s', (_name, rootEdge) => {
+    const result = parser.parse(diagram(rootEdge));
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.edges.some(edge => edge.id === rootEdge.replace(' --> ', '_to_'))).toBe(true);
+  });
+
+  it('leaves gateway and event edges inside a single subgraph untouched', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      'subgraph a[A]',
+      '  S((Start)) --> T[Task] --> G{Which?}',
+      '  G --> E((End))',
+      'end'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.edges.map(edge => edge.id)).toEqual(['S_to_T', 'T_to_G', 'G_to_E']);
+  });
+});

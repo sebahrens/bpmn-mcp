@@ -65,6 +65,10 @@ const validArguments = {
   validate: {},
   analyze_geometry: {},
   auto_layout: {},
+  build_process: {
+    nodes: [{ kind: 'activity', ref: 'a', activityType: 'task', name: 'Task' }],
+    flows: []
+  },
   list_diagrams: {},
   delete_diagram_file: { filename: 'diagram.bpmn' },
   get_diagrams_path: {},

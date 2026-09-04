@@ -1266,9 +1266,8 @@ export class BpmnDocumentSerializer {
     }
     if (element.type === 'bpmn:CallActivity'
       && typeof element.properties.calledElement === 'string') {
-      if (!isBpmnQName(element.properties.calledElement)) {
-        throw new Error(`Call activity ${element.id} calledElement must be a valid BPMN QName`);
-      }
+      // Written back verbatim: the value was either validated when authored
+      // through a tool, or imported as opaque text from another modeler.
       semantic.calledElement = element.properties.calledElement;
     }
     if (element.type === 'bpmn:TextAnnotation' && typeof element.properties.text === 'string') {
@@ -1328,7 +1327,15 @@ export class BpmnDocumentSerializer {
         language: payload.condition.language
       });
     } else if (definitionName === 'compensation') {
-      definition.waitForCompletion = payload.waitForCompletion;
+      // waitForCompletion is xsd:boolean. moddle serializes any own property,
+      // so assigning undefined emits the literal string "undefined", which no
+      // schema-validating BPMN consumer accepts. Remove the property instead,
+      // which also drops a value authored on a reused definition.
+      if (typeof payload.waitForCompletion === 'boolean') {
+        definition.waitForCompletion = payload.waitForCompletion;
+      } else {
+        delete definition.waitForCompletion;
+      }
       definition.activityRef = payload.activityRef
         ? semanticById.get(payload.activityRef)
         : undefined;
@@ -1469,6 +1476,34 @@ export class BpmnDocumentSerializer {
     }
   }
 
+  /**
+   * Ids reachable from the definitions containment tree.
+   *
+   * Only containment (non-reference) properties are followed, so an object
+   * that is merely pointed at, and no longer owned by anything, is correctly
+   * reported as unreachable.
+   */
+  private collectReachableIds(definitions: any): Set<string> {
+    const reachable = new Set<string>();
+    const visited = new Set<any>();
+    const visit = (node: any): void => {
+      if (!node || typeof node !== 'object' || visited.has(node)) return;
+      visited.add(node);
+      if (typeof node.id === 'string') reachable.add(node.id);
+      for (const property of node.$descriptor?.properties || []) {
+        if (property.isReference) continue;
+        const value = node[property.name];
+        if (Array.isArray(value)) {
+          for (const item of value) visit(item);
+        } else {
+          visit(value);
+        }
+      }
+    };
+    visit(definitions);
+    return reachable;
+  }
+
   private reconcileRetainedDiagram(
     document: BpmnDocument,
     definitions: any,
@@ -1498,8 +1533,17 @@ export class BpmnDocumentSerializer {
       throw new Error(`BPMN plane references missing root ${document.diagram.planeElementId}`);
     }
     plane.planeElement = plane.planeElement || [];
+    // Detaching a semantic element also detaches everything nested inside it,
+    // such as the data input/output associations a task owns. Any DI object
+    // still pointing at one of those children would serialize into a dangling
+    // bpmnElement reference and fail the post-serialization verification, so
+    // drop DI for anything no longer reachable from the definitions tree.
+    const reachableSemanticIds = this.collectReachableIds(definitions);
     plane.planeElement = plane.planeElement.filter((item: any) => {
       const referenced = item.bpmnElement;
+      if (typeof referenced?.id === 'string' && !reachableSemanticIds.has(referenced.id)) {
+        return false;
+      }
       if (item.$type === 'bpmndi:BPMNShape' && isBpmnElementType(referenced?.$type)) {
         return document.elements.has(referenced.id)
           || document.managedIds?.has(referenced.id) !== true;
@@ -1929,9 +1973,7 @@ export class BpmnDocumentSerializer {
     if (element.type === 'bpmn:CallActivity') {
       const calledElement = element.properties.calledElement;
       if (typeof calledElement === 'string') {
-        if (!isBpmnQName(calledElement)) {
-          throw new Error(`Call activity ${element.id} calledElement must be a valid BPMN QName`);
-        }
+        // See applyFlowNodeProperties: the value is opaque at this point.
         semantic.calledElement = calledElement;
       }
     }
@@ -2210,9 +2252,10 @@ export class BpmnDocumentSerializer {
     if (type === 'bpmn:BoundaryEvent' && typeof item.cancelActivity === 'boolean') {
       properties.cancelActivity = item.cancelActivity;
     }
-    if (item.calledElement !== undefined && !isBpmnQName(item.calledElement)) {
-      throw new Error(`Call activity ${item.id} calledElement must be a valid BPMN QName`);
-    }
+    // calledElement is opaque on import. A QName is the portable form, but
+    // Camunda 7 models routinely bind the callable process late through an
+    // expression, and rejecting those made whole files unopenable. Values
+    // authored through this server are still validated at the tool boundary.
     if (typeof item.calledElement === 'string') {
       properties.calledElement = item.calledElement;
     }

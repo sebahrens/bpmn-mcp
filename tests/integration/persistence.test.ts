@@ -88,11 +88,17 @@ describe('transactional diagram persistence', () => {
     expect(savedAs.isError).toBeUndefined();
     expect(context.filename).toBe('active-copy.bpmn');
     await expectActiveFileMatchesContext();
+    // The generated name was a server placeholder for this same diagram, so
+    // save_as takes it with it rather than leaving a stale duplicate behind
+    // (mcp-bpmn-8u0.2). A filename the caller chose is never removed.
+    expect(savedAs.structuredContent).toMatchObject({
+      previousFilename: generatedFilename,
+      removedPreviousFile: true
+    });
+    await expect(fs.access(join(directory, generatedFilename))).rejects.toThrow();
 
     await handler.handleRequest('add_activity', { activityType: 'task', name: 'Only active copy changes' });
     await expectActiveFileMatchesContext();
-    await expect(fs.readFile(join(directory, generatedFilename), 'utf8'))
-      .resolves.toBe(generatedSnapshot);
     expect(context.xml).not.toBe(generatedSnapshot);
 
     const save = await handler.handleRequest('save', {});
@@ -105,8 +111,10 @@ describe('transactional diagram persistence', () => {
 
     const listed = await handler.handleRequest('list_diagrams', {});
     const listing = JSON.parse(textOf(listed));
-    expect(listing.diagrams.map((diagram: { filename: string }) => diagram.filename))
-      .toEqual(expect.arrayContaining([generatedFilename, 'active-copy.bpmn']));
+    const listedFilenames = listing.diagrams
+      .map((diagram: { filename: string }) => diagram.filename);
+    expect(listedFilenames).toEqual(expect.arrayContaining(['active-copy.bpmn']));
+    expect(listedFilenames).not.toContain(generatedFilename);
 
     const deleted = await handler.handleRequest('delete_diagram_file', { filename: 'active-copy.bpmn' });
     expect(deleted.isError).toBeUndefined();
@@ -300,9 +308,12 @@ describe('transactional diagram persistence', () => {
 
     const result = await handler.handleRequest('delete_element', { elementId: 'Flow_1' });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       content: [{ type: 'text', text: 'Error: injected connection delete failure' }],
-      isError: true
+      isError: true,
+      // An injected fault is genuinely unclassifiable, and is reported as such
+      // rather than being given a confidently wrong code.
+      structuredContent: { code: 'unexpected_error' }
     });
     expect(Array.from(context.connections.entries())).toEqual(beforeConnections);
     expect(context.elements.get('Task_1')?.defaultFlow).toBe('Flow_1');

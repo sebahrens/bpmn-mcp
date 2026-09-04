@@ -16,6 +16,10 @@ import {
   setLayoutEdgeWaypoints,
   validateLayoutModel
 } from '../../../src/core/layout/LayoutModel.js';
+import type {
+  LayoutEdgeSegment,
+  LayoutModel as CanonicalLayoutModel
+} from '../../../src/core/layout/LayoutModel.js';
 
 const mermaidAst = (): MermaidAST => ({
   type: 'flowchart',
@@ -32,6 +36,382 @@ const mermaidAst = (): MermaidAST => ({
   subgraphs: [
     { id: 'pool', title: 'Operations', nodes: ['task', 'end', 'start'] }
   ]
+});
+
+
+/**
+ * Structural invariants of the canonical layout model (mcp-bpmn-5e7.10).
+ *
+ * validateLayoutModel guards every auto_layout result, but only five of its
+ * codes were ever produced by a test. Each row below takes a model that
+ * validates completely clean, changes exactly one field, and asserts both the
+ * code that must appear and the object it must name. The clean baseline is
+ * re-asserted for every row, so a rule that fires on a valid model fails here
+ * just as loudly as one that stops firing on an invalid one.
+ */
+describe('layout model validation codes', () => {
+  const collaborationLayout = (): CanonicalLayoutModel => {
+    const context = createProcessContext('Collaboration_1', 'Partners', 'collaboration');
+    context.document.processes.set('Buyer_Process', { id: 'Buyer_Process', isExecutable: true });
+    context.document.processes.set('Seller_Process', { id: 'Seller_Process', isExecutable: true });
+    context.elements.set('Buyer', {
+      kind: 'participant', id: 'Buyer', type: 'bpmn:Participant', ownerId: context.id,
+      scopeId: context.id, processRef: 'Buyer_Process', position: { x: 20, y: 20 },
+      size: { width: 500, height: 180 }, properties: {}
+    });
+    context.elements.set('Seller', {
+      kind: 'participant', id: 'Seller', type: 'bpmn:Participant', ownerId: context.id,
+      scopeId: context.id, processRef: 'Seller_Process', position: { x: 20, y: 240 },
+      size: { width: 500, height: 180 }, properties: {}
+    });
+    context.elements.set('Send', {
+      kind: 'flowNode', id: 'Send', type: 'bpmn:SendTask', ownerId: 'Buyer_Process',
+      scopeId: 'Buyer_Process', position: { x: 100, y: 70 },
+      size: { width: 100, height: 80 }, properties: {}
+    });
+    context.elements.set('Receive', {
+      kind: 'flowNode', id: 'Receive', type: 'bpmn:ReceiveTask', ownerId: 'Seller_Process',
+      scopeId: 'Seller_Process', position: { x: 300, y: 290 },
+      size: { width: 100, height: 80 }, properties: {}
+    });
+    return BpmnDocumentLayoutAdapter.fromContext(context);
+  };
+
+  const flowchartLayout = (): CanonicalLayoutModel =>
+    MermaidAstLayoutAdapter.toLayoutModel(mermaidAst());
+
+  /** The same flowchart with flow-a split into two continuous virtual segments. */
+  const splitEdgeLayout = (): CanonicalLayoutModel => {
+    const model = flowchartLayout();
+    const edge = model.edges.get('flow-a')!;
+    const middle = { x: 180, y: 180 };
+    const last = edge.waypoints[edge.waypoints.length - 1];
+    edge.waypoints = [edge.waypoints[0], middle, last];
+    edge.segments = [
+      {
+        id: 'flow-a:segment:0',
+        semanticEdgeId: 'flow-a',
+        order: 0,
+        source: { ...edge.source },
+        target: { nodeId: 'virtual:flow-a:0' },
+        waypoints: [edge.waypoints[0], middle],
+        virtual: true
+      },
+      {
+        id: 'flow-a:segment:1',
+        semanticEdgeId: 'flow-a',
+        order: 1,
+        source: { nodeId: 'virtual:flow-a:0' },
+        target: { ...edge.target },
+        waypoints: [middle, last],
+        virtual: true
+      }
+    ] satisfies LayoutEdgeSegment[];
+    return model;
+  };
+
+  const rekey = <T>(map: Map<string, T>, from: string, to: string): void => {
+    const value = map.get(from)!;
+    map.delete(from);
+    map.set(to, value);
+  };
+
+  it('pins the map iteration order the duplicate-detection rows depend on', () => {
+    const model = flowchartLayout();
+
+    expect([...model.nodes.keys()]).toEqual(['end', 'start', 'task']);
+    expect([...model.edges.keys()]).toEqual(['flow-a', 'flow-b']);
+    expect([...model.containers.keys()]).toEqual(['mermaid:root', 'pool']);
+    expect([...model.labels.keys()]).toEqual([
+      'node:end:label',
+      'node:start:label',
+      'node:task:label',
+      'container:pool:label',
+      'edge:flow-a:label'
+    ]);
+  });
+
+  interface LayoutErrorCase {
+    code: string;
+    /** Objects the code must name, in the order validateLayoutModel reports them. */
+    elementIds: Array<string | undefined>;
+    base?: () => CanonicalLayoutModel;
+    mutate: (model: CanonicalLayoutModel) => void;
+  }
+
+  const cases: LayoutErrorCase[] = [
+    {
+      code: 'invalid-diagram-bounds',
+      elementIds: [undefined],
+      mutate: model => { model.bounds.width = Number.NaN; }
+    },
+    {
+      code: 'stale-diagram-bounds',
+      elementIds: [undefined],
+      mutate: model => { model.bounds.x += 1; }
+    },
+    {
+      code: 'node-map-key-mismatch',
+      elementIds: ['start'],
+      mutate: model => rekey(model.nodes, 'start', 'start:renamed')
+    },
+    {
+      code: 'invalid-node-bounds',
+      elementIds: ['task'],
+      mutate: model => { model.nodes.get('task')!.bounds.width = 0; }
+    },
+    {
+      code: 'duplicate-semantic-node-id',
+      elementIds: ['task'],
+      mutate: model => { model.nodes.get('task')!.semanticId = 'start'; }
+    },
+    {
+      code: 'missing-node-container',
+      elementIds: ['start'],
+      mutate: model => { model.nodes.get('start')!.containerId = 'container:absent'; }
+    },
+    {
+      code: 'nonreciprocal-node-container',
+      elementIds: ['start'],
+      mutate: model => { model.containers.get('pool')!.nodeIds = ['end', 'task']; }
+    },
+    {
+      code: 'missing-node-ownership',
+      elementIds: ['start'],
+      mutate: model => { model.nodes.get('start')!.ownerId = 'scope:absent'; }
+    },
+    {
+      code: 'invalid-node-port-set',
+      elementIds: ['task'],
+      mutate: model => {
+        const node = model.nodes.get('task')!;
+        node.ports = node.ports.filter(port => port.role !== 'incoming');
+      }
+    },
+    {
+      code: 'invalid-node-port',
+      elementIds: ['start'],
+      mutate: model => {
+        const port = model.nodes.get('start')!.ports.find(item => item.role === 'incoming')!;
+        port.position = { x: port.position.x + 5, y: port.position.y };
+      }
+    },
+    {
+      code: 'edge-map-key-mismatch',
+      elementIds: ['flow-b'],
+      mutate: model => rekey(model.edges, 'flow-b', 'flow-b:renamed')
+    },
+    {
+      code: 'duplicate-semantic-edge-id',
+      elementIds: ['flow-b'],
+      mutate: model => { model.edges.get('flow-b')!.semanticId = 'flow-a'; }
+    },
+    {
+      code: 'missing-edge-ownership',
+      elementIds: ['flow-a'],
+      mutate: model => { model.edges.get('flow-a')!.scopeId = 'scope:absent'; }
+    },
+    {
+      code: 'missing-edge-source',
+      elementIds: ['flow-a'],
+      mutate: model => { model.edges.get('flow-a')!.source.nodeId = 'node:absent'; }
+    },
+    {
+      code: 'missing-edge-target',
+      elementIds: ['flow-a'],
+      mutate: model => { model.edges.get('flow-a')!.target.nodeId = 'node:absent'; }
+    },
+    {
+      code: 'invalid-edge-waypoints',
+      elementIds: ['flow-a'],
+      mutate: model => {
+        const edge = model.edges.get('flow-a')!;
+        edge.waypoints[1] = { x: Number.POSITIVE_INFINITY, y: edge.waypoints[1].y };
+      }
+    },
+    {
+      code: 'missing-endpoint-port',
+      elementIds: ['flow-a'],
+      mutate: model => { model.edges.get('flow-a')!.source.portId = 'start:port:absent'; }
+    },
+    {
+      code: 'undocked-edge-route',
+      elementIds: ['flow-a'],
+      mutate: model => {
+        // flow-a leaves start through its outgoing port; a port that no longer
+        // throws cannot be the source end of a route.
+        model.nodes.get('start')!.ports.find(port => port.role === 'outgoing')!.role = 'incoming';
+      }
+    },
+    {
+      code: 'missing-edge-segments',
+      elementIds: ['flow-a'],
+      mutate: model => { model.edges.get('flow-a')!.segments = []; }
+    },
+    {
+      code: 'duplicate-segment-id',
+      elementIds: ['flow-b'],
+      mutate: model => { model.edges.get('flow-b')!.segments[0].id = 'flow-a:segment:0'; }
+    },
+    {
+      code: 'segment-semantic-edge-mismatch',
+      elementIds: ['flow-a'],
+      mutate: model => { model.edges.get('flow-a')!.segments[0].semanticEdgeId = 'flow-b'; }
+    },
+    {
+      code: 'segment-order-gap',
+      elementIds: ['flow-a'],
+      mutate: model => { model.edges.get('flow-a')!.segments[0].order = 1; }
+    },
+    {
+      code: 'invalid-segment-waypoints',
+      elementIds: ['flow-a'],
+      mutate: model => {
+        const segment = model.edges.get('flow-a')!.segments[0];
+        segment.waypoints = [segment.waypoints[0]];
+      }
+    },
+    {
+      code: 'segment-endpoint-mismatch',
+      elementIds: ['flow-a'],
+      mutate: model => { model.edges.get('flow-a')!.segments[0].source = { nodeId: 'end' }; }
+    },
+    {
+      code: 'segment-waypoint-mismatch',
+      elementIds: ['flow-a'],
+      mutate: model => {
+        const segment = model.edges.get('flow-a')!.segments[0];
+        segment.waypoints[0] = { x: segment.waypoints[0].x + 3, y: segment.waypoints[0].y };
+      }
+    },
+    {
+      code: 'disconnected-edge-segments',
+      elementIds: ['flow-a'],
+      base: splitEdgeLayout,
+      mutate: model => {
+        const segments = model.edges.get('flow-a')!.segments;
+        segments[1].waypoints[0] = {
+          x: segments[1].waypoints[0].x + 1,
+          y: segments[1].waypoints[0].y
+        };
+      }
+    },
+    {
+      code: 'container-map-key-mismatch',
+      elementIds: ['pool'],
+      mutate: model => rekey(model.containers, 'pool', 'pool:renamed')
+    },
+    {
+      code: 'duplicate-semantic-container-id',
+      elementIds: ['pool'],
+      mutate: model => { model.containers.get('pool')!.semanticId = 'mermaid:root'; }
+    },
+    {
+      code: 'invalid-container-bounds',
+      elementIds: ['pool'],
+      mutate: model => { model.containers.get('pool')!.bounds.height = Number.NaN; }
+    },
+    {
+      code: 'missing-container-parent',
+      elementIds: ['pool'],
+      mutate: model => { model.containers.get('pool')!.parentId = 'container:absent'; }
+    },
+    {
+      code: 'nonreciprocal-container-parent',
+      elementIds: ['pool'],
+      mutate: model => { model.containers.get('mermaid:root')!.childContainerIds = []; }
+    },
+    {
+      code: 'duplicate-container-member',
+      elementIds: ['pool'],
+      mutate: model => { model.containers.get('pool')!.nodeIds.push('start'); }
+    },
+    {
+      code: 'missing-container-node',
+      elementIds: ['pool'],
+      mutate: model => { model.containers.get('pool')!.nodeIds.push('node:absent'); }
+    },
+    {
+      code: 'nonreciprocal-container-node',
+      elementIds: ['pool'],
+      mutate: model => { model.nodes.get('start')!.containerId = 'mermaid:root'; }
+    },
+    {
+      code: 'missing-child-container',
+      elementIds: ['mermaid:root'],
+      mutate: model => {
+        model.containers.get('mermaid:root')!.childContainerIds.push('container:absent');
+      }
+    },
+    {
+      code: 'nonreciprocal-child-container',
+      elementIds: ['mermaid:root'],
+      mutate: model => { model.containers.get('pool')!.parentId = undefined; }
+    },
+    {
+      code: 'container-cycle',
+      elementIds: ['mermaid:root', 'pool'],
+      mutate: model => { model.containers.get('mermaid:root')!.parentId = 'pool'; }
+    },
+    {
+      code: 'container-node-bounds-mismatch',
+      elementIds: ['Buyer'],
+      base: collaborationLayout,
+      mutate: model => { model.containers.get('Buyer')!.bounds.x += 1; }
+    },
+    {
+      code: 'label-map-key-mismatch',
+      elementIds: ['edge:flow-a:label'],
+      mutate: model => rekey(model.labels, 'edge:flow-a:label', 'edge:flow-a:label:renamed')
+    },
+    {
+      code: 'invalid-layout-label',
+      elementIds: ['node:start:label'],
+      mutate: model => { model.labels.get('node:start:label')!.ownerId = 'node:absent'; }
+    },
+    {
+      code: 'invalid-layout-label',
+      elementIds: ['edge:flow-a:label'],
+      mutate: model => { model.labels.get('edge:flow-a:label')!.ownerId = 'edge:absent'; }
+    },
+    {
+      code: 'invalid-layout-label',
+      elementIds: ['container:pool:label'],
+      mutate: model => {
+        model.labels.get('container:pool:label')!.bounds.width = Number.NaN;
+      }
+    }
+  ];
+
+  it.each(cases)(
+    'reports $code on $elementIds after a single-field mutation',
+    ({ code, elementIds, base = flowchartLayout, mutate }) => {
+      expect(validateLayoutModel(base())).toEqual({ valid: true, errors: [] });
+
+      const model = base();
+      mutate(model);
+      const result = validateLayoutModel(model);
+
+      expect(result.valid).toBe(false);
+      expect(result.errors.filter(error => error.code === code).map(error => error.elementId))
+        .toEqual(elementIds);
+      expect(result.errors.every(error => typeof error.message === 'string' && error.message))
+        .toBe(true);
+    }
+  );
+
+  it('covers every code validateLayoutModel can emit', async () => {
+    const source = await fs.readFile(
+      join(process.cwd(), 'src', 'core', 'layout', 'LayoutModel.ts'),
+      'utf8'
+    );
+    const emitted = new Set(
+      Array.from(source.matchAll(/\bcode: '([a-z-]+)'/gu), match => match[1])
+    );
+
+    expect(emitted.size).toBeGreaterThan(0);
+    expect([...emitted].sort()).toEqual([...new Set(cases.map(item => item.code))].sort());
+  });
 });
 
 describe('canonical layout model', () => {

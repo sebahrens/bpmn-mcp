@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_1c8mzr4" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Camunda Modeler" exporterVersion="5.22.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.5.0">
+  <bpmn:process id="Process_Onboarding" name="Customer onboarding" isExecutable="true">
+    <bpmn:startEvent id="StartEvent_1" name="Application received">
+      <bpmn:outgoing>Flow_0score</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="Activity_0score" name="Score applicant">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="score-applicant" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=applicant" target="applicant" />
+          <zeebe:output source="=body.score" target="creditScore" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_0score</bpmn:incoming>
+      <bpmn:outgoing>Flow_1decide</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="Gateway_0decide" name="Score high enough?" default="Flow_3reject">
+      <bpmn:incoming>Flow_1decide</bpmn:incoming>
+      <bpmn:outgoing>Flow_2approve</bpmn:outgoing>
+      <bpmn:outgoing>Flow_3reject</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="Activity_1approve" name="Approve application">
+      <bpmn:extensionElements>
+        <zeebe:userTask />
+        <zeebe:assignmentDefinition candidateGroups="risk" />
+        <zeebe:formDefinition formId="approval-form" />
+        <zeebe:taskSchedule dueDate="=now() + duration(&#34;P2D&#34;)" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_2approve</bpmn:incoming>
+      <bpmn:outgoing>Flow_4approved</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:endEvent id="Event_0approved" name="Customer onboarded">
+      <bpmn:incoming>Flow_4approved</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:endEvent id="Event_1rejected" name="Application rejected">
+      <bpmn:incoming>Flow_3reject</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Event_2timeout" name="2 days" cancelActivity="false" attachedToRef="Activity_1approve">
+      <bpmn:outgoing>Flow_5remind</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerEventDefinition_0timeout">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">P2D</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="Activity_2remind" name="Send reminder">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="send-reminder" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_5remind</bpmn:incoming>
+      <bpmn:outgoing>Flow_6reminded</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="Event_3reminded">
+      <bpmn:incoming>Flow_6reminded</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_0score" sourceRef="StartEvent_1" targetRef="Activity_0score" />
+    <bpmn:sequenceFlow id="Flow_1decide" sourceRef="Activity_0score" targetRef="Gateway_0decide" />
+    <bpmn:sequenceFlow id="Flow_2approve" name="yes" sourceRef="Gateway_0decide" targetRef="Activity_1approve">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">=creditScore &gt; 700</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_3reject" name="no" sourceRef="Gateway_0decide" targetRef="Event_1rejected" />
+    <bpmn:sequenceFlow id="Flow_4approved" sourceRef="Activity_1approve" targetRef="Event_0approved" />
+    <bpmn:sequenceFlow id="Flow_5remind" sourceRef="Event_2timeout" targetRef="Activity_2remind" />
+    <bpmn:sequenceFlow id="Flow_6reminded" sourceRef="Activity_2remind" targetRef="Event_3reminded" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Process_Onboarding">
+      <bpmndi:BPMNShape id="StartEvent_1_di" bpmnElement="StartEvent_1">
+        <dc:Bounds x="152" y="182" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="127" y="225" width="87" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_0score_di" bpmnElement="Activity_0score">
+        <dc:Bounds x="240" y="160" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_0decide_di" bpmnElement="Gateway_0decide" isMarkerVisible="true">
+        <dc:Bounds x="395" y="175" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="376" y="132" width="89" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_1approve_di" bpmnElement="Activity_1approve">
+        <dc:Bounds x="500" y="160" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_0approved_di" bpmnElement="Event_0approved">
+        <dc:Bounds x="662" y="182" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="637" y="225" width="87" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_1rejected_di" bpmnElement="Event_1rejected">
+        <dc:Bounds x="402" y="312" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="377" y="355" width="87" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_2remind_di" bpmnElement="Activity_2remind">
+        <dc:Bounds x="500" y="380" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_3reminded_di" bpmnElement="Event_3reminded">
+        <dc:Bounds x="662" y="402" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_2timeout_di" bpmnElement="Event_2timeout">
+        <dc:Bounds x="532" y="222" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="570" y="233" width="37" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_0score_di" bpmnElement="Flow_0score">
+        <di:waypoint x="188" y="200" />
+        <di:waypoint x="240" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_1decide_di" bpmnElement="Flow_1decide">
+        <di:waypoint x="340" y="200" />
+        <di:waypoint x="395" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_2approve_di" bpmnElement="Flow_2approve">
+        <di:waypoint x="445" y="200" />
+        <di:waypoint x="500" y="200" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="463" y="182" width="19" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_3reject_di" bpmnElement="Flow_3reject">
+        <di:waypoint x="420" y="225" />
+        <di:waypoint x="420" y="312" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="428" y="266" width="15" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_4approved_di" bpmnElement="Flow_4approved">
+        <di:waypoint x="600" y="200" />
+        <di:waypoint x="662" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_5remind_di" bpmnElement="Flow_5remind">
+        <di:waypoint x="550" y="258" />
+        <di:waypoint x="550" y="380" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_6reminded_di" bpmnElement="Flow_6reminded">
+        <di:waypoint x="600" y="420" />
+        <di:waypoint x="662" y="420" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

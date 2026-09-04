@@ -81,14 +81,24 @@ export class ConnectionRouter {
     }
     assertAvoidLists(connection, options, shapesByElement, edgesByConnection);
 
+    // A connection is drawn inside its own containers, so a participant, lane
+    // or expanded subprocess that contains either endpoint can never be an
+    // obstacle for it — otherwise no route inside a pool or subprocess exists.
+    const scopeAncestors = new Set([
+      ...containerAncestorIds(document, connection.source),
+      ...containerAncestorIds(document, connection.target)
+    ]);
     const allShapeBounds = diagramShapes
+      .filter(shape => !scopeAncestors.has(shape.elementId))
       .map(shape => ({ id: shape.elementId, ...currentShapeBounds(document, shape) }));
     const shapes = diagramShapes
-      .filter(shape => !isCrossableContainer(document, shape))
+      .filter(shape => !scopeAncestors.has(shape.elementId)
+        && !isCrossableContainer(document, shape, connection))
       .map(shape => ({ id: shape.elementId, ...currentShapeBounds(document, shape) }));
     const otherEdges = diagramEdges
       .filter(candidate => candidate.connectionId !== connectionId);
-    const labelObstacles = labelObstacleBounds(diagramShapes, diagramEdges, connectionId);
+    const labelObstacles = labelObstacleBounds(diagramShapes, diagramEdges, connectionId)
+      .filter(label => !scopeAncestors.has(label.id));
     const maxCoordinate = options.maxCoordinate ?? Number.POSITIVE_INFINITY;
     const routes = routeCandidates(
       currentShapeBounds(document, source),
@@ -116,7 +126,8 @@ export class ConnectionRouter {
         connection,
         shapes,
         otherEdges,
-        options.clearance
+        options.clearance,
+        document
       );
       const labelContacts = labelBounds
         ? labelObstacleContacts(
@@ -129,7 +140,8 @@ export class ConnectionRouter {
         waypoints,
         contacts,
         labelContacts.collisions.size,
-        labelContacts.clearance.size
+        labelContacts.clearance.size,
+        connection
       );
       const boundaryDiagnostics: GeometryDiagnostic[] = [];
       if (waypoints.length < 2) {
@@ -300,7 +312,8 @@ function inspectRoute(
   connection: BpmnDocumentConnection,
   shapes: IdentifiedBounds[],
   edges: BpmnEdgeModel[],
-  clearance: number
+  clearance: number,
+  document: BpmnDocument
 ): RouteContacts {
   const contacts: RouteContacts = {
     shapeCollisions: new Set(),
@@ -330,10 +343,69 @@ function inspectRoute(
     for (const edge of edges) {
       if (routeCrossesEdge(start, end, edge.waypoints)) {
         contacts.connectionCrossings.add(edge.connectionId);
+        continue;
+      }
+      // Parallel connectors that run along each other read as a single
+      // connector. Only same-kind connectors that share a dock (two flows out
+      // of one gateway) may do so; a message flow may not land on a sequence
+      // flow's dock point and continue along it.
+      const other = document.connections.get(edge.connectionId);
+      if (other && other.type === connection.type
+        && sharesSemanticDock(connection, route, segmentIndex, other, edge.waypoints)) continue;
+      if (routeRunsAlongEdge(start, end, edge.waypoints)) {
+        contacts.connectionCrossings.add(edge.connectionId);
       }
     }
   });
   return contacts;
+}
+
+/**
+ * True when both connectors leave or enter the same element at the same point.
+ * Two sequence flows out of one gateway legally do this; a message flow that
+ * lands on a sequence flow's dock does not.
+ */
+function sharesSemanticDock(
+  connection: BpmnDocumentConnection,
+  route: Position[],
+  segmentIndex: number,
+  other: BpmnDocumentConnection,
+  otherWaypoints: Position[]
+): boolean {
+  const docks = segmentDocks(connection, route, segmentIndex);
+  return docks.some(dock => connectionDocks(other, otherWaypoints).some(otherDock =>
+    otherDock.elementId === dock.elementId && samePoint(otherDock.point, dock.point)));
+}
+
+function segmentDocks(
+  connection: BpmnDocumentConnection,
+  route: Position[],
+  segmentIndex: number
+): Array<{ elementId: string; point: Position }> {
+  const docks: Array<{ elementId: string; point: Position }> = [];
+  if (segmentIndex === 0 && route[0]) {
+    docks.push({ elementId: connection.source, point: route[0] });
+  }
+  if (segmentIndex === route.length - 2 && route[route.length - 1]) {
+    docks.push({ elementId: connection.target, point: route[route.length - 1] });
+  }
+  return docks;
+}
+
+function connectionDocks(
+  connection: BpmnDocumentConnection,
+  waypoints: Position[]
+): Array<{ elementId: string; point: Position }> {
+  if (waypoints.length < 2) return [];
+  return [
+    { elementId: connection.source, point: waypoints[0] },
+    { elementId: connection.target, point: waypoints[waypoints.length - 1] }
+  ];
+}
+
+function samePoint(left: Position, right: Position): boolean {
+  const epsilon = 0.001;
+  return Math.abs(left.x - right.x) <= epsilon && Math.abs(left.y - right.y) <= epsilon;
 }
 
 function placeConnectionLabel(
@@ -427,7 +499,8 @@ function scoreRoute(
   route: Position[],
   contacts: RouteContacts,
   labelCollisions: number,
-  labelClearanceFailures: number
+  labelClearanceFailures: number,
+  connection: BpmnDocumentConnection
 ): ConnectionRouteScoreBreakdown {
   const shapeCollisions = contacts.shapeCollisions.size;
   const clearanceFailures = contacts.clearanceFailures.size + labelClearanceFailures;
@@ -446,9 +519,24 @@ function scoreRoute(
       + labelCollisions * 500_000
       + clearanceFailures * 100_000
       + connectionCrossings * 250_000
+      + dockSidePenalty(route, connection) * 10_000
       + bends * 100
       + length
   };
+}
+
+/**
+ * BPMN reads best when message flows leave and enter a shape vertically, which
+ * also keeps them off the left/right dock points that sequence flows use.
+ */
+function dockSidePenalty(route: Position[], connection: BpmnDocumentConnection): number {
+  if (connection.type !== 'bpmn:MessageFlow' || route.length < 2) return 0;
+  const ends: Array<[Position, Position]> = [
+    [route[0], route[1]],
+    [route[route.length - 1], route[route.length - 2]]
+  ];
+  return ends.filter(([dock, next]) => Math.abs(next.y - dock.y) < Math.abs(next.x - dock.x))
+    .length;
 }
 
 function routeDiagnostics(
@@ -546,6 +634,34 @@ function routeCrossesEdge(start: Position, end: Position, waypoints: Position[])
     segmentsProperlyCross(start, end, waypoints[index], otherEnd));
 }
 
+function routeRunsAlongEdge(start: Position, end: Position, waypoints: Position[]): boolean {
+  return waypoints.slice(1).some((otherEnd, index) =>
+    collinearOverlapLength(start, end, waypoints[index], otherEnd) > 0.001);
+}
+
+function collinearOverlapLength(
+  firstStart: Position,
+  firstEnd: Position,
+  secondStart: Position,
+  secondEnd: Position
+): number {
+  const epsilon = 0.001;
+  const deltaX = firstEnd.x - firstStart.x;
+  const deltaY = firstEnd.y - firstStart.y;
+  const length = Math.hypot(deltaX, deltaY);
+  if (length <= epsilon) return 0;
+  const unitX = deltaX / length;
+  const unitY = deltaY / length;
+  const offset = (point: Position): number =>
+    Math.abs(unitX * (point.y - firstStart.y) - unitY * (point.x - firstStart.x));
+  if (offset(secondStart) > epsilon || offset(secondEnd) > epsilon) return 0;
+  const project = (point: Position): number =>
+    unitX * (point.x - firstStart.x) + unitY * (point.y - firstStart.y);
+  const low = Math.min(project(secondStart), project(secondEnd));
+  const high = Math.max(project(secondStart), project(secondEnd));
+  return Math.max(0, Math.min(length, high) - Math.max(0, low));
+}
+
 function segmentsProperlyCross(
   firstStart: Position,
   firstEnd: Position,
@@ -583,10 +699,53 @@ function expandBounds(bounds: Bounds, clearance: number): Bounds {
   };
 }
 
-function isCrossableContainer(document: BpmnDocument, shape: BpmnShapeModel): boolean {
+/**
+ * Lanes are bands that every in-pool connector legitimately crosses. A foreign
+ * participant is a hard obstacle for a sequence flow, which may never leave its
+ * own pool; message flows exist to cross pools and stay unconstrained.
+ */
+function isCrossableContainer(
+  document: BpmnDocument,
+  shape: BpmnShapeModel,
+  connection: BpmnDocumentConnection
+): boolean {
   if (document.lanes.has(shape.elementId)) return true;
   const element = document.elements.get(shape.elementId);
-  return element !== undefined && CONTAINER_TYPES.has(element.type);
+  if (element === undefined || !CONTAINER_TYPES.has(element.type)) return false;
+  return connection.type === 'bpmn:MessageFlow';
+}
+
+/**
+ * Every participant, lane and expanded subprocess that contains the element,
+ * resolved by walking scope and lane membership rather than by element type.
+ */
+function containerAncestorIds(document: BpmnDocument, elementId: string): Set<string> {
+  const ancestors = new Set<string>();
+  const participantByProcess = new Map<string, string>();
+  for (const element of document.elements.values()) {
+    if (element.kind === 'participant' && element.processRef) {
+      participantByProcess.set(element.processRef, element.id);
+    }
+  }
+  const visited = new Set<string>();
+  let current = document.elements.get(elementId);
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    for (const lane of document.lanes.values()) {
+      if (lane.flowNodeRefs.includes(current.id)) ancestors.add(lane.id);
+    }
+    const scope = current.scopeId === current.id
+      ? undefined
+      : document.elements.get(current.scopeId);
+    if (!scope) {
+      const participant = participantByProcess.get(current.ownerId);
+      if (participant && participant !== elementId) ancestors.add(participant);
+      break;
+    }
+    ancestors.add(scope.id);
+    current = scope;
+  }
+  return ancestors;
 }
 
 function currentShapeBounds(document: BpmnDocument, shape: BpmnShapeModel): Bounds {

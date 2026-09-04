@@ -5,8 +5,13 @@ import {
   MAX_INPUT_ARRAY_ITEMS,
   TOOL_INPUT_LIMITS
 } from '../config/index.js';
-import type { SafeJsonObject, SafeJsonValue } from '../types/index.js';
-import { BPMN_ID_PATTERN } from '../utils/BpmnId.js';
+import {
+  BPMN_ARTIFACT_TYPES,
+  BPMN_FLOW_NODE_TYPES,
+  type SafeJsonObject,
+  type SafeJsonValue
+} from '../types/index.js';
+import { isBpmnId } from '../utils/BpmnId.js';
 
 interface ToolDefinition {
   annotations: Required<Pick<
@@ -50,6 +55,19 @@ const DESTRUCTIVE_NON_IDEMPOTENT = {
 } as const;
 
 const strictEmptyObject = () => z.object({}).strict();
+
+/**
+ * Every BPMN type list_elements can return, so the filter is self-documenting
+ * and a value the server cannot match is rejected instead of silently yielding
+ * an empty page.
+ */
+const LISTABLE_ELEMENT_TYPES = [
+  ...BPMN_FLOW_NODE_TYPES,
+  ...BPMN_ARTIFACT_TYPES,
+  'bpmn:Participant',
+  'bpmn:Lane',
+  'bpmn:Association'
+] as const;
 export const DEFAULT_PAGE_LIMIT = 100;
 export const MAX_PAGE_LIMIT = 500;
 
@@ -76,7 +94,6 @@ const artifactFilename = (extension: 'svg' | 'png') => filename().refine(
   value => value.toLowerCase().endsWith(`.${extension}`),
   `Filename must use the .${extension} extension`
 );
-const identifier = () => boundedTrimmedString(TOOL_INPUT_LIMITS.identifier);
 const annotationText = () => z.string()
   .min(TOOL_INPUT_LIMITS.annotationText.minLength)
   .max(TOOL_INPUT_LIMITS.annotationText.maxLength)
@@ -304,10 +321,18 @@ const size = z.object({
 const geometryBounds = position.merge(size).describe(
   'Complete bounded BPMN DI bounds with finite coordinates and positive dimensions'
 );
+// Validated with a refinement rather than .regex() on purpose. The XML
+// NCName production expands to a ~400 byte character-class regex, and
+// emitting it as a JSON Schema `pattern` on every id-valued field made
+// tools/list roughly a third larger than the tool surface it describes.
+// The refinement enforces exactly the same rule at runtime while staying
+// invisible to the advertised schema. Advertising a shortened ASCII pattern
+// instead was rejected: it would wrongly reject the Unicode NCNames the
+// server itself accepts.
 const bpmnId = () => z.string()
   .min(TOOL_INPUT_LIMITS.identifier.minLength)
   .max(TOOL_INPUT_LIMITS.identifier.maxLength)
-  .regex(BPMN_ID_PATTERN, 'Invalid BPMN xsd:ID; expected an XML NCName');
+  .refine(isBpmnId, 'Invalid BPMN xsd:ID; expected an XML NCName');
 const geometryPatchElementUpdate = z.object({
   elementId: bpmnId().describe('Semantic ID owning the BPMNShape to update'),
   bounds: geometryBounds.optional().describe('Replacement BPMNShape bounds'),
@@ -391,10 +416,67 @@ const elementUpdateProperties = z.object({
   itemSubjectRef: bpmnId().nullable().optional()
 }).strict();
 
+/**
+ * A caller-side handle for a node inside one build request. It never becomes a
+ * BPMN id, so it is deliberately looser than an NCName; the server assigns the
+ * real id and returns the mapping.
+ */
+const buildRef = () => z.string().trim().min(1).max(TOOL_INPUT_LIMITS.identifier.maxLength)
+  .describe('Caller-chosen handle for this node, referenced by flows in the same request');
+
+const buildOwnership = {
+  ownerId: bpmnId().optional().describe('Owning process ID (required in a collaboration)'),
+  scopeId: bpmnId().optional().describe('Containing process or subprocess ID (defaults to ownerId)'),
+  position: position.optional().describe('Optional position; auto_layout replaces it')
+};
+
+const buildNode = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('event'),
+    ref: buildRef(),
+    eventType: z.enum(['start', 'end', 'intermediate-throw', 'intermediate-catch', 'boundary']),
+    name: name().optional(),
+    eventDefinition: z.enum([
+      'message', 'timer', 'error', 'signal', 'conditional',
+      'escalation', 'compensation', 'cancel', 'terminate'
+    ]).optional(),
+    attachTo: bpmnId().optional().describe('Required activity ID for boundary events'),
+    cancelActivity: z.boolean().optional(),
+    ...buildOwnership
+  }).strict(),
+  z.object({
+    kind: z.literal('activity'),
+    ref: buildRef(),
+    activityType: z.enum([
+      'task', 'userTask', 'serviceTask', 'scriptTask', 'businessRuleTask',
+      'manualTask', 'receiveTask', 'sendTask', 'subProcess', 'transaction', 'callActivity'
+    ]),
+    name: name(),
+    properties: activityProperties.optional(),
+    ...buildOwnership
+  }).strict(),
+  z.object({
+    kind: z.literal('gateway'),
+    ref: buildRef(),
+    gatewayType: z.enum(['exclusive', 'parallel', 'inclusive', 'eventBased', 'complex']),
+    name: name().optional(),
+    ...buildOwnership
+  }).strict()
+]);
+
+const buildFlow = z.object({
+  source: buildRef().describe('A node ref from this request, or an existing element ID'),
+  target: buildRef().describe('A node ref from this request, or an existing element ID'),
+  label: label().optional(),
+  condition: expression().optional().describe('Sequence-flow condition; excludes isDefault'),
+  conditionLanguage: language().optional(),
+  isDefault: z.boolean().optional().describe('Make this the source node default flow')
+}).strict();
+
 const outputFilename = z.string().min(1).describe('Active BPMN filename');
 const outputBpmnId = z.string()
   .min(1)
-  .regex(BPMN_ID_PATTERN, 'Invalid BPMN xsd:ID; expected an XML NCName')
+  .refine(isBpmnId, 'Invalid BPMN xsd:ID; expected an XML NCName')
   .describe('Stable generated or existing BPMN ID');
 const outputCount = z.number().int().min(0);
 const outputDiagram = z.object({
@@ -620,6 +702,10 @@ const outputSchemas = {
     processId: outputBpmnId,
     name: z.string(),
     filename: outputFilename,
+    previousFilename: outputFilename.optional()
+      .describe('Prior filename; a server-generated placeholder is removed, a chosen name is kept'),
+    removedPreviousFile: z.boolean()
+      .describe('Whether the prior file was a placeholder this call deleted'),
     ...outputMutationRevisions
   }).strict(),
   close: z.object({
@@ -797,10 +883,29 @@ const outputSchemas = {
     revision,
     ...outputMutationRevisions
   }).strict(),
+  build_process: z.object({
+    elements: z.array(z.object({
+      ref: z.string(),
+      elementId: outputBpmnId,
+      type: z.string()
+    }).strict()),
+    connections: z.array(z.object({
+      connectionId: outputBpmnId,
+      type: z.string(),
+      sourceId: outputBpmnId,
+      targetId: outputBpmnId
+    }).strict()),
+    elementCount: outputCount,
+    connectionCount: outputCount,
+    filename: outputFilename,
+    ...outputMutationRevisions
+  }).strict(),
   delete_element: z.object({
     elementId: outputBpmnId,
     deletedKind: z.enum(['element', 'connection']),
     removedConnectionCount: outputCount,
+    removedElementCount: outputCount,
+    removedElementIds: z.array(outputBpmnId),
     filename: outputFilename,
     ...outputMutationRevisions
   }).strict(),
@@ -907,6 +1012,10 @@ export const toolDefinitions = {
     outputSchema: outputSchemas.new_bpmn,
     schema: z.object({
       name: name().describe('Name of the diagram'),
+      filename: filename().optional().describe(
+        'Filename for the new diagram. When omitted the server generates a placeholder '
+        + 'name, which save_as later replaces rather than leaving a duplicate behind.'
+      ),
       type: z.enum(['process', 'collaboration'])
         .default('process')
         .describe('Type of diagram to create'),
@@ -920,6 +1029,10 @@ export const toolDefinitions = {
     outputSchema: outputSchemas.new_from_mermaid,
     schema: z.object({
       name: name().describe('Name for the new diagram'),
+      filename: filename().optional().describe(
+        'Filename for the new diagram. When omitted the server generates a placeholder '
+        + 'name, which save_as later replaces rather than leaving a duplicate behind.'
+      ),
       mermaidCode: boundedTrimmedString(TOOL_INPUT_LIMITS.mermaidCode)
         .describe('Mermaid flowchart code to convert'),
       extensionProfile: extensionProfile.default('portable')
@@ -940,6 +1053,10 @@ export const toolDefinitions = {
     outputSchema: outputSchemas.open_mermaid_file,
     schema: z.object({
       filename: filename().describe('Filename of the Mermaid file to open and convert'),
+      bpmnFilename: filename().optional().describe(
+        'Filename for the converted BPMN diagram. When omitted the server generates a '
+        + 'placeholder name, which save_as later replaces rather than leaving a duplicate behind.'
+      ),
       extensionProfile: extensionProfile.default('portable')
         .describe('BPMN extension profile for the authored document')
     }).strict()
@@ -1178,7 +1295,10 @@ export const toolDefinitions = {
     outputSchema: outputSchemas.add_pool,
     schema: z.object({
       name: name().describe('Name of the participant/pool'),
-      position: position.optional().describe('Position of the pool (optional)'),
+      position: position.optional().describe(
+        'Position of the pool. When omitted a placeholder below the existing pools '
+        + 'is used; auto_layout replaces it.'
+      ),
       size: size.optional().describe('Size of the pool (optional)'),
       blackBox: z.boolean().default(false).describe(
         'Create a black-box participant without an owned process'
@@ -1217,7 +1337,11 @@ export const toolDefinitions = {
     description: 'List elements and association artifacts in stable ID order as { count, returnedCount, offset, limit, hasMore, elements }; request the next page with offset + returnedCount',
     outputSchema: outputSchemas.list_elements,
     schema: z.object({
-      elementType: identifier().optional().describe('Filter by element type (optional)'),
+      elementType: z.enum(LISTABLE_ELEMENT_TYPES).optional().describe(
+        'Filter by exact BPMN element type, for example bpmn:UserTask. This is the '
+        + 'BPMN type returned in each row, not the activityType/gatewayType/eventType '
+        + 'vocabulary the add_* tools take. Omit to list every element.'
+      ),
       ...paginationFields
     }).strict()
   },
@@ -1481,9 +1605,37 @@ export const toolDefinitions = {
       )
     }).strict()
   },
+  build_process: {
+    annotations: ADDITIVE,
+    description: 'Create many elements and the flows between them in one atomic call. '
+      + 'Each node carries a caller-chosen "ref" so flows in the same request can name it; '
+      + 'a flow endpoint that is not a ref is treated as the id of an existing element. '
+      + 'The same validation applies as for the individual add_event/add_activity/add_gateway/connect '
+      + 'tools, and nothing is written unless every step succeeds. Returns the ref-to-ID mapping. '
+      + 'Run auto_layout afterwards to place the result.',
+    outputSchema: outputSchemas.build_process,
+    schema: z.object({
+      nodes: z.array(buildNode).min(1).max(MAX_INPUT_ARRAY_ITEMS).describe(
+        'Elements to create, in order'
+      ),
+      flows: z.array(buildFlow).max(MAX_INPUT_ARRAY_ITEMS).default([]).describe(
+        'Connections to create after every node exists'
+      ),
+      ...expectedRevisionField
+    }).strict().superRefine((plan, context) => {
+      const duplicate = firstDuplicate(plan.nodes.map(node => node.ref));
+      if (duplicate !== undefined) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['nodes'],
+          message: `Duplicate node ref "${duplicate}"`
+        });
+      }
+    })
+  },
   delete_element: {
     annotations: DESTRUCTIVE_UPDATE,
-    description: 'Delete an element (cascading incident connections) or a connection while preserving its endpoints',
+    description: 'Delete an element or a connection. Deleting an element also deletes its incident connections, and deleting a container (participant, subprocess, transaction) also deletes everything it contains, including nested elements and their connections. Deleting a connection preserves both endpoints. The result lists every removed element ID.',
     outputSchema: outputSchemas.delete_element,
     schema: z.object({
       elementId: bpmnId().describe('ID of the element to delete'),
@@ -1632,12 +1784,40 @@ function toJsonObjectSchema(schema: z.ZodTypeAny): Tool['inputSchema'] {
   return jsonSchema as Tool['inputSchema'];
 }
 
+/**
+ * The structured payload a failed call returns instead of the success shape.
+ *
+ * MCP clients validate `structuredContent` against the advertised outputSchema
+ * whenever it is present, including on error results, so a tool that reports
+ * machine-readable failures has to advertise that shape too. Without this the
+ * SDK rejects the whole response with -32602 and the agent never sees the
+ * error at all. Kept deliberately small: the codes are documented in
+ * src/utils/ToolError.ts rather than inlined into all forty schemas.
+ */
+const TOOL_ERROR_OUTPUT_SCHEMA = {
+  type: 'object',
+  required: ['code', 'message'],
+  properties: {
+    code: { type: 'string', description: 'Stable machine-readable failure code' },
+    message: { type: 'string' },
+    recovery: { type: 'string', description: 'Suggested next action' }
+  },
+  additionalProperties: true,
+  description: 'Failure payload returned when isError is true'
+} as const;
+
 export const tools: Tool[] = toolNames.map(name => ({
   name,
   annotations: toolDefinitions[name].annotations,
   description: toolDefinitions[name].description,
   inputSchema: toJsonObjectSchema(toolDefinitions[name].schema),
-  outputSchema: toJsonObjectSchema(toolDefinitions[name].outputSchema)
+  outputSchema: {
+    type: 'object',
+    anyOf: [
+      toJsonObjectSchema(toolDefinitions[name].outputSchema),
+      TOOL_ERROR_OUTPUT_SCHEMA
+    ]
+  } as unknown as Tool['outputSchema']
 }));
 
 export function parseToolRequest(name: string, args: unknown): ParsedToolRequest {

@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="Definitions_1" targetNamespace="http://bpmn.io/schema/bpmn" exporter="bpmn-js (https://demo.bpmn.io)" exporterVersion="17.11.1">
+  <bpmn:collaboration id="Collaboration_0trade">
+    <bpmn:participant id="Participant_Customer" name="Customer" processRef="Process_Customer" />
+    <bpmn:participant id="Participant_Supplier" name="Supplier" processRef="Process_Supplier" />
+    <bpmn:messageFlow id="Flow_Order" name="Purchase order" sourceRef="Activity_0place" targetRef="Event_1received" />
+  </bpmn:collaboration>
+  <bpmn:process id="Process_Customer" isExecutable="false">
+    <bpmn:laneSet id="LaneSet_Customer">
+      <bpmn:lane id="Lane_Sales" name="Sales">
+        <bpmn:flowNodeRef>StartEvent_1</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Activity_0place</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Event_0done</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_Operations" name="Operations">
+        <bpmn:flowNodeRef>Activity_1track</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="StartEvent_1" name="Need identified">
+      <bpmn:outgoing>Flow_0place</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:task id="Activity_0place" name="Place order">
+      <bpmn:incoming>Flow_0place</bpmn:incoming>
+      <bpmn:outgoing>Flow_1done</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="Event_0done" name="Order placed">
+      <bpmn:incoming>Flow_1done</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:task id="Activity_1track" name="Track delivery" />
+    <bpmn:sequenceFlow id="Flow_0place" sourceRef="StartEvent_1" targetRef="Activity_0place" />
+    <bpmn:sequenceFlow id="Flow_1done" sourceRef="Activity_0place" targetRef="Event_0done" />
+    <bpmn:textAnnotation id="TextAnnotation_0sla">
+      <bpmn:text>Orders must be placed before 16:00</bpmn:text>
+    </bpmn:textAnnotation>
+    <bpmn:association id="Association_0sla" sourceRef="Activity_0place" targetRef="TextAnnotation_0sla" />
+  </bpmn:process>
+  <bpmn:process id="Process_Supplier" isExecutable="false">
+    <bpmn:startEvent id="Event_1received" name="Order received">
+      <bpmn:outgoing>Flow_2ship</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MessageEventDefinition_0order" />
+    </bpmn:startEvent>
+    <bpmn:task id="Activity_2ship" name="Ship goods">
+      <bpmn:incoming>Flow_2ship</bpmn:incoming>
+      <bpmn:outgoing>Flow_3shipped</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="Event_2shipped" name="Goods shipped">
+      <bpmn:incoming>Flow_3shipped</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_2ship" sourceRef="Event_1received" targetRef="Activity_2ship" />
+    <bpmn:sequenceFlow id="Flow_3shipped" sourceRef="Activity_2ship" targetRef="Event_2shipped" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Collaboration_0trade">
+      <bpmndi:BPMNShape id="Participant_Customer_di" bpmnElement="Participant_Customer" isHorizontal="true">
+        <dc:Bounds x="160" y="80" width="600" height="250" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lane_Sales_di" bpmnElement="Lane_Sales" isHorizontal="true">
+        <dc:Bounds x="190" y="80" width="570" height="125" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lane_Operations_di" bpmnElement="Lane_Operations" isHorizontal="true">
+        <dc:Bounds x="190" y="205" width="570" height="125" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="_BPMNShape_StartEvent_2" bpmnElement="StartEvent_1">
+        <dc:Bounds x="232" y="122" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="211" y="165" width="79" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_0place_di" bpmnElement="Activity_0place">
+        <dc:Bounds x="320" y="100" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_0done_di" bpmnElement="Event_0done">
+        <dc:Bounds x="482" y="122" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="466" y="165" width="69" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_1track_di" bpmnElement="Activity_1track">
+        <dc:Bounds x="320" y="225" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="TextAnnotation_0sla_di" bpmnElement="TextAnnotation_0sla">
+        <dc:Bounds x="570" y="220" width="160" height="60" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_0place_di" bpmnElement="Flow_0place">
+        <di:waypoint x="268" y="140" />
+        <di:waypoint x="320" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_1done_di" bpmnElement="Flow_1done">
+        <di:waypoint x="420" y="140" />
+        <di:waypoint x="482" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Association_0sla_di" bpmnElement="Association_0sla">
+        <di:waypoint x="420" y="150" />
+        <di:waypoint x="570" y="230" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="Participant_Supplier_di" bpmnElement="Participant_Supplier" isHorizontal="true">
+        <dc:Bounds x="160" y="390" width="600" height="220" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_1received_di" bpmnElement="Event_1received">
+        <dc:Bounds x="232" y="452" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="212" y="495" width="77" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_2ship_di" bpmnElement="Activity_2ship">
+        <dc:Bounds x="320" y="430" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_2shipped_di" bpmnElement="Event_2shipped">
+        <dc:Bounds x="482" y="452" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="461" y="495" width="79" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_2ship_di" bpmnElement="Flow_2ship">
+        <di:waypoint x="268" y="470" />
+        <di:waypoint x="320" y="470" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_3shipped_di" bpmnElement="Flow_3shipped">
+        <di:waypoint x="420" y="470" />
+        <di:waypoint x="482" y="470" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Order_di" bpmnElement="Flow_Order">
+        <di:waypoint x="370" y="180" />
+        <di:waypoint x="370" y="360" />
+        <di:waypoint x="250" y="360" />
+        <di:waypoint x="250" y="452" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="286" y="342" width="79" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

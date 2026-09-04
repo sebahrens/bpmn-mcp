@@ -252,12 +252,21 @@ describe('resource exhaustion guards', () => {
     );
     await handler.handleRequest('new_bpmn', { name: 'Pagination' });
 
+    // A real BPMN type that this diagram happens not to contain. The filter
+    // only accepts advertised types, so an invented one is rejected outright
+    // rather than silently yielding an empty page.
     const empty = JSON.parse(textOf(await handler.handleRequest('list_elements', {
-      elementType: 'bpmn:Gateway',
+      elementType: 'bpmn:ExclusiveGateway',
       limit: 2,
       offset: 0
     })));
     expect(empty).toMatchObject({ count: 0, returnedCount: 0, hasMore: false, elements: [] });
+
+    const unknownType = await handler.handleRequest('list_elements', {
+      elementType: 'bpmn:Gateway'
+    });
+    expect(unknownType.isError).toBe(true);
+    expect(unknownType.structuredContent).toMatchObject({ code: 'invalid_arguments' });
 
     for (let index = 1; index <= 4; index++) {
       await handler.handleRequest('add_activity', { activityType: 'task', name: `Task ${index}` });

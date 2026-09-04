@@ -291,7 +291,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
       const result = await handler.handleRequest('add_pool', { name: 'Rejected pool' });
 
       expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain('Pools can only be added to collaborations');
+      expect(result.content[0].text).toContain('Pools exist only in collaborations');
       expect(context.elements.size).toBe(0);
       expect(context.xml).toBe(beforeXml);
       await expect(readFile(join(sandbox!.directory, filename), 'utf8')).resolves.toBe(beforeXml);
@@ -446,7 +446,8 @@ describe('BpmnRequestHandler Integration Tests', () => {
       });
 
       expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain('No current context');
+      expect(result.content[0].text).toContain('No diagram is currently open');
+      expect(result.structuredContent).toMatchObject({ code: 'no_current_diagram' });
     });
   });
 
@@ -693,7 +694,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
         elementId: 'TextAnnotation_1'
       });
       expect(deletedAnnotation.content[0].text).toBe(
-        'Deleted element TextAnnotation_1 and 1 associated connections'
+        'Deleted element TextAnnotation_1 and 1 associated connection'
       );
       expect(diagramContext.getCurrent().elements.has('TextAnnotation_1')).toBe(false);
       expect(diagramContext.getCurrent().elements.has('Task_1')).toBe(true);
@@ -1891,9 +1892,10 @@ describe('BpmnRequestHandler Integration Tests', () => {
         elementId: 'Missing_Get_Element'
       });
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         content: [{ type: 'text', text: 'Error: Element Missing_Get_Element not found' }],
-        isError: true
+        isError: true,
+        structuredContent: { code: 'element_not_found', elementId: 'Missing_Get_Element' }
       });
       await expectQueryStateUnchanged(before);
 
@@ -2681,9 +2683,10 @@ describe('BpmnRequestHandler Integration Tests', () => {
         name: 'Should not appear'
       });
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         content: [{ type: 'text', text: 'Error: Element Missing_Update_Element not found' }],
-        isError: true
+        isError: true,
+        structuredContent: { code: 'element_not_found', elementId: 'Missing_Update_Element' }
       });
       await expectQueryStateUnchanged(before);
 
@@ -2731,9 +2734,10 @@ describe('BpmnRequestHandler Integration Tests', () => {
         elementId: 'Missing_Delete_Element'
       });
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         content: [{ type: 'text', text: 'Error: Element Missing_Delete_Element not found' }],
-        isError: true
+        isError: true,
+        structuredContent: { code: 'element_not_found', elementId: 'Missing_Delete_Element' }
       });
       await expectQueryStateUnchanged(before);
 
@@ -2821,7 +2825,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
       const result = await handler.handleRequest('save', {});
 
       expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain('No current diagram to save');
+      expect(result.content[0].text).toContain('No diagram is currently open');
       expect(diagramContext.hasCurrent()).toBe(false);
       expect(await readdir(sandbox!.directory)).toEqual(filesBefore);
     });
@@ -2835,7 +2839,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
       const result = await handler.handleRequest('save', {});
 
       expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain('No filename set');
+      expect(result.content[0].text).toContain('has no filename');
       expect(context.filename).toBeUndefined();
       await expect(readFile(join(sandbox!.directory, originalFilename), 'utf8'))
         .resolves.toBe(persistedXml);
@@ -2868,7 +2872,10 @@ describe('BpmnRequestHandler Integration Tests', () => {
       const saved = await handler.handleRequest('save_as', { filename });
 
       expect(saved.isError).toBeUndefined();
-      expect(saved.content[0].text).toBe(`Saved diagram "File Test" as ${filename}`);
+      expect(saved.content[0].text)
+        .toContain(`Saved diagram "File Test" as ${filename}`);
+      // The generated placeholder goes with the rename (mcp-bpmn-8u0.2).
+      expect(saved.structuredContent).toMatchObject({ removedPreviousFile: true });
       await expect(readFile(join(sandbox!.directory, filename), 'utf8'))
         .resolves.toContain('<bpmn:process');
 
@@ -2998,6 +3005,251 @@ describe('BpmnRequestHandler Integration Tests', () => {
       
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('Error: Unknown tool: unknown_tool');
+    });
+  });
+
+  describe('pool placement and sizing defaults', () => {
+    const poolBounds = (poolId: string): { x: number; y: number; width: number; height: number } => {
+      const element = diagramContext.getCurrent().elements.get(poolId)!;
+      return { ...element.position, ...element.size };
+    };
+
+    it('stacks pools created without a position instead of overlapping them', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Stacked', type: 'collaboration' });
+      const first = (await handler.handleRequest('add_pool', { name: 'Customer' }))
+        .structuredContent as { elementId: string };
+      const second = (await handler.handleRequest('add_pool', { name: 'Supplier' }))
+        .structuredContent as { elementId: string };
+
+      const top = poolBounds(first.elementId);
+      const bottom = poolBounds(second.elementId);
+
+      expect(bottom.y).toBeGreaterThanOrEqual(top.y + top.height);
+      expect(bottom.x).toBe(top.x);
+    });
+
+    it('does not treat the default pool size as a layout floor', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Defaulted', type: 'collaboration' });
+      const pool = (await handler.handleRequest('add_pool', { name: 'Only' }))
+        .structuredContent as { elementId: string; processId: string };
+      await handler.handleRequest('add_activity', {
+        activityType: 'task',
+        name: 'One step',
+        ownerId: pool.processId
+      });
+
+      // Before layout the element still carries the placeholder default.
+      expect(poolBounds(pool.elementId).height).toBe(250);
+
+      await handler.handleRequest('auto_layout', {});
+
+      // Layout is free to size a single-row pool to its content plus the
+      // white-box minimum, because 250 was never requested.
+      expect(poolBounds(pool.elementId).height).toBeLessThan(250);
+      expect(poolBounds(pool.elementId).height).toBeGreaterThanOrEqual(150);
+    });
+
+    it('honours an explicitly requested pool size as a lower bound', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Requested', type: 'collaboration' });
+      const pool = (await handler.handleRequest('add_pool', {
+        name: 'Only',
+        size: { width: 900, height: 400 }
+      })).structuredContent as { elementId: string; processId: string };
+      await handler.handleRequest('add_activity', {
+        activityType: 'task',
+        name: 'One step',
+        ownerId: pool.processId
+      });
+
+      await handler.handleRequest('auto_layout', {});
+
+      const bounds = poolBounds(pool.elementId);
+      expect(bounds.height).toBeGreaterThanOrEqual(400);
+      expect(bounds.width).toBeGreaterThanOrEqual(900);
+    });
+  });
+
+  describe('caller-chosen filenames', () => {
+    it('creates a new diagram directly under the requested filename', async () => {
+      const created = await handler.handleRequest('new_bpmn', {
+        name: 'Named',
+        filename: 'approval-process.bpmn'
+      });
+
+      expect(created.isError).toBeUndefined();
+      expect(created.structuredContent).toMatchObject({ filename: 'approval-process.bpmn' });
+
+      const listed = await handler.handleRequest('list_diagrams', {});
+      const listing = JSON.parse(listed.content[0].text as string);
+      const filenames = listing.diagrams.map((diagram: { filename: string }) => diagram.filename);
+      expect(filenames).toContain('approval-process.bpmn');
+      // No placeholder was ever written, so there is nothing to clean up.
+      expect(filenames.filter((f: string) => f.startsWith('mcp-bpmn-v1_'))).toEqual([]);
+    });
+
+    it('appends the .bpmn extension to a requested name that omits it', async () => {
+      const created = await handler.handleRequest('new_bpmn', {
+        name: 'Named',
+        filename: 'no-extension'
+      });
+
+      expect(created.structuredContent).toMatchObject({ filename: 'no-extension.bpmn' });
+    });
+
+    it('keeps a caller-chosen filename when save_as renames the diagram', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Named', filename: 'first-name.bpmn' });
+
+      const saved = await handler.handleRequest('save_as', { filename: 'second-name.bpmn' });
+
+      expect(saved.structuredContent).toMatchObject({
+        filename: 'second-name.bpmn',
+        previousFilename: 'first-name.bpmn',
+        removedPreviousFile: false
+      });
+      const listed = await handler.handleRequest('list_diagrams', {});
+      const listing = JSON.parse(listed.content[0].text as string);
+      const filenames = listing.diagrams.map((diagram: { filename: string }) => diagram.filename);
+      expect(filenames).toEqual(expect.arrayContaining(['first-name.bpmn', 'second-name.bpmn']));
+    });
+  });
+
+  describe('build_process', () => {
+    it('creates a whole process, resolving refs to server IDs, in one call', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Bulk' });
+
+      const built = await handler.handleRequest('build_process', {
+        nodes: [
+          { kind: 'event', ref: 'start', eventType: 'start', name: 'Request received' },
+          { kind: 'activity', ref: 'review', activityType: 'userTask', name: 'Review' },
+          { kind: 'gateway', ref: 'decide', gatewayType: 'exclusive', name: 'Approved?' },
+          { kind: 'activity', ref: 'pay', activityType: 'serviceTask', name: 'Pay' },
+          { kind: 'activity', ref: 'reject', activityType: 'task', name: 'Reject' },
+          { kind: 'event', ref: 'done', eventType: 'end', name: 'Done' }
+        ],
+        flows: [
+          { source: 'start', target: 'review' },
+          { source: 'review', target: 'decide' },
+          { source: 'decide', target: 'pay', label: 'yes', condition: '${approved}' },
+          { source: 'decide', target: 'reject', label: 'no', isDefault: true },
+          { source: 'pay', target: 'done' },
+          { source: 'reject', target: 'done' }
+        ]
+      });
+
+      expect(built.isError).toBeUndefined();
+      const structured = built.structuredContent as {
+        elements: Array<{ ref: string; elementId: string; type: string }>;
+        connections: Array<{ connectionId: string }>;
+        elementCount: number;
+        connectionCount: number;
+      };
+      expect(structured.elementCount).toBe(6);
+      expect(structured.connectionCount).toBe(6);
+
+      const byRef = new Map(structured.elements.map(e => [e.ref, e]));
+      expect(byRef.get('review')!.type).toBe('bpmn:UserTask');
+      expect(byRef.get('decide')!.type).toBe('bpmn:ExclusiveGateway');
+      expect(byRef.get('start')!.type).toBe('bpmn:StartEvent');
+      // Refs are caller-side only and never leak into the document.
+      for (const ref of byRef.keys()) {
+        expect(diagramContext.getCurrent().elements.has(ref)).toBe(false);
+      }
+
+      const validated = await handler.handleRequest('validate', { level: 'full' });
+      expect(JSON.parse(validated.content[0].text as string).valid).toBe(true);
+    });
+
+    it('connects to elements that already exist alongside new refs', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Mixed' });
+      const existing = (await handler.handleRequest('add_event', {
+        eventType: 'start', name: 'Existing start'
+      })).structuredContent as { elementId: string };
+
+      const built = await handler.handleRequest('build_process', {
+        nodes: [{ kind: 'activity', ref: 'next', activityType: 'task', name: 'Next' }],
+        flows: [{ source: existing.elementId, target: 'next' }]
+      });
+
+      expect(built.isError).toBeUndefined();
+      const structured = built.structuredContent as {
+        connections: Array<{ sourceId: string; targetId: string }>;
+      };
+      expect(structured.connections[0].sourceId).toBe(existing.elementId);
+    });
+
+    it('writes nothing when a later step fails', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Atomic' });
+      const before = diagramContext.getCurrent();
+      const beforeRevision = before.revision;
+      const beforeXml = before.xml;
+
+      const built = await handler.handleRequest('build_process', {
+        nodes: [
+          { kind: 'event', ref: 'start', eventType: 'start', name: 'Start' },
+          { kind: 'activity', ref: 'work', activityType: 'task', name: 'Work' }
+        ],
+        flows: [
+          { source: 'start', target: 'work' },
+          { source: 'work', target: 'nowhere' }
+        ]
+      });
+
+      expect(built.isError).toBe(true);
+      expect(built.content[0].text).toContain('flows[1]');
+      expect(built.content[0].text).toContain('nowhere');
+      // The two valid nodes and the valid flow are rolled back with the batch.
+      expect(diagramContext.getCurrent().elements.size).toBe(0);
+      expect(diagramContext.getCurrent().connections.size).toBe(0);
+      expect(diagramContext.getCurrent().revision).toBe(beforeRevision);
+      expect(diagramContext.getCurrent().xml).toBe(beforeXml);
+    });
+
+    it('reports which node failed validation without partially building', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Bad node' });
+
+      const built = await handler.handleRequest('build_process', {
+        nodes: [
+          { kind: 'activity', ref: 'ok', activityType: 'task', name: 'Fine' },
+          { kind: 'event', ref: 'bad', eventType: 'boundary', name: 'Orphan boundary' }
+        ],
+        flows: []
+      });
+
+      expect(built.isError).toBe(true);
+      expect(built.content[0].text).toContain('nodes[1]');
+      expect(built.content[0].text).toContain('bad');
+      expect(diagramContext.getCurrent().elements.size).toBe(0);
+    });
+
+    it('rejects a ref that collides with an existing element id', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Collide' });
+      const existing = (await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'First'
+      })).structuredContent as { elementId: string };
+
+      const built = await handler.handleRequest('build_process', {
+        nodes: [{ kind: 'activity', ref: existing.elementId, activityType: 'task', name: 'Clash' }],
+        flows: []
+      });
+
+      expect(built.isError).toBe(true);
+      expect(built.content[0].text).toContain('existing element id');
+    });
+
+    it('rejects duplicate refs before touching the diagram', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Dupes' });
+
+      const built = await handler.handleRequest('build_process', {
+        nodes: [
+          { kind: 'activity', ref: 'same', activityType: 'task', name: 'One' },
+          { kind: 'activity', ref: 'same', activityType: 'task', name: 'Two' }
+        ],
+        flows: []
+      });
+
+      expect(built.isError).toBe(true);
+      expect(built.structuredContent).toMatchObject({ code: 'invalid_arguments' });
+      expect(diagramContext.getCurrent().elements.size).toBe(0);
     });
   });
 });

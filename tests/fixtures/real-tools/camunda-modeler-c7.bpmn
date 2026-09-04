@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_0k7yqxv" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Camunda Modeler" exporterVersion="5.19.0" modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.20.0">
+  <bpmn:process id="Process_Invoice" name="Invoice handling" isExecutable="true" camunda:historyTimeToLive="180">
+    <bpmn:startEvent id="StartEvent_1" name="Invoice received">
+      <bpmn:outgoing>Flow_0start</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="Activity_0review" name="Review invoice" camunda:assignee="demo" camunda:formKey="embedded:app:forms/review.html">
+      <bpmn:extensionElements>
+        <camunda:properties>
+          <camunda:property name="category" value="finance" />
+        </camunda:properties>
+        <camunda:taskListener event="create" class="org.example.ReviewListener" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_0start</bpmn:incoming>
+      <bpmn:outgoing>Flow_1review</bpmn:outgoing>
+      <bpmn:property id="Property_0review" name="__targetRef_placeholder" />
+      <bpmn:dataInputAssociation id="DataInputAssociation_0review">
+        <bpmn:sourceRef>DataObjectReference_Invoice</bpmn:sourceRef>
+        <bpmn:targetRef>Property_0review</bpmn:targetRef>
+      </bpmn:dataInputAssociation>
+      <bpmn:dataOutputAssociation id="DataOutputAssociation_0review">
+        <bpmn:targetRef>DataObjectReference_Invoice</bpmn:targetRef>
+      </bpmn:dataOutputAssociation>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_0approved" name="Approved?" default="Flow_2archive">
+      <bpmn:incoming>Flow_1review</bpmn:incoming>
+      <bpmn:outgoing>Flow_2archive</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:callActivity id="Activity_1archive" name="Archive invoice" calledElement="${archiveProcessKey}" camunda:calledElementBinding="latest" camunda:calledElementVersion="">
+      <bpmn:extensionElements>
+        <camunda:in source="invoiceId" target="invoiceId" />
+        <camunda:out sourceExpression="${archiveId}" target="archiveId" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_2archive</bpmn:incoming>
+      <bpmn:outgoing>Flow_3end</bpmn:outgoing>
+    </bpmn:callActivity>
+    <bpmn:endEvent id="Event_0done" name="Invoice handled">
+      <bpmn:incoming>Flow_3end</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Event_0compensate" name="Undo review" attachedToRef="Activity_0review">
+      <bpmn:compensateEventDefinition id="CompensateEventDefinition_0review" />
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="Activity_2undo" name="Reverse posting" isForCompensation="true" camunda:class="org.example.ReversePostingDelegate" />
+    <bpmn:dataObjectReference id="DataObjectReference_Invoice" name="Invoice" dataObjectRef="DataObject_Invoice" />
+    <bpmn:dataObject id="DataObject_Invoice" />
+    <bpmn:subProcess id="Activity_3escalation" name="Escalation" triggeredByEvent="true">
+      <bpmn:startEvent id="Event_1escalated" name="Escalated">
+        <bpmn:outgoing>Flow_4notify</bpmn:outgoing>
+        <bpmn:messageEventDefinition id="MessageEventDefinition_0escalated" messageRef="Message_0escalated" />
+      </bpmn:startEvent>
+      <bpmn:sendTask id="Activity_4notify" name="Notify accounting" camunda:type="external" camunda:topic="notify">
+        <bpmn:incoming>Flow_4notify</bpmn:incoming>
+        <bpmn:outgoing>Flow_5notified</bpmn:outgoing>
+      </bpmn:sendTask>
+      <bpmn:endEvent id="Event_2notified">
+        <bpmn:incoming>Flow_5notified</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_4notify" sourceRef="Event_1escalated" targetRef="Activity_4notify" />
+      <bpmn:sequenceFlow id="Flow_5notified" sourceRef="Activity_4notify" targetRef="Event_2notified" />
+    </bpmn:subProcess>
+    <bpmn:sequenceFlow id="Flow_0start" sourceRef="StartEvent_1" targetRef="Activity_0review" />
+    <bpmn:sequenceFlow id="Flow_1review" sourceRef="Activity_0review" targetRef="Gateway_0approved" />
+    <bpmn:sequenceFlow id="Flow_2archive" name="approved" sourceRef="Gateway_0approved" targetRef="Activity_1archive" />
+    <bpmn:sequenceFlow id="Flow_3end" sourceRef="Activity_1archive" targetRef="Event_0done" />
+    <bpmn:association id="Association_0compensate" associationDirection="One" sourceRef="Event_0compensate" targetRef="Activity_2undo" />
+  </bpmn:process>
+  <bpmn:message id="Message_0escalated" name="invoice.escalated" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Process_Invoice">
+      <bpmndi:BPMNShape id="_BPMNShape_StartEvent_2" bpmnElement="StartEvent_1">
+        <dc:Bounds x="152" y="182" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="130" y="225" width="81" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_0review_di" bpmnElement="Activity_0review">
+        <dc:Bounds x="240" y="160" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_0approved_di" bpmnElement="Gateway_0approved" isMarkerVisible="true">
+        <dc:Bounds x="395" y="175" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="392" y="145" width="57" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_1archive_di" bpmnElement="Activity_1archive">
+        <dc:Bounds x="500" y="160" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_0done_di" bpmnElement="Event_0done">
+        <dc:Bounds x="652" y="182" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="632" y="225" width="77" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_2undo_di" bpmnElement="Activity_2undo">
+        <dc:Bounds x="380" y="300" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="DataObjectReference_Invoice_di" bpmnElement="DataObjectReference_Invoice">
+        <dc:Bounds x="272" y="60" width="36" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="273" y="117" width="35" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_3escalation_di" bpmnElement="Activity_3escalation" isExpanded="true">
+        <dc:Bounds x="240" y="430" width="350" height="160" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_1escalated_di" bpmnElement="Event_1escalated">
+        <dc:Bounds x="280" y="492" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="277" y="535" width="47" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_4notify_di" bpmnElement="Activity_4notify">
+        <dc:Bounds x="370" y="470" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_2notified_di" bpmnElement="Event_2notified">
+        <dc:Bounds x="522" y="492" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_0compensate_di" bpmnElement="Event_0compensate">
+        <dc:Bounds x="272" y="222" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="256" y="265" width="68" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_0start_di" bpmnElement="Flow_0start">
+        <di:waypoint x="188" y="200" />
+        <di:waypoint x="240" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_1review_di" bpmnElement="Flow_1review">
+        <di:waypoint x="340" y="200" />
+        <di:waypoint x="395" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_2archive_di" bpmnElement="Flow_2archive">
+        <di:waypoint x="445" y="200" />
+        <di:waypoint x="500" y="200" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="447" y="182" width="47" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_3end_di" bpmnElement="Flow_3end">
+        <di:waypoint x="600" y="200" />
+        <di:waypoint x="652" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_4notify_di" bpmnElement="Flow_4notify">
+        <di:waypoint x="316" y="510" />
+        <di:waypoint x="370" y="510" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_5notified_di" bpmnElement="Flow_5notified">
+        <di:waypoint x="470" y="510" />
+        <di:waypoint x="522" y="510" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="DataInputAssociation_0review_di" bpmnElement="DataInputAssociation_0review">
+        <di:waypoint x="290" y="110" />
+        <di:waypoint x="290" y="160" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="DataOutputAssociation_0review_di" bpmnElement="DataOutputAssociation_0review">
+        <di:waypoint x="310" y="160" />
+        <di:waypoint x="310" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Association_0compensate_di" bpmnElement="Association_0compensate">
+        <di:waypoint x="290" y="258" />
+        <di:waypoint x="290" y="340" />
+        <di:waypoint x="380" y="340" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

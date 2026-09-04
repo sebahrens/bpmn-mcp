@@ -1,4 +1,8 @@
 import { BpmnRequestHandler } from '../../src/server/handlers.js';
+import {
+  ROOT_BROWSER_LAUNCH_ARGS,
+  resolveBrowserLaunchArgs
+} from '../../src/config/index.js';
 import { BpmnSvgRenderer } from '../../src/core/BpmnSvgRenderer.js';
 import { diagramContext } from '../../src/core/DiagramContext.js';
 import { SimpleBpmnEngine } from '../../src/core/SimpleBpmnEngine.js';
@@ -151,4 +155,37 @@ describe('SVG export integration', () => {
     await handler.shutdown();
     expect(browser.connected).toBe(false);
   }, 15_000);
+});
+
+describe('Chrome launch arguments', () => {
+  const originalGetuid = process.getuid;
+
+  afterEach(() => {
+    process.getuid = originalGetuid;
+  });
+
+  it('drops the Chrome sandbox when the server runs as root', () => {
+    process.getuid = () => 0;
+
+    // Chrome exits with "Running as root without --no-sandbox is not supported",
+    // which is how every containerised agent runtime lost SVG and PNG output.
+    expect(resolveBrowserLaunchArgs({}))
+      .toEqual(['--no-sandbox', '--disable-setuid-sandbox']);
+    expect(resolveBrowserLaunchArgs({})).toEqual([...ROOT_BROWSER_LAUNCH_ARGS]);
+  });
+
+  it('keeps the Chrome sandbox for an unprivileged user', () => {
+    process.getuid = () => 1000;
+
+    expect(resolveBrowserLaunchArgs({})).toEqual([]);
+  });
+
+  it('lets MCP_BPMN_BROWSER_ARGS replace the defaults entirely', () => {
+    process.getuid = () => 0;
+
+    expect(resolveBrowserLaunchArgs({
+      MCP_BPMN_BROWSER_ARGS: '--no-sandbox   --disable-gpu'
+    })).toEqual(['--no-sandbox', '--disable-gpu']);
+    expect(resolveBrowserLaunchArgs({ MCP_BPMN_BROWSER_ARGS: '' })).toEqual([]);
+  });
 });

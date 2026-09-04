@@ -15,6 +15,7 @@ import type { ResourceLimits } from '../config/index.js';
 import { WorkspaceSession } from '../config/WorkspaceSession.js';
 import { TypeMappings } from '../utils/TypeMappings.js';
 import { assertSafeFilename } from '../utils/SafeFilePath.js';
+import { ToolError, isToolError, type ToolErrorCode } from '../utils/ToolError.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { MermaidConverter } from '../converters/MermaidConverter.js';
 import { diagramContext } from '../core/DiagramContext.js';
@@ -144,6 +145,7 @@ export class BpmnRequestHandler {
     update_connection_geometry: args => this.updateConnectionGeometry(args),
     apply_geometry_patch: args => this.applyGeometryPatch(args),
     route_connection: args => this.routeConnection(args),
+    build_process: args => this.buildProcess(args),
     delete_element: args => this.deleteElement(args),
     export: args => this.export(args),
     save_svg: args => this.saveSvg(args),
@@ -188,10 +190,11 @@ export class BpmnRequestHandler {
    */
   handleRequest(name: string, args: unknown): Promise<CallToolResult> {
     if (!this.acceptingRequests) {
-      return Promise.resolve({
-        content: [{ type: 'text', text: 'Error: Server is shutting down' }],
-        isError: true
-      });
+      return Promise.resolve(toolErrorResult(new ToolError(
+        'server_shutting_down',
+        'Server is shutting down',
+        { recovery: 'Reconnect to a new server process before retrying.' }
+      )));
     }
 
     if (name === 'export' || name === 'analyze_geometry') {
@@ -249,8 +252,19 @@ export class BpmnRequestHandler {
   }
 
   private async executeRequest(name: string, args: unknown): Promise<CallToolResult> {
+    let request: ParsedToolRequest;
     try {
-      const request = parseToolRequest(name, args);
+      request = parseToolRequest(name, args);
+    } catch (error: unknown) {
+      // Schema validation runs before any state is touched, so this is always
+      // a caller mistake and never a partially applied change.
+      return toolErrorResult(new ToolError('invalid_arguments', errorMessage(error), {
+        recovery: `Correct the named argument and retry; see the inputSchema for "${name}" in tools/list.`,
+        details: { tool: name }
+      }));
+    }
+
+    try {
       return await this.dispatch(request);
     } catch (error: unknown) {
       if (error instanceof DocumentRevisionConflictError) {
@@ -259,6 +273,7 @@ export class BpmnRequestHandler {
           isError: true,
           structuredContent: {
             code: error.code,
+            message: error.message,
             conflict: true,
             reason: error.reason,
             filename: error.filename,
@@ -276,6 +291,7 @@ export class BpmnRequestHandler {
           isError: true,
           structuredContent: {
             code: error.code,
+            message: error.message,
             conflict: true,
             elementId: error.elementId,
             expectedBounds: error.expectedBounds,
@@ -290,6 +306,7 @@ export class BpmnRequestHandler {
           isError: true,
           structuredContent: {
             code: error.code,
+            message: error.message,
             conflict: true,
             reason: error.reason,
             connectionId: error.connectionId,
@@ -309,6 +326,7 @@ export class BpmnRequestHandler {
           isError: true,
           structuredContent: {
             code: error.code,
+            message: error.message,
             conflict: true,
             connectionId: error.connectionId,
             expectedSemanticRevision: error.expectedSemanticRevision,
@@ -323,6 +341,7 @@ export class BpmnRequestHandler {
           isError: true,
           structuredContent: {
             code: error.code,
+            message: error.message,
             conflict: true,
             objectType: error.objectType,
             objectId: error.objectId,
@@ -339,6 +358,7 @@ export class BpmnRequestHandler {
           isError: true,
           structuredContent: {
             code: error.code,
+            message: error.message,
             connectionId: error.connectionId,
             mutated: false,
             rankedDiagnostics: error.rankedDiagnostics,
@@ -346,15 +366,7 @@ export class BpmnRequestHandler {
           }
         };
       }
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Error: ${errorMessage(error)}`
-          }
-        ],
-        isError: true
-      };
+      return toolErrorResult(asToolError(error));
     }
   }
 
@@ -387,6 +399,7 @@ export class BpmnRequestHandler {
       case 'update_connection_geometry': return this.dispatchers.update_connection_geometry(request.args);
       case 'apply_geometry_patch': return this.dispatchers.apply_geometry_patch(request.args);
       case 'route_connection': return this.dispatchers.route_connection(request.args);
+      case 'build_process': return this.dispatchers.build_process(request.args);
       case 'delete_element': return this.dispatchers.delete_element(request.args);
       case 'export': return this.dispatchers.export(request.args);
       case 'save_svg': return this.dispatchers.save_svg(request.args);
@@ -405,8 +418,8 @@ export class BpmnRequestHandler {
 
   // Creation tools
   private async newBpmn(args: ToolArguments<'new_bpmn'>): Promise<CallToolResult> {
-    const { name, type = 'process', extensionProfile = 'portable' } = args;
-    const context = await this.engine.createProcess(name, type, extensionProfile);
+    const { name, type = 'process', extensionProfile = 'portable', filename } = args;
+    const context = await this.engine.createProcess(name, type, extensionProfile, filename);
     await this.replaceCurrent(context, name);
 
     return textToolResult('new_bpmn', {
@@ -420,14 +433,16 @@ export class BpmnRequestHandler {
   }
 
   private async newFromMermaid(args: ToolArguments<'new_from_mermaid'>): Promise<CallToolResult> {
-    const { name, mermaidCode, extensionProfile = 'portable' } = args;
+    const { name, mermaidCode, extensionProfile = 'portable', filename } = args;
     this.assertMermaidByteLimit(mermaidCode);
     
     // Convert Mermaid to BPMN
     const conversionResult = await this.mermaidConverter.convert(mermaidCode);
     
     // Import the XML into the engine
-    const context = await this.engine.importXml(conversionResult.xml, name, extensionProfile);
+    const context = await this.engine.importXml(
+      conversionResult.xml, name, extensionProfile, filename
+    );
     await this.replaceCurrent(context, name);
     
     return textToolResult('new_from_mermaid', {
@@ -463,7 +478,7 @@ export class BpmnRequestHandler {
   }
 
   private async openMermaidFile(args: ToolArguments<'open_mermaid_file'>): Promise<CallToolResult> {
-    const { filename, extensionProfile = 'portable' } = args;
+    const { filename, bpmnFilename, extensionProfile = 'portable' } = args;
     
     const mermaidCode = await this.engine.readMermaidFile(
       filename,
@@ -476,7 +491,9 @@ export class BpmnRequestHandler {
     // Import the XML
     // Extract name from filename
     const name = filename.replace(/\.(mmd|mermaid|txt)$/i, '');
-    const context = await this.engine.importXml(conversionResult.xml, name, extensionProfile);
+    const context = await this.engine.importXml(
+      conversionResult.xml, name, extensionProfile, bpmnFilename
+    );
     await this.replaceCurrent(context, name);
     
     return textToolResult('open_mermaid_file', {
@@ -496,11 +513,15 @@ export class BpmnRequestHandler {
   private async save(args: ToolArguments<'save'>): Promise<CallToolResult> {
     const info = diagramContext.getCurrentInfo();
     if (!info) {
-      throw new Error('No current diagram to save');
+      throw new ToolError('no_current_diagram', 'No diagram is currently open', {
+        recovery: 'Open or create a diagram before saving.'
+      });
     }
     
     if (!info.filename) {
-      throw new Error('No filename set. Use save_as() to specify a filename');
+      throw new ToolError('invalid_arguments', 'The active diagram has no filename', {
+        recovery: 'Use save_as with a filename to give this diagram a file.'
+      });
     }
     
     const context = diagramContext.getCurrent();
@@ -521,21 +542,31 @@ export class BpmnRequestHandler {
     const context = diagramContext.getCurrent();
     const info = diagramContext.getCurrentInfo()!;
     const beforeRevision = context.revision;
+    const previousFilename = context.filename;
+    const previousWasPlaceholder = context.filenameManaged === true;
     const activeFilename = await this.engine.saveAs(context.id, filename, expectedRevision);
-    
+    const removedPreviousFile = previousWasPlaceholder
+      && previousFilename !== undefined
+      && previousFilename !== activeFilename;
+
     return textToolResult('save_as', {
       processId: context.id,
       name: info.name,
       filename: activeFilename,
+      ...(previousFilename ? { previousFilename } : {}),
+      removedPreviousFile,
       beforeRevision,
       afterRevision: context.revision
-    }, `Saved diagram "${info.name}" as ${activeFilename}`);
+    }, `Saved diagram "${info.name}" as ${activeFilename}`
+      + (removedPreviousFile ? ` (removed the generated placeholder ${previousFilename})` : ''));
   }
 
   private async closeDiagram(): Promise<CallToolResult> {
     const info = diagramContext.getCurrentInfo();
     if (!info) {
-      throw new Error('No current diagram to close');
+      throw new ToolError('no_current_diagram', 'No diagram is currently open', {
+        recovery: 'Nothing to close; use current to check the active diagram.'
+      });
     }
     
     const context = diagramContext.getCurrent();
@@ -790,14 +821,26 @@ export class BpmnRequestHandler {
     const context = diagramContext.getCurrent();
     
     if (context.type !== 'collaboration') {
-      throw new Error('Pools can only be added to collaborations. Create a collaboration first with new_bpmn()');
+      throw new ToolError(
+        'wrong_object_kind',
+        'Pools exist only in collaborations, and the active diagram is a process',
+        {
+          recovery: 'Create a collaboration with new_bpmn({ type: "collaboration" }), '
+            + 'then add pools to it.',
+          details: { diagramType: context.type }
+        }
+      );
     }
 
     const elementDef = {
       type: 'bpmn:Participant' as const,
       name,
-      position: position || { x: 100, y: 100 },
-      size: size || { width: 600, height: 250 },
+      position: position || defaultPoolPosition(context),
+      // Deliberately passed through unset when omitted. The engine applies the
+      // participant type default and records that the size was defaulted, so
+      // auto_layout can size the pool to its content instead of treating a
+      // number the caller never chose as a floor.
+      size,
       properties: { blackBox }
     };
 
@@ -915,12 +958,41 @@ export class BpmnRequestHandler {
       const result = { ...associationQueryView(connection), revision: context.revision };
       return textToolResult('get_element', result, JSON.stringify(result, null, 2));
     }
+    if (connection) {
+      throw new ToolError(
+        'wrong_object_kind',
+        `${elementId} is a ${connection.type}, which is a connection rather than an element.`,
+        {
+          recovery: 'Use get_connection to read it, or list_connections to find it.',
+          details: { elementId, actualType: connection.type }
+        }
+      );
+    }
 
     const lane = context.document.lanes.get(elementId);
     const element: ElementQueryView | undefined = context.elements.get(elementId)
       ?? (lane ? laneQueryView(lane) : undefined);
     if (!element) {
-      throw new Error(`Element ${elementId} not found`);
+      // add_data_object returns the backing bpmn:DataObject id alongside the
+      // rendered reference, so agents reasonably try to read it back here.
+      const backingReference = Array.from(context.elements.values()).find(
+        candidate => candidate.type === 'bpmn:DataObjectReference'
+          && candidate.properties.dataObjectRef === elementId
+      );
+      if (backingReference) {
+        throw new ToolError(
+          'wrong_object_kind',
+          `${elementId} is the non-rendered bpmn:DataObject backing ${backingReference.id}.`,
+          {
+            recovery: `Use get_element with ${backingReference.id} instead.`,
+            details: { elementId, renderedReferenceId: backingReference.id }
+          }
+        );
+      }
+      throw new ToolError('element_not_found', `Element ${elementId} not found`, {
+        recovery: 'List elements with list_elements and use an id from that result.',
+        details: { elementId }
+      });
     }
 
     const incoming = [];
@@ -1005,7 +1077,12 @@ export class BpmnRequestHandler {
   ): Promise<CallToolResult> {
     const context = diagramContext.getCurrent();
     const connection = context.connections.get(args.connectionId);
-    if (!connection) throw new Error(`Connection ${args.connectionId} not found`);
+    if (!connection) {
+      throw new ToolError('connection_not_found', `Connection ${args.connectionId} not found`, {
+        recovery: 'List connections with list_connections and use an id from that result.',
+        details: { connectionId: args.connectionId }
+      });
+    }
     const edge = Array.from(context.document.diagram.edges.values()).find(
       candidate => candidate.connectionId === connection.id
     );
@@ -1153,6 +1230,67 @@ export class BpmnRequestHandler {
     );
   }
 
+  private async buildProcess(args: ToolArguments<'build_process'>): Promise<CallToolResult> {
+    const context = diagramContext.getCurrent();
+    const beforeRevision = context.revision;
+
+    const nodes = args.nodes.map(node => {
+      const { kind, ref, ownerId, scopeId, position } = node;
+      const shared = { ref, ownerId, scopeId, position };
+      if (kind === 'activity') {
+        return {
+          ...shared,
+          type: TypeMappings.mapActivityType(node.activityType),
+          name: node.name,
+          ...(node.properties ? { properties: { ...node.properties } } : {})
+        };
+      }
+      if (kind === 'gateway') {
+        return {
+          ...shared,
+          type: TypeMappings.mapGatewayType(node.gatewayType),
+          name: node.name
+        };
+      }
+      return {
+        ...shared,
+        type: TypeMappings.mapEventType(node.eventType),
+        name: node.name,
+        properties: {
+          ...(node.eventDefinition ? { eventDefinition: node.eventDefinition } : {}),
+          ...(node.attachTo ? { attachTo: node.attachTo } : {}),
+          ...(node.cancelActivity !== undefined ? { cancelActivity: node.cancelActivity } : {})
+        }
+      };
+    });
+
+    const result = await this.engine.buildProcess(
+      context.id,
+      {
+        nodes: nodes as Parameters<typeof this.engine.buildProcess>[1]['nodes'],
+        flows: args.flows.map(flow => ({
+          source: flow.source,
+          target: flow.target,
+          label: flow.label,
+          condition: flow.condition,
+          conditionLanguage: flow.conditionLanguage,
+          isDefault: flow.isDefault
+        }))
+      },
+      args.expectedRevision
+    );
+
+    const structured = {
+      ...result,
+      elementCount: result.elements.length,
+      connectionCount: result.connections.length,
+      filename: activeFilename(context),
+      beforeRevision,
+      afterRevision: context.revision
+    };
+    return textToolResult('build_process', structured, JSON.stringify(structured, null, 2));
+  }
+
   private async deleteElement(args: ToolArguments<'delete_element'>): Promise<CallToolResult> {
     const { elementId, expectedRevision } = args;
     const context = diagramContext.getCurrent();
@@ -1171,23 +1309,35 @@ export class BpmnRequestHandler {
         elementId,
         deletedKind: 'connection',
         removedConnectionCount: 0,
+        removedElementCount: 0,
+        removedElementIds: [],
         filename: activeFilename(context),
         beforeRevision,
         afterRevision: context.revision
       }, `Deleted ${connectionKind} ${elementId}`);
     }
-    const removedConnectionCount = await this.engine.deleteElement(
+    const { removedConnectionCount, removedElementIds } = await this.engine.deleteElement(
       context.id, elementId, expectedRevision
     );
 
+    // Deleting a container cascades to everything inside it. Reporting only
+    // the connection count hid those removals from the agent entirely.
+    const cascaded = removedElementIds.filter(id => id !== elementId);
+    const cascadeSummary = cascaded.length > 0
+      ? `, ${cascaded.length} contained element${cascaded.length === 1 ? '' : 's'} `
+        + `(${cascaded.join(', ')})`
+      : '';
     return textToolResult('delete_element', {
       elementId,
       deletedKind: 'element',
       removedConnectionCount,
+      removedElementCount: removedElementIds.length,
+      removedElementIds,
       filename: activeFilename(context),
       beforeRevision,
       afterRevision: context.revision
-    }, `Deleted element ${elementId} and ${removedConnectionCount} associated connections`);
+    }, `Deleted element ${elementId}${cascadeSummary} and ${removedConnectionCount} `
+      + `associated connection${removedConnectionCount === 1 ? '' : 's'}`);
   }
 
   // Utility methods
@@ -1273,7 +1423,11 @@ export class BpmnRequestHandler {
       this.resourceLimits.maxArtifactBytes
     );
     if (!result.success) {
-      throw new Error(result.error || 'Unable to save rendered artifact');
+      throw new ToolError(
+        'storage_unavailable',
+        result.error || 'Unable to save rendered artifact',
+        { recovery: 'Check that the workspace reported by get_workspace is writable.' }
+      );
     }
 
     return format === 'svg'
@@ -1370,7 +1524,14 @@ export class BpmnRequestHandler {
 
   private assertMermaidByteLimit(mermaidCode: string): void {
     if (Buffer.byteLength(mermaidCode, 'utf8') > this.resourceLimits.maxMermaidBytes) {
-      throw new Error('Mermaid import exceeds the configured byte limit');
+      throw new ToolError(
+        'limit_exceeded',
+        'Mermaid import exceeds the configured byte limit',
+        {
+          recovery: 'Split the diagram, or raise MCP_BPMN_MAX_MERMAID_BYTES on the server.',
+          details: { maxBytes: this.resourceLimits.maxMermaidBytes }
+        }
+      );
     }
   }
 
@@ -1457,6 +1618,135 @@ function textToolResult<Name extends ToolName>(
   text: string
 ): CallToolResult {
   return toolResult(name, structuredContent, [{ type: 'text', text }]);
+}
+
+/** Render a failed tool call with a stable code and a recovery hint. */
+function toolErrorResult(error: ToolError): CallToolResult {
+  return {
+    content: [{ type: 'text', text: `Error: ${error.message}` }],
+    isError: true,
+    structuredContent: {
+      code: error.code,
+      message: error.message,
+      ...(error.recovery ? { recovery: error.recovery } : {}),
+      ...error.details
+    }
+  };
+}
+
+/**
+ * Classification for errors raised outside the typed error classes.
+ *
+ * The engine predates the taxonomy and still signals most failures with plain
+ * Error messages it builds itself. Matching those known phrasings is a bridge,
+ * not the destination: each entry is a message this code base produces, and
+ * anything unrecognized is reported honestly as unexpected rather than being
+ * given a confidently wrong code.
+ */
+const ERROR_CLASSIFIERS: ReadonlyArray<{
+  readonly pattern: RegExp;
+  readonly code: ToolErrorCode;
+  readonly recovery: string;
+  /** Pull identifiers out of the matched message so callers need not re-parse it. */
+  readonly details?: (match: RegExpMatchArray) => Record<string, unknown>;
+}> = [
+  {
+    pattern: /^No current diagram|no current diagram|No diagram is currently open/i,
+    code: 'no_current_diagram',
+    recovery: 'Open or create a diagram first with new_bpmn, new_from_mermaid, or open_bpmn.'
+  },
+  {
+    pattern: /is a bpmn:\w+, which is a connection|use get_connection/i,
+    code: 'wrong_object_kind',
+    recovery: 'Use get_connection or list_connections for connections.'
+  },
+  {
+    pattern: /^Connection (\S+) not found/,
+    code: 'connection_not_found',
+    recovery: 'List connections with list_connections and use an id from that result.',
+    details: match => ({ connectionId: match[1] })
+  },
+  {
+    pattern: /^(?:Associated element|Element) (\S+) not found/,
+    code: 'element_not_found',
+    recovery: 'List elements with list_elements and use an id from that result.',
+    details: match => ({ elementId: match[1] })
+  },
+  {
+    pattern: /Missing BPMN process owner|ownerId|scopeId|not found in scope|scope/i,
+    code: 'owner_or_scope_invalid',
+    recovery: 'Pass the owning process id as ownerId, and the containing process or subprocess id as scopeId.'
+  },
+  {
+    pattern: /Geometry collision rejected|Unsafe geometry|not contained by/i,
+    code: 'geometry_rejected',
+    recovery: 'Inspect the diagram with analyze_geometry, then either move the obstacle, '
+      + 'let route_connection propose a route, or repeat the call with collisionPolicy "allow".'
+  },
+  {
+    pattern: /^File already exists/i,
+    code: 'file_exists',
+    recovery: 'Choose another filename, or delete the existing file with delete_diagram_file first.'
+  },
+  {
+    pattern: /requires Chrome or Chromium|Browser launch failed|SVG renderer/i,
+    code: 'render_unavailable',
+    recovery: 'Install a Chrome or Chromium build and point PUPPETEER_EXECUTABLE_PATH at it, '
+      + 'or export format "xml" instead.'
+  },
+  {
+    pattern: /Unable to save|Unable to read|diagram file is busy/i,
+    code: 'storage_unavailable',
+    recovery: 'Check that the managed workspace reported by get_workspace exists and is writable.'
+  },
+  {
+    pattern: /limit .*exceeded|exceeds|too large|rejected: .*limit/i,
+    code: 'limit_exceeded',
+    recovery: 'Reduce the size of the request, or page through the result with limit and offset.'
+  },
+  {
+    pattern: /must be|cannot|invalid|not legal|unsupported/i,
+    code: 'invalid_bpmn',
+    recovery: 'Adjust the request so the resulting model is valid BPMN, then retry.'
+  }
+];
+
+/** Map any thrown value onto the tool error taxonomy. */
+function asToolError(error: unknown): ToolError {
+  if (isToolError(error)) return error;
+  const message = errorMessage(error);
+  for (const { pattern, code, recovery, details } of ERROR_CLASSIFIERS) {
+    const match = message.match(pattern);
+    if (match) return new ToolError(code, message, { recovery, details: details?.(match) });
+  }
+  return new ToolError('unexpected_error', message);
+}
+
+/** Vertical gap left between stacked pools before auto_layout runs. */
+const POOL_STACK_GAP = 50;
+const DEFAULT_POOL_ORIGIN = { x: 100, y: 100 } as const;
+
+/**
+ * Placeholder position for a pool the caller did not place.
+ *
+ * Every pool used to default to the same point, so a second pool overlapped
+ * the first and every geometry read, collision check or render taken before
+ * auto_layout saw a stack of pools sitting on top of each other. Stacking
+ * downward keeps the intermediate state legible; auto_layout still replaces
+ * these coordinates.
+ */
+function defaultPoolPosition(context: ProcessContext): { x: number; y: number } {
+  let left: number | undefined;
+  let bottom: number | undefined;
+  for (const candidate of context.elements.values()) {
+    if (candidate.kind !== 'participant') continue;
+    const { x, y } = candidate.position;
+    const height = candidate.size?.height ?? 0;
+    left = left === undefined ? x : Math.min(left, x);
+    bottom = bottom === undefined ? y + height : Math.max(bottom, y + height);
+  }
+  if (left === undefined || bottom === undefined) return { ...DEFAULT_POOL_ORIGIN };
+  return { x: left, y: bottom + POOL_STACK_GAP };
 }
 
 function activeFilename(context: ProcessContext): string {
