@@ -42,7 +42,7 @@
     "get_workspace",
     "select_workspace"
   ],
-  "contractFingerprint": "dfcde52d17c2db2dbb15dd62c6d4f8842d5f2bd061d4947da753bde4d0e60450",
+  "contractFingerprint": "7839a479ef699b4ea5ec692b725b12908b56029c757578328b7877c40aed25db",
   "schemaFingerprints": {
     "new_bpmn": {
       "input": "7e7d0607064fe25f15a494cadd85375c728be12777672e2d3f780a82e1961875",
@@ -150,7 +150,7 @@
     },
     "route_connection": {
       "input": "2f43b9bc2e946d51eb21ab4e50ca86ce2e5565238a82d36b26e85dabce959098",
-      "output": "617f081ced92d03eace5a48440ae29504bcea9b6456e30958bff550d2b57b42f"
+      "output": "b8a3ff285f3fd2473b6eea7ec867b6162c27694386c3990b506b116a83de1171"
     },
     "build_process": {
       "input": "97a6f2998fa1228ea2cf92f0dae4e774dfa0091c72a9313c9e9babd52ef00043",
@@ -174,7 +174,7 @@
     },
     "validate": {
       "input": "7480ee2efa429395b7cd39c1cc63b6323354ab4200eb9a2135ddbf9d6b9f07b8",
-      "output": "7a39d45783029345257e4838b8564080dfe3881656c30c036864d7528bb5bc05"
+      "output": "cdfeed657aeb7e6caea4f5d07b663b94012c2d8b95509e200a062a0ce80f4e63"
     },
     "analyze_geometry": {
       "input": "753cef802893458cb3123248736fb7ce3cb096b1d9905a6b5afe39a44939160b",

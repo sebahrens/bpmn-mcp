@@ -977,7 +977,8 @@ describe('SimpleBpmnEngine schema-aware document model', () => {
       expect.objectContaining({
         id: participant.id,
         processRef: participant.processRef,
-        size: { width: 600, height: 250 }
+        // list_elements rows report geometry once, as DI bounds.
+        bounds: { x: 100, y: 100, width: 600, height: 250 }
       }),
       expect.objectContaining({
         name: 'Owned task',

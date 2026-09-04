@@ -442,7 +442,9 @@ const outputConnectionRouteScore = z.object({
 }).strict();
 const outputRankedConnectionRoute = z.object({
   rank: z.number().int().positive(),
-  waypoints: z.array(outputPosition).min(2).max(MAX_INPUT_ARRAY_ITEMS),
+  // Omitted for the entry named by selectedRank: that route is reported once,
+  // in proposedWaypoints, rather than three times in the same result.
+  waypoints: z.array(outputPosition).min(2).max(MAX_INPUT_ARRAY_ITEMS).optional(),
   labelBounds: outputGeometryBounds.nullable(),
   scoreBreakdown: outputConnectionRouteScore,
   diagnostics: z.array(outputGeometryDiagnostic)
@@ -730,6 +732,9 @@ const outputSchemas = {
     diagnostics: z.array(outputGeometryDiagnostic),
     introducedDiagnostics: z.array(outputGeometryDiagnostic),
     rankedDiagnostics: z.array(outputRankedConnectionRoute).max(MAX_INPUT_ARRAY_ITEMS),
+    selectedRank: z.number().int().positive().optional()
+      .describe('Rank of the proposed route; that entry omits its waypoints, which are '
+        + 'reported once in proposedWaypoints'),
     geometryPatch: z.object({
       elementUpdates: z.array(z.unknown()).max(0),
       connectionUpdates: z.array(z.object({
@@ -806,9 +811,9 @@ const outputSchemas = {
   validate: z.object({
     level: z.enum(['syntax', 'semantic', 'full']),
     valid: z.boolean(),
+    // One list, not three: errors and warnings were the severity partition of
+    // issues, and every issue carries its own severity.
     issues: z.array(outputValidationIssue),
-    errors: z.array(outputValidationIssue),
-    warnings: z.array(outputValidationIssue),
     summary: z.string(),
     filename: outputFilename
   }).strict(),
@@ -1588,7 +1593,7 @@ export const toolDefinitions = {
   },
   validate: {
     annotations: READ_ONLY,
-    description: 'Validate the current diagram using cumulative BPMN checks: syntax parses XML and resolves references; semantic adds owner-aware event, flow, subprocess, lane, and collaboration rules; full also adds executable-profile start/end/connectivity guidance',
+    description: 'Validate the current diagram using cumulative BPMN checks (each issue carries its own severity, so errors and warnings are one list): syntax parses XML and resolves references; semantic adds owner-aware event, flow, subprocess, lane, and collaboration rules; full also adds executable-profile start/end/connectivity guidance',
     outputSchema: outputSchemas.validate,
     schema: z.object({
       level: z.enum(['syntax', 'semantic', 'full'])

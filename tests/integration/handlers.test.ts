@@ -1994,6 +1994,51 @@ describe('BpmnRequestHandler Integration Tests', () => {
       }
     });
 
+    it('keeps query and geometry text compact and free of duplicated payload', async () => {
+      const listing = await handler.handleRequest('list_elements', {});
+      const listingText = listing.content[0].text as string;
+
+      // The text block is the same payload as structuredContent, not a second
+      // pretty-printed copy of it.
+      expect(JSON.parse(listingText)).toEqual(listing.structuredContent);
+      expect(listingText).toBe(JSON.stringify(listing.structuredContent));
+      expect(listingText).not.toContain('\n');
+
+      const rows = (listing.structuredContent as {
+        elements: Array<Record<string, unknown>>;
+      }).elements;
+      const duplicatedGeometry = rows
+        .filter(row => row.bounds !== undefined
+          && (row.position !== undefined || row.size !== undefined))
+        .map(row => row.id as string);
+      expect(duplicatedGeometry).toEqual([]);
+      expect(rows.every(row => row.bounds !== undefined)).toBe(true);
+
+      const validation = await handler.handleRequest('validate', {});
+      expect(validation.structuredContent).not.toHaveProperty('errors');
+      expect(validation.structuredContent).not.toHaveProperty('warnings');
+      expect(validation.structuredContent).toHaveProperty('issues');
+
+      await handler.handleRequest('connect', {
+        sourceId: 'StartEvent_1',
+        targetId: 'Task_1'
+      });
+      const routed = await handler.handleRequest('route_connection', {
+        connectionId: 'Flow_1'
+      });
+      const route = routed.structuredContent as {
+        selectedRank: number;
+        proposedWaypoints: unknown[];
+        rankedDiagnostics: Array<{ rank: number; waypoints?: unknown[] }>;
+      };
+      expect(route.selectedRank).toEqual(expect.any(Number));
+      const selected = route.rankedDiagnostics.find(entry => entry.rank === route.selectedRank);
+      expect(selected).toBeDefined();
+      // The selected route is reported once, in proposedWaypoints.
+      expect(selected!.waypoints).toBeUndefined();
+      expect(route.proposedWaypoints.length).toBeGreaterThanOrEqual(2);
+    });
+
     it('labels every listed row with its kind, not only associations', async () => {
       diagramContext.clear();
       await handler.handleRequest('new_bpmn', { name: 'Kinds', type: 'collaboration' });
@@ -3217,7 +3262,12 @@ describe('BpmnRequestHandler Integration Tests', () => {
       expect(result.isError).toBeUndefined();
       const validation = JSON.parse(result.content[0].text as string);
       expect(validation.valid).toBe(true);
-      expect(validation.warnings).toEqual(expect.arrayContaining([
+      // One issues list carrying each issue's own severity; errors and
+      // warnings used to repeat the same objects.
+      expect(validation).not.toHaveProperty('warnings');
+      expect(validation.issues.filter(
+        (issue: { severity: string }) => issue.severity === 'warning'
+      )).toEqual(expect.arrayContaining([
         expect.objectContaining({ code: 'BPMN_PROFILE_MISSING_START_EVENT' }),
         expect.objectContaining({ code: 'BPMN_PROFILE_MISSING_END_EVENT' })
       ]));
@@ -3245,7 +3295,10 @@ describe('BpmnRequestHandler Integration Tests', () => {
       expect(result.isError).toBeUndefined();
       const validation = JSON.parse(result.content[0].text as string);
       expect(validation.valid).toBe(true);
-      expect(validation.errors).toHaveLength(0);
+      expect(validation).not.toHaveProperty('errors');
+      expect(validation.issues.filter(
+        (issue: { severity: string }) => issue.severity === 'error'
+      )).toHaveLength(0);
     });
   });
 

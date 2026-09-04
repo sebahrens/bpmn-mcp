@@ -636,7 +636,7 @@ export class BpmnRequestHandler {
         ...info,
         filename: activeFilename(diagramContext.getCurrent())
       }
-    }, JSON.stringify(info, null, 2));
+    }, compactJson(info));
   }
 
   // Element manipulation methods
@@ -959,6 +959,7 @@ export class BpmnRequestHandler {
 
     const elementList = page.map(e => {
       if (e.kind === 'association') return e;
+      const geometry = elementGeometryQueryFields(context.document, e.id);
       return {
         id: e.id,
         type: e.type,
@@ -970,9 +971,11 @@ export class BpmnRequestHandler {
         ownerId: e.ownerId,
         scopeId: e.scopeId,
         processRef: e.kind === 'participant' ? e.processRef : undefined,
-        position: e.position,
-        size: e.size,
-        ...elementGeometryQueryFields(context.document, e.id),
+        // bounds already carries x/y/width/height for every rendered element,
+        // so position and size are only emitted for the rare row that has no
+        // BPMNShape. get_element still reports both for a single element.
+        ...(geometry.bounds ? {} : { position: e.position, size: e.size }),
+        ...geometry,
         defaultFlow: e.kind === 'flowNode' ? e.defaultFlow : undefined,
         incoming: incomingCounts.get(e.id) ?? 0,
         outgoing: outgoingCounts.get(e.id) ?? 0
@@ -988,7 +991,7 @@ export class BpmnRequestHandler {
       elements: elementList,
       revision: context.revision
     };
-    return textToolResult('list_elements', result, JSON.stringify(result, null, 2));
+    return textToolResult('list_elements', result, compactJson(result));
   }
 
   private async getElement(args: ToolArguments<'get_element'>): Promise<CallToolResult> {
@@ -998,7 +1001,7 @@ export class BpmnRequestHandler {
     const connection = context.connections.get(elementId);
     if (connection?.type === 'bpmn:Association') {
       const result = { ...associationQueryView(connection), revision: context.revision };
-      return textToolResult('get_element', result, JSON.stringify(result, null, 2));
+      return textToolResult('get_element', result, compactJson(result));
     }
     if (connection) {
       throw new ToolError(
@@ -1069,7 +1072,7 @@ export class BpmnRequestHandler {
       revision: context.revision
     };
 
-    return textToolResult('get_element', details, JSON.stringify(details, null, 2));
+    return textToolResult('get_element', details, compactJson(details));
   }
 
   private async listConnections(
@@ -1112,7 +1115,7 @@ export class BpmnRequestHandler {
       connections,
       revision: context.revision
     };
-    return textToolResult('list_connections', result, JSON.stringify(result, null, 2));
+    return textToolResult('list_connections', result, compactJson(result));
   }
 
   private async getConnection(
@@ -1133,7 +1136,7 @@ export class BpmnRequestHandler {
       ...connectionQueryView(context, connection, edge),
       revision: context.revision
     };
-    return textToolResult('get_connection', result, JSON.stringify(result, null, 2));
+    return textToolResult('get_connection', result, compactJson(result));
   }
 
   private async updateElement(args: ToolArguments<'update_element'>): Promise<CallToolResult> {
@@ -1183,7 +1186,7 @@ export class BpmnRequestHandler {
     return textToolResult(
       'update_connection',
       structuredResult,
-      JSON.stringify(structuredResult, null, 2)
+      compactJson(structuredResult)
     );
   }
 
@@ -1205,7 +1208,7 @@ export class BpmnRequestHandler {
     return textToolResult(
       'update_element_geometry',
       structuredResult,
-      JSON.stringify(structuredResult, null, 2)
+      compactJson(structuredResult)
     );
   }
 
@@ -1233,7 +1236,7 @@ export class BpmnRequestHandler {
     return textToolResult(
       'update_connection_geometry',
       structuredResult,
-      JSON.stringify(structuredResult, null, 2)
+      compactJson(structuredResult)
     );
   }
 
@@ -1256,7 +1259,7 @@ export class BpmnRequestHandler {
     return textToolResult(
       'apply_geometry_patch',
       structuredResult,
-      JSON.stringify(structuredResult, null, 2)
+      compactJson(structuredResult)
     );
   }
 
@@ -1266,8 +1269,30 @@ export class BpmnRequestHandler {
     const context = diagramContext.getCurrent();
     const beforeRevision = context.revision;
     const result = await this.engine.routeConnection(context.id, args.connectionId, args);
+    // The selected route is already in proposedWaypoints and, verbatim, in the
+    // ready-to-send geometryPatch. Repeating it a third time inside its own
+    // ranked entry tripled the cost of the field agents actually compare, so
+    // the entry is named by rank instead.
+    const selected = result.rankedDiagnostics.find(
+      candidate => sameWaypoints(candidate.waypoints, result.proposedWaypoints)
+    );
     const structuredResult = {
       ...result,
+      ...(selected
+        ? {
+          selectedRank: selected.rank,
+          rankedDiagnostics: result.rankedDiagnostics.map(candidate => (
+            candidate === selected
+              ? {
+                rank: candidate.rank,
+                labelBounds: candidate.labelBounds,
+                scoreBreakdown: candidate.scoreBreakdown,
+                diagnostics: candidate.diagnostics
+              }
+              : candidate
+          ))
+        }
+        : {}),
       clearance: args.clearance,
       preserveOtherGeometry: args.preserveOtherGeometry,
       apply: args.apply,
@@ -1280,7 +1305,7 @@ export class BpmnRequestHandler {
     return textToolResult(
       'route_connection',
       structuredResult,
-      JSON.stringify(structuredResult, null, 2)
+      compactJson(structuredResult)
     );
   }
 
@@ -1342,7 +1367,7 @@ export class BpmnRequestHandler {
       beforeRevision,
       afterRevision: context.revision
     };
-    return textToolResult('build_process', structured, JSON.stringify(structured, null, 2));
+    return textToolResult('build_process', structured, compactJson(structured));
   }
 
   private async deleteElement(args: ToolArguments<'delete_element'>): Promise<CallToolResult> {
@@ -1522,11 +1547,16 @@ export class BpmnRequestHandler {
     const xml = await this.engine.exportXml(context.id, true);
     const result = await this.validator.validate(xml, level);
 
-    const structuredResult = {
-      ...result,
-      filename: activeFilename(context)
+    // errors and warnings were the severity partition of issues, so every
+    // issue was reported twice. Each issue carries its own severity.
+    const compact = {
+      level: result.level,
+      valid: result.valid,
+      issues: result.issues,
+      summary: result.summary
     };
-    return textToolResult('validate', structuredResult, JSON.stringify(result, null, 2));
+    const structuredResult = { ...compact, filename: activeFilename(context) };
+    return textToolResult('validate', structuredResult, compactJson(compact));
   }
 
   private async analyzeGeometry(
@@ -1558,7 +1588,7 @@ export class BpmnRequestHandler {
     return textToolResult(
       'analyze_geometry',
       structuredResult,
-      JSON.stringify(structuredResult, null, 2)
+      compactJson(structuredResult)
     );
   }
 
@@ -1630,7 +1660,7 @@ export class BpmnRequestHandler {
       diagrams: page.diagrams,
       path: this.engine.getDiagramsPath()
     };
-    return textToolResult('list_diagrams', result, JSON.stringify(result, null, 2));
+    return textToolResult('list_diagrams', result, compactJson(result));
   }
 
   private async deleteDiagramFile(
@@ -1662,7 +1692,7 @@ export class BpmnRequestHandler {
 
   private async getWorkspace(): Promise<CallToolResult> {
     const info = this.workspace.getInfo();
-    return textToolResult('get_workspace', info, JSON.stringify(info, null, 2));
+    return textToolResult('get_workspace', info, compactJson(info));
   }
 
   private async selectWorkspace(
@@ -1680,7 +1710,7 @@ export class BpmnRequestHandler {
 
     const selection = this.workspace.activateSelection(workspace);
     const result = { ...selection.info, changed };
-    return textToolResult('select_workspace', result, JSON.stringify(result, null, 2));
+    return textToolResult('select_workspace', result, compactJson(result));
   }
 }
 
@@ -1701,6 +1731,21 @@ function textToolResult<Name extends ToolName>(
   text: string
 ): CallToolResult {
   return toolResult(name, structuredContent, [{ type: 'text', text }]);
+}
+
+/**
+ * The text block of a query result carries the same payload as
+ * structuredContent, for hosts that only render text. It used to be
+ * 2-space indented, which doubled the cost of the larger listings for no
+ * reader: agents parse it. It stays complete and parseable, just compact.
+ */
+function compactJson(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+function sameWaypoints(left: Position[], right: Position[]): boolean {
+  return left.length === right.length
+    && left.every((point, index) => point.x === right[index].x && point.y === right[index].y);
 }
 
 /** Render a failed tool call with a stable code and a recovery hint. */

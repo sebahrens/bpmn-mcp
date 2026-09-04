@@ -1357,22 +1357,19 @@ describe('MCP Server End-to-End Tests', () => {
       expect(validation.structuredContent).toMatchObject({
         level: 'full',
         issues: expect.any(Array),
-        errors: expect.any(Array),
-        warnings: expect.any(Array),
         filename: mermaidBpmnFilename
       });
+      // issues is the single list; errors and warnings used to repeat it split
+      // by severity, which every issue already carries (mcp-bpmn-8u0.13).
+      expect(validation.structuredContent).not.toHaveProperty('errors');
+      expect(validation.structuredContent).not.toHaveProperty('warnings');
       const validationIssues = validation.structuredContent.issues as Array<{
         severity: 'error' | 'warning';
       }>;
       expect(validationIssues.length).toBeGreaterThan(0);
-      expect(validation.structuredContent.errors).toEqual(
-        validationIssues.filter(issue => issue.severity === 'error')
-      );
-      expect(validation.structuredContent.warnings).toEqual(
-        validationIssues.filter(issue => issue.severity === 'warning')
-      );
-      expect(validation.structuredContent.valid)
-        .toBe(validation.structuredContent.errors.length === 0);
+      const validationErrors = validationIssues.filter(issue => issue.severity === 'error');
+      const validationWarnings = validationIssues.filter(issue => issue.severity === 'warning');
+      expect(validation.structuredContent.valid).toBe(validationErrors.length === 0);
       expect(validation.structuredContent.issues).toEqual(expect.arrayContaining([{
         code: 'BPMN_PROFILE_MISSING_INCOMING_FLOW',
         severity: 'warning',
@@ -1381,8 +1378,8 @@ describe('MCP Server End-to-End Tests', () => {
       }]));
       expect(validation.structuredContent.summary).toBe(
         `Validation ${validation.structuredContent.valid ? 'passed' : 'failed'}: `
-        + `${validation.structuredContent.errors.length} errors, `
-        + `${validation.structuredContent.warnings.length} warnings`
+        + `${validationErrors.length} errors, `
+        + `${validationWarnings.length} warnings`
       );
 
       const xmlExport = await call('export');
