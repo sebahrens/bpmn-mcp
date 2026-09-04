@@ -69,16 +69,31 @@ export class WorkspaceSession {
     const launchCwd = canonicalExistingDirectory(launchDirectory, 'launch cwd');
     const override = environment.MCP_BPMN_DIAGRAMS_PATH;
     if (override !== undefined) {
-      if (!path.isAbsolute(override) || hasDotSegment(override)) {
-        throw new Error('MCP_BPMN_DIAGRAMS_PATH must be an absolute path without dot segments');
+      // Same reasoning as the repository config below: this runs during module
+      // import, so an unusable value must not kill the process before the
+      // transport exists. Storage stays on the launch cwd and the reason is
+      // held until a workspace call can report it as an ordinary tool error.
+      try {
+        if (!path.isAbsolute(override) || hasDotSegment(override)) {
+          throw new Error('it must be an absolute path without dot segments');
+        }
+        const workspace = canonicalDirectory(override, 'MCP_BPMN_DIAGRAMS_PATH');
+        return new WorkspaceSession(
+          launchCwd,
+          workspace,
+          workspace,
+          'environment'
+        );
+      } catch (error) {
+        return new WorkspaceSession(
+          launchCwd,
+          launchCwd,
+          launchCwd,
+          'launch_cwd',
+          undefined,
+          `MCP_BPMN_DIAGRAMS_PATH ${override} was ignored: ${messageOf(error)}`
+        );
       }
-      const workspace = canonicalDirectory(override, 'MCP_BPMN_DIAGRAMS_PATH');
-      return new WorkspaceSession(
-        launchCwd,
-        workspace,
-        workspace,
-        'environment'
-      );
     }
 
     const configPath = path.join(launchCwd, WORKSPACE_CONFIG_FILENAME);

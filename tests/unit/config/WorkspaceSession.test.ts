@@ -232,6 +232,50 @@ describe('WorkspaceSession', () => {
       }
     });
 
+    // The environment-variable branch runs at the same point in startup and
+    // used to throw for exactly the same reason (mcp-bpmn-owa.6).
+    const unusableOverrides: Array<[string, (root: string) => Promise<string>]> = [
+      ['a relative path', async () => 'diagrams'],
+      ['a dot-segment escape', async () => '/tmp/../etc/mcp-bpmn-owa-6'],
+      ['a path naming an existing file', async directory => {
+        const file = path.join(directory, 'not-a-directory');
+        await fs.writeFile(file, 'x');
+        return file;
+      }]
+    ];
+
+    it.each(unusableOverrides)(
+      'starts on the launch cwd when MCP_BPMN_DIAGRAMS_PATH is %s',
+      async (_label, buildOverride) => {
+        const session = WorkspaceSession.fromLaunch(root, {
+          MCP_BPMN_DIAGRAMS_PATH: await buildOverride(root)
+        });
+
+        expect(session.getInfo()).toEqual({
+          launchCwd: root,
+          startupBoundary: root,
+          workspace: root,
+          source: 'launch_cwd'
+        });
+        expect(session.getStartupFailure()).toContain('MCP_BPMN_DIAGRAMS_PATH');
+      }
+    );
+
+    it('keeps a usable MCP_BPMN_DIAGRAMS_PATH free of any startup failure', async () => {
+      const override = path.join(root, 'override');
+      await fs.mkdir(override);
+
+      const session = WorkspaceSession.fromLaunch(root, {
+        MCP_BPMN_DIAGRAMS_PATH: override
+      });
+
+      expect(session.getStartupFailure()).toBeUndefined();
+      expect(session.getInfo()).toMatchObject({
+        workspace: override,
+        source: 'environment'
+      });
+    });
+
     it('keeps a usable repository config working and free of any startup failure', async () => {
       await fs.writeFile(
         path.join(root, '.mcp-bpmn.json'),
