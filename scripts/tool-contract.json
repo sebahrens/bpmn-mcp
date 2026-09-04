@@ -42,7 +42,7 @@
     "get_workspace",
     "select_workspace"
   ],
-  "contractFingerprint": "bcc6201fdae7358358e88ed72c68025f0126ddaf8e65c0232f8859084728e924",
+  "contractFingerprint": "b312b1d81f733500758d16f0895fc6709d6efe74a1ffc895bb809a188ab6274a",
   "schemaFingerprints": {
     "new_bpmn": {
       "input": "7e7d0607064fe25f15a494cadd85375c728be12777672e2d3f780a82e1961875",
@@ -114,11 +114,11 @@
     },
     "list_elements": {
       "input": "06646bece2b203c6cde974cccd3735bcd4792b061ca86876165b242e77ad277e",
-      "output": "36b7c0075aaee9aaaeba54e4fda4aa86ef4ba706120d859088fb9916df14a629"
+      "output": "5620663f8226e514c80e08261f2f0398bdd14b244aa79a742f14012ce7f3bea6"
     },
     "get_element": {
       "input": "56c709848847f945fdfa22fdc7f0aa1e3b5b7292f49a1f994cf70b908c9457dd",
-      "output": "4ed77d364a97af4c3674b07bd74699bc30fd60d58a95328b39683c0110da5025"
+      "output": "d30cecbd1b70f8b19e3d2ea16a4c71bbb77b7f1e53bfa184c77cc0f0cd900ec9"
     },
     "list_connections": {
       "input": "c3ea8f91d803dd60c313b66296f49bd5a186a3aac3a4aa9d925c18d3d1a2ea8f",

@@ -251,6 +251,45 @@ describe('MCP request validation boundary', () => {
     }
   });
 
+  it('names the expected revision-token format instead of a bare "Invalid"', async () => {
+    const cases: Array<[ToolName, Record<string, unknown>, RegExp]> = [
+      ['add_gateway', { gatewayType: 'exclusive', expectedRevision: 'nope' },
+        /expectedRevision: Document revision must be a token returned by a prior result/],
+      ['update_connection_geometry', {
+        connectionId: 'Flow_1',
+        waypoints: [{ x: 100, y: 100 }, { x: 200, y: 100 }],
+        expectedGeometryRevision: 'nope'
+      }, /expectedGeometryRevision: Geometry revision must be a token returned by a prior result/],
+      ['update_connection', {
+        connectionId: 'Flow_1',
+        label: 'Updated',
+        expectedSemanticRevision: 'nope'
+      }, /expectedSemanticRevision: Semantic revision must be a token returned by a prior result/],
+      ['apply_geometry_patch', {
+        expectedRevision: `sha256:${'a'.repeat(64)}:v1`,
+        connectionUpdates: [{
+          connectionId: 'Flow_1',
+          waypoints: [{ x: 100, y: 100 }, { x: 200, y: 100 }],
+          expectedGeometryRevision: 'nope'
+        }]
+      }, /expectedGeometryRevision: Geometry revision must be a token returned by a prior result/]
+    ];
+
+    const offenders: string[] = [];
+    for (const [name, args, expected] of cases) {
+      let message = '';
+      try {
+        parseToolRequest(name, args);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      if (!expected.test(message)) offenders.push(`${name}: ${message}`);
+      if (/: Invalid$|: Invalid;/.test(message)) offenders.push(`${name} still bare: ${message}`);
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
   it('normalizes absent arguments only for tools whose schema accepts an empty object', async () => {
     const current = await handler.handleRequest('current', undefined);
     expect(current.isError).toBeUndefined();

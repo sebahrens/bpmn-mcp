@@ -547,3 +547,85 @@ describe('imported exports from real modeling tools', () => {
     }))).toEqual([{ x: 168, y: 150 }, { x: 228, y: 150 }]);
   });
 });
+
+describe('schema-valid data object reference variants', () => {
+  let directory: string;
+
+  beforeEach(async () => {
+    directory = await fs.mkdtemp(join(tmpdir(), 'mcp-bpmn-dataobject-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  const withProcess = (body: string): string => `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  id="Definitions_DataVariants" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:process id="Process_DataVariants" isExecutable="true">${body}
+  </bpmn:process>
+</bpmn:definitions>`;
+
+  // dataObjectRef is use="optional" in the BPMN XSD: a reference with none is
+  // an opaque handle the model does not manage, and rejecting it made whole
+  // files unopenable.
+  const absentRef = withProcess(`
+    <bpmn:dataObjectReference id="DataRef_Opaque" name="Opaque" />
+    <bpmn:task id="Task_DataVariants" name="Work" />`);
+
+  // A DataObject is visible to every nested scope of the process that declares
+  // it, so a reference inside a subprocess may point at one declared outside.
+  const enclosingScopeRef = withProcess(`
+    <bpmn:dataObject id="DataObject_Shared" name="Shared" />
+    <bpmn:subProcess id="SubProcess_Scoped">
+      <bpmn:dataObjectReference id="DataRef_Scoped" name="Shared"
+        dataObjectRef="DataObject_Shared" />
+      <bpmn:task id="Task_Scoped" name="Use it" />
+    </bpmn:subProcess>`);
+
+  it('imports a data object reference with no dataObjectRef and keeps it opaque', async () => {
+    const engine = new SimpleBpmnEngine(directory);
+    const context = await engine.importXml(absentRef);
+    await engine.updateElement(context.id, 'Task_DataVariants', { name: 'Work harder' });
+    const exported = await engine.exportXml(context.id);
+    const byId = (await new BpmnModdle().fromXML(exported)).elementsById as Record<string, any>;
+
+    expect(byId.DataRef_Opaque.$type).toBe('bpmn:DataObjectReference');
+    expect(byId.DataRef_Opaque.name).toBe('Opaque');
+    expect(byId.DataRef_Opaque.dataObjectRef).toBeUndefined();
+    expect(exported).not.toContain('dataObjectRef=');
+  });
+
+  it('imports a data object reference whose data object lives in an enclosing scope',
+    async () => {
+      const engine = new SimpleBpmnEngine(directory);
+      const context = await engine.importXml(enclosingScopeRef);
+      await engine.updateElement(context.id, 'Task_Scoped', { name: 'Use it twice' });
+      const exported = await engine.exportXml(context.id);
+      const byId = (await new BpmnModdle().fromXML(exported)).elementsById as Record<string, any>;
+
+      expect(byId.DataRef_Scoped.dataObjectRef.id).toBe('DataObject_Shared');
+      // The data object stays in the scope that declared it.
+      expect(byId.Process_DataVariants.flowElements.map((item: any) => item.id))
+        .toContain('DataObject_Shared');
+      expect(byId.SubProcess_Scoped.flowElements.map((item: any) => item.id))
+        .toEqual(expect.arrayContaining(['DataRef_Scoped', 'Task_Scoped']));
+    });
+
+  it('still rejects a data object reference that reaches into a sibling scope', async () => {
+    const siblingScopeRef = withProcess(`
+      <bpmn:subProcess id="SubProcess_Owner">
+        <bpmn:dataObject id="DataObject_Private" name="Private" />
+        <bpmn:task id="Task_Owner" name="Own it" />
+      </bpmn:subProcess>
+      <bpmn:subProcess id="SubProcess_Peer">
+        <bpmn:dataObjectReference id="DataRef_Peer" name="Private"
+          dataObjectRef="DataObject_Private" />
+        <bpmn:task id="Task_Peer" name="Peek" />
+      </bpmn:subProcess>`);
+    const engine = new SimpleBpmnEngine(directory);
+
+    await expect(engine.importXml(siblingScopeRef))
+      .rejects.toThrow('crosses data object scope');
+  });
+});

@@ -31,12 +31,6 @@ export interface MermaidNode {
   id: string;
   type: NodeType;
   label: string;
-  shape?: string;
-  style?: Record<string, string>;
-  position?: {
-    row?: number;
-    column?: number;
-  };
 }
 
 export interface MermaidEdge {
@@ -45,7 +39,6 @@ export interface MermaidEdge {
   target: string;
   type: EdgeType;
   label?: string;
-  style?: Record<string, string>;
 }
 
 export interface MermaidSubgraph {
@@ -75,7 +68,6 @@ export type ParseErrorCode =
   | 'UNCLOSED_SUBGRAPH'
   | 'UNSUPPORTED_NESTED_SUBGRAPH'
   | 'UNKNOWN_SYNTAX'
-  | 'DUPLICATE_EDGE'
   | 'DUPLICATE_SUBGRAPH'
   | 'MISSING_SUBGRAPH_OWNER'
   | 'MULTIPLE_SUBGRAPH_OWNERS'

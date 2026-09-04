@@ -90,6 +90,10 @@ describe('MermaidParser event inference', () => {
   );
 });
 
+// The occurrence suffix is joined with `-`, not `_`: a `_`-joined suffix made
+// the second `A --> B` edge collide with a first `A --> B_2` edge and the
+// parser rejected the diagram (mcp-bpmn-j21.9). See
+// MermaidParser.edge-ids.test.ts for the collision cases themselves.
 describe('MermaidParser parallel edge IDs', () => {
   const parser = new MermaidParser();
 
@@ -97,27 +101,27 @@ describe('MermaidParser parallel edge IDs', () => {
     [
       'unlabeled edges',
       ['A((Start)) --> B((End))', 'A --> B'],
-      ['A_to_B', 'A_to_B_2']
+      ['A_to_B', 'A_to_B-2']
     ],
     [
       'labeled edges',
       ['A((Start)) -->|approved| B((End))', 'A -->|rejected| B'],
-      ['A_to_B', 'A_to_B_2']
+      ['A_to_B', 'A_to_B-2']
     ],
     [
       'dotted edges',
       ['A((Start)) -.-> B((End))', 'A -.-> B'],
-      ['A_to_B', 'A_to_B_2']
+      ['A_to_B', 'A_to_B-2']
     ],
     [
       'mixed edge styles',
       ['A((Start)) --> B((End))', 'A -->|approved| B', 'A -.->|retry| B'],
-      ['A_to_B', 'A_to_B_2', 'A_to_B_3']
+      ['A_to_B', 'A_to_B-2', 'A_to_B-3']
     ],
     [
       'identical duplicate edges',
       ['A((Start)) -->|same| B((End))', 'A -->|same| B'],
-      ['A_to_B', 'A_to_B_2']
+      ['A_to_B', 'A_to_B-2']
     ]
   ])('allocates unique occurrence suffixes for %s', (_name, edges, expectedIds) => {
     const source = ['flowchart TD', ...edges.map(edge => `  ${edge}`)].join('\n');
@@ -138,7 +142,7 @@ describe('MermaidParser parallel edge IDs', () => {
     const firstIds = parser.parse(source).ast?.edges.map(edge => edge.id);
     const secondIds = parser.parse(source).ast?.edges.map(edge => edge.id);
 
-    expect(firstIds).toEqual(['A_to_B', 'A_to_B_2', 'A_to_B_3']);
+    expect(firstIds).toEqual(['A_to_B', 'A_to_B-2', 'A_to_B-3']);
     expect(secondIds).toEqual(firstIds);
   });
 });

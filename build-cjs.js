@@ -12,13 +12,12 @@ async function build() {
       outfile: 'dist/server/bundle.cjs',
       external: [
         // Only external the things we really need to
-        '@modelcontextprotocol/sdk/*',
-        'jsdom'
+        '@modelcontextprotocol/sdk/*'
       ],
       loader: {
         '.ts': 'ts'
       },
-      target: 'node18',
+      target: 'node22',
       mainFields: ['main', 'module'],
       logLevel: 'info'
     });

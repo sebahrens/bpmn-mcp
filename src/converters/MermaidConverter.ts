@@ -76,8 +76,6 @@ function formatMermaidDiagnostics(parseResult: ParseResult): FormattedMermaidDia
 export interface ConversionOptions {
   autoLayout?: boolean;
   validateOutput?: boolean;
-  includeDataObjects?: boolean;
-  preview?: boolean;
 }
 
 export interface ValidationResult {

@@ -80,7 +80,7 @@ const EXPECTED_ANNOTATIONS = {
   update_element_geometry: DESTRUCTIVE_UPDATE,
   update_connection_geometry: DESTRUCTIVE_UPDATE,
   apply_geometry_patch: DESTRUCTIVE_UPDATE,
-  route_connection: DESTRUCTIVE_UPDATE,
+  route_connection: IDEMPOTENT_UPDATE,
   delete_element: DESTRUCTIVE_UPDATE,
   export: READ_ONLY,
   save_svg: DESTRUCTIVE_UPDATE,
@@ -179,6 +179,39 @@ describe('MCP tool behavior annotations', () => {
     expect(created.filename).toEqual(expect.any(String));
     expect(saveSpy).not.toHaveBeenCalled();
     expect(deleteSpy).not.toHaveBeenCalled();
+    expect(await storedFiles(directory)).toEqual(before);
+  });
+
+  it('proposes a route without mutating, and is not advertised as destructive', async () => {
+    expect(tools.find(tool => tool.name === 'route_connection')?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false
+    });
+
+    successfulContent(await handler.handleRequest('new_bpmn', { name: 'Route probes' }));
+    const start = successfulContent(await handler.handleRequest('add_event', {
+      eventType: 'start',
+      name: 'Start'
+    }));
+    const task = successfulContent(await handler.handleRequest('add_activity', {
+      activityType: 'task',
+      name: 'Work'
+    }));
+    const connected = successfulContent(await handler.handleRequest('connect', {
+      sourceId: start.elementId,
+      targetId: task.elementId
+    }));
+    const before = await storedFiles(directory);
+    const saveSpy = jest.spyOn(FileManager.prototype, 'saveBpmnFile');
+
+    const proposal = successfulContent(await handler.handleRequest('route_connection', {
+      connectionId: connected.connectionId
+    }));
+
+    expect(proposal.applied).toBe(false);
+    expect(proposal.beforeRevision).toBe(proposal.afterRevision);
+    expect(proposal.afterRevision).toBe(connected.afterRevision);
+    expect(saveSpy).not.toHaveBeenCalled();
     expect(await storedFiles(directory)).toEqual(before);
   });
 

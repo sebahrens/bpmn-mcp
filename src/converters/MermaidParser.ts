@@ -633,6 +633,14 @@ export class MermaidParser {
     }
   }
 
+  /**
+   * Parallel edges between the same pair need distinct IDs. The occurrence
+   * suffix is joined with `-` rather than `_` because node IDs match `\w+` and
+   * so can never contain `-`: `A_to_B-2` therefore cannot collide with the base
+   * ID of any other edge, including the `A --> B_2` edge whose base is
+   * `A_to_B_2`. `-` is also a legal XML NCName character, so an ID built this
+   * way stays usable as a BPMN xsd:ID (mcp-bpmn-j21.9).
+   */
   private allocateEdgeId(
     sourceId: string,
     targetId: string,
@@ -641,7 +649,7 @@ export class MermaidParser {
     const baseId = `${sourceId}_to_${targetId}`;
     const occurrence = (occurrences.get(baseId) ?? 0) + 1;
     occurrences.set(baseId, occurrence);
-    return occurrence === 1 ? baseId : `${baseId}_${occurrence}`;
+    return occurrence === 1 ? baseId : `${baseId}-${occurrence}`;
   }
 
   private parseEndpoint(text: string, start: number): ParsedEndpoint | EndpointFailure {
@@ -1010,7 +1018,6 @@ export class MermaidParser {
     errors: ParseError[],
     warnings: ParseWarning[]
   ): void {
-    const edgeIds = new Set<string>();
     const subgraphIds = new Set<string>();
     const ownerByNode = new Map<string, string>();
 
@@ -1040,15 +1047,9 @@ export class MermaidParser {
     }
 
     for (const edge of ast.edges) {
+      // Edge IDs are allocated, not authored: `allocateEdgeId` guarantees they
+      // are unique, so there is no duplicate case left to report here.
       const edgeLocation = edgeLocations.get(edge) ?? fallbackLocation;
-      if (edgeIds.has(edge.id)) {
-        errors.push(this.error(
-          'DUPLICATE_EDGE',
-          edgeLocation,
-          `Duplicate Mermaid edge ID: ${edge.id}`
-        ));
-      }
-      edgeIds.add(edge.id);
       if (edge.type === 'dotted') {
         warnings.push(this.warning(
           'UNSUPPORTED_EDGE_STYLE',

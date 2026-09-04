@@ -40,6 +40,17 @@ const EVENT_BASED_GATEWAY_TARGET_DEFINITIONS = new Set([
   'bpmn:ConditionalEventDefinition'
 ]);
 
+/**
+ * Events that only exist to wait for something. A boundary or intermediate
+ * catch event with no trigger can never fire, so the definition is required
+ * rather than merely restricted. Throw events, by contrast, are reached by
+ * control flow and a bare intermediate throw event is a legal no-op.
+ */
+const CATCH_EVENTS_REQUIRING_DEFINITION = new Set([
+  'bpmn:BoundaryEvent',
+  'bpmn:IntermediateCatchEvent'
+]);
+
 const EVENT_DEFINITION_RULES: Record<string, Set<string>> = {
   'bpmn:StartEvent': new Set([
     'bpmn:MessageEventDefinition',
@@ -631,6 +642,15 @@ export class BpmnValidator {
             elementId: event.id
           });
         }
+        if (CATCH_EVENTS_REQUIRING_DEFINITION.has(event.$type) && definitions.length === 0
+          && (event.eventDefinitionRef || []).length === 0) {
+          this.addIssue(issues, {
+            code: 'BPMN_MISSING_EVENT_DEFINITION',
+            severity: 'error',
+            message: `${event.$type} must declare an event definition or reference one`,
+            elementId: event.id
+          });
+        }
         if (event.$type === 'bpmn:StartEvent' && !this.hasValidStartEventContext(event, container)) {
           this.addIssue(issues, {
             code: 'BPMN_INVALID_EVENT_DEFINITION',
@@ -801,7 +821,12 @@ export class BpmnValidator {
       const outgoing = new Set(container.sequenceFlows.map(flow => flow.sourceRef?.id));
       const starts = container.flowNodes.filter(node => node.$type === 'bpmn:StartEvent');
       const ends = container.flowNodes.filter(node => node.$type === 'bpmn:EndEvent');
-      if (starts.length === 0) {
+      // An ad-hoc subprocess holds activities its performer may run in any
+      // order, or not at all; the schema gives it no entry or exit point, so
+      // asking it for a start and an end event asks for something the construct
+      // does not have.
+      const boundedScope = !this.isInstance(container.element, 'bpmn:AdHocSubProcess');
+      if (boundedScope && starts.length === 0) {
         this.addIssue(issues, {
           code: 'BPMN_PROFILE_MISSING_START_EVENT',
           severity: 'warning',
@@ -809,7 +834,7 @@ export class BpmnValidator {
           elementId: container.element.id
         });
       }
-      if (ends.length === 0) {
+      if (boundedScope && ends.length === 0) {
         this.addIssue(issues, {
           code: 'BPMN_PROFILE_MISSING_END_EVENT',
           severity: 'warning',
@@ -818,6 +843,11 @@ export class BpmnValidator {
         });
       }
       for (const node of container.flowNodes) {
+        // An event subprocess is started by its own event-defined start event
+        // and never by the enclosing scope's control flow: the semantic rule
+        // BPMN_EVENT_SUBPROCESS_HAS_SEQUENCE_FLOW rejects exactly the wiring
+        // these two warnings used to ask for.
+        if (node.triggeredByEvent === true && this.isInstance(node, 'bpmn:SubProcess')) continue;
         if (!incoming.has(node.id)
           && !['bpmn:StartEvent', 'bpmn:BoundaryEvent'].includes(node.$type)) {
           this.addIssue(issues, {

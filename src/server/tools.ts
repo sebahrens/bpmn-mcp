@@ -104,9 +104,15 @@ const opaqueExpressionBody = () => z.string()
   .max(TOOL_INPUT_LIMITS.expression.maxLength)
   .refine(value => value.trim().length > 0, 'Expression body must not be blank');
 const extensionProfile = z.enum(['portable', 'camunda7']);
+const DOCUMENT_REVISION_FORMAT = 'Document revision must be a token returned by a prior '
+  + 'result, of the form "sha256:<64 lowercase hex characters>:v<number>"';
+const GEOMETRY_REVISION_FORMAT = 'Geometry revision must be a token returned by a prior '
+  + 'result, of the form "sha256:<64 lowercase hex characters>"';
+const SEMANTIC_REVISION_FORMAT = 'Semantic revision must be a token returned by a prior '
+  + 'result, of the form "sha256:<64 lowercase hex characters>"';
 const revision = z.string()
   .max(96)
-  .regex(/^sha256:[a-f0-9]{64}:v\d+$/)
+  .regex(/^sha256:[a-f0-9]{64}:v\d+$/, DOCUMENT_REVISION_FORMAT)
   .describe('Opaque document revision token for optimistic concurrency');
 const expectedRevisionField = {
   expectedRevision: revision.optional().describe(
@@ -202,7 +208,8 @@ const geometryPatchConnectionUpdate = z.object({
   expectedWaypoints: z.array(position).min(2).max(MAX_INPUT_ARRAY_ITEMS).optional().describe(
     'Optional additional compare-and-set guard for current BPMNEdge waypoints'
   ),
-  expectedGeometryRevision: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional().describe(
+  expectedGeometryRevision: z.string()
+    .regex(/^sha256:[a-f0-9]{64}$/, GEOMETRY_REVISION_FORMAT).optional().describe(
     'Compare-and-set guard for the complete current BPMNEdge geometry'
   ),
   endpointPolicy: z.enum(['exact', 'snap-to-boundary']).default('exact').describe(
@@ -325,12 +332,22 @@ const outputBpmnId = z.string()
   .refine(isBpmnId, 'Invalid BPMN xsd:ID; expected an XML NCName')
   .describe('Stable generated or existing BPMN ID');
 const outputCount = z.number().int().min(0);
+/**
+ * Opening or creating a diagram replaces whatever was current. The replaced
+ * diagram is reported here, and named in the result text, so an agent that had
+ * unsaved work in it learns immediately instead of writing into the new one.
+ */
+const outputReplacedDiagram = z.object({
+  name: z.string(),
+  filename: outputFilename.optional()
+}).strict();
 const outputDiagram = z.object({
   processId: outputBpmnId,
   name: z.string(),
   type: z.enum(['process', 'collaboration']),
   extensionProfile,
   filename: outputFilename,
+  replacedDiagram: outputReplacedDiagram.optional(),
   revision
 }).strict();
 const outputMutationRevisions = {
@@ -357,10 +374,10 @@ const outputGeometryBounds = outputPosition.extend({
   height: z.number().finite()
 }).strict();
 const outputGeometryRevision = z.string()
-  .regex(/^sha256:[a-f0-9]{64}$/)
+  .regex(/^sha256:[a-f0-9]{64}$/, GEOMETRY_REVISION_FORMAT)
   .describe('Opaque revision of this connection BPMNEdge geometry');
 const outputSemanticRevision = z.string()
-  .regex(/^sha256:[a-f0-9]{64}$/)
+  .regex(/^sha256:[a-f0-9]{64}$/, SEMANTIC_REVISION_FORMAT)
   .describe('Opaque revision of this connection semantic state');
 const outputGeometryLabel = z.object({
   id: z.string().min(1),
@@ -434,7 +451,10 @@ const outputQueryBase = z.object({
   id: outputBpmnId,
   type: z.string().min(1),
   name: z.string().optional(),
-  kind: z.string().optional(),
+  // Required on every row: participants, lanes, flow nodes, artifacts and
+  // associations are all listed together, and only the kind tells them apart
+  // without a lookup table of BPMN type strings.
+  kind: z.enum(['flowNode', 'artifact', 'participant', 'lane', 'association']),
   ownerId: outputBpmnId.optional(),
   scopeId: outputBpmnId.optional(),
   processRef: outputBpmnId.optional(),
@@ -860,7 +880,7 @@ const outputSchemas = {
 export const toolDefinitions = {
   new_bpmn: {
     annotations: ADDITIVE,
-    description: 'Create a new BPMN diagram and set it as current context',
+    description: 'Create a new BPMN diagram and set it as current context, replacing and closing whatever diagram was current (unsaved changes in it are discarded)',
     outputSchema: outputSchemas.new_bpmn,
     schema: z.object({
       name: name().describe('Name of the diagram'),
@@ -877,7 +897,7 @@ export const toolDefinitions = {
   },
   new_from_mermaid: {
     annotations: ADDITIVE,
-    description: 'Create a new BPMN diagram from Mermaid code and set it as current context',
+    description: 'Create a new BPMN diagram from Mermaid code and set it as current context, replacing and closing whatever diagram was current (unsaved changes in it are discarded)',
     outputSchema: outputSchemas.new_from_mermaid,
     schema: z.object({
       name: name().describe('Name for the new diagram'),
@@ -893,7 +913,7 @@ export const toolDefinitions = {
   },
   open_bpmn: {
     annotations: IDEMPOTENT_UPDATE,
-    description: 'Open an existing BPMN file and set it as current context',
+    description: 'Open an existing BPMN file and set it as current context, replacing and closing whatever diagram was current (unsaved changes in it are discarded)',
     outputSchema: outputSchemas.open_bpmn,
     schema: z.object({
       filename: filename().describe('Filename of the BPMN diagram to open')
@@ -901,7 +921,7 @@ export const toolDefinitions = {
   },
   open_mermaid_file: {
     annotations: ADDITIVE,
-    description: 'Open a Mermaid file, convert it to BPMN, and set as current context',
+    description: 'Open a Mermaid file, convert it to BPMN, and set as current context, replacing and closing whatever diagram was current (unsaved changes in it are discarded)',
     outputSchema: outputSchemas.open_mermaid_file,
     schema: z.object({
       filename: filename().describe('Filename of the Mermaid file to open and convert'),
@@ -1446,8 +1466,12 @@ export const toolDefinitions = {
     })
   },
   route_connection: {
-    annotations: DESTRUCTIVE_UPDATE,
-    description: 'Propose a ranked collision-free orthogonal route for one rendered connection without mutation by default, or apply the selected route atomically. Returns apply_geometry_patch-compatible geometry, score details, diagnostics, and revisions while preserving every unrelated BPMN DI object.',
+    // Not destructive: the default call is a proposal that touches nothing, and
+    // hosts that gate destructive tools were prompting users for a read-only
+    // read. apply:true is the only mutating mode, and it replaces one edge's
+    // waypoints with the same route each time, so the call stays idempotent.
+    annotations: IDEMPOTENT_UPDATE,
+    description: 'Propose a ranked collision-free orthogonal route for one rendered connection without mutation by default, or apply the selected route atomically with apply:true, which is the only mode that changes the diagram. Returns apply_geometry_patch-compatible geometry, score details, diagnostics, and revisions while preserving every unrelated BPMN DI object.',
     outputSchema: outputSchemas.route_connection,
     schema: z.object({
       connectionId: bpmnId().describe('Semantic ID owning the BPMNEdge to reroute'),
@@ -1612,7 +1636,7 @@ export const toolDefinitions = {
   },
   delete_diagram_file: {
     annotations: DESTRUCTIVE_UPDATE,
-    description: 'Delete a saved BPMN diagram file',
+    description: 'Delete a saved BPMN diagram file. Deleting the file of the active diagram also closes it, leaving no current diagram',
     outputSchema: outputSchemas.delete_diagram_file,
     schema: z.object({
       filename: filename().describe('Filename of the diagram to delete')

@@ -1896,6 +1896,42 @@ describe('BpmnRequestHandler Integration Tests', () => {
       }
     });
 
+    it('labels every listed row with its kind, not only associations', async () => {
+      diagramContext.clear();
+      await handler.handleRequest('new_bpmn', { name: 'Kinds', type: 'collaboration' });
+      const pool = (await handler.handleRequest('add_pool', { name: 'Pool' }))
+        .structuredContent as { elementId: string; processId: string };
+      const task = (await handler.handleRequest('add_activity', {
+        activityType: 'task',
+        name: 'Work',
+        ownerId: pool.processId
+      })).structuredContent as { elementId: string };
+      await handler.handleRequest('add_lane', {
+        poolId: pool.elementId,
+        name: 'Operators',
+        flowNodeIds: [task.elementId]
+      });
+      await handler.handleRequest('add_text_annotation', {
+        text: 'Context note',
+        associatedElementId: task.elementId
+      });
+
+      const listing = JSON.parse(
+        (await handler.handleRequest('list_elements', {})).content[0].text as string
+      ) as { elements: Array<{ id: string; kind?: string }> };
+
+      const missingKind = listing.elements
+        .filter(element => element.kind === undefined)
+        .map(element => element.id);
+      expect(missingKind).toEqual([]);
+      expect(new Set(listing.elements.map(element => element.kind)))
+        .toEqual(new Set(['participant', 'lane', 'flowNode', 'artifact', 'association']));
+      const detail = (await handler.handleRequest('get_element', {
+        elementId: task.elementId
+      })).structuredContent as { kind?: string };
+      expect(detail.kind).toBe('flowNode');
+    });
+
     it('should return element identity, type, and name', async () => {
       const result = await handler.handleRequest('get_element', { elementId: 'Task_1' });
       const details = JSON.parse(result.content[0].text as string);
@@ -2972,10 +3008,15 @@ describe('BpmnRequestHandler Integration Tests', () => {
       const result = await handler.handleRequest('get_diagrams_path', {});
 
       expect(result.isError).toBeUndefined();
+      // The old text told the agent to set MCP_BPMN_DIAGRAMS_PATH, which it
+      // cannot do from inside a session; the in-session move is select_workspace.
       expect(result.content[0].text).toBe(
         `BPMN diagrams are saved to: ${sandbox!.directory}\n\n`
-        + 'You can set a custom path using the environment variable: MCP_BPMN_DIAGRAMS_PATH'
+        + 'Call get_workspace for the launch cwd and the immutable startup boundary, and '
+        + 'select_workspace to switch to another existing directory below that boundary '
+        + 'for the rest of this session.'
       );
+      expect(result.content[0].text).not.toContain('MCP_BPMN_DIAGRAMS_PATH');
     });
   });
   });

@@ -47,34 +47,6 @@ describe('IdGenerator', () => {
     });
   });
 
-  describe('generateElementId', () => {
-    it('should generate correct prefix for BPMN elements', () => {
-      const tests = [
-        { type: 'bpmn:Process', expected: 'Process_1' },
-        { type: 'bpmn:StartEvent', expected: 'StartEvent_1' },
-        { type: 'bpmn:EndEvent', expected: 'EndEvent_1' },
-        { type: 'bpmn:Task', expected: 'Task_1' },
-        { type: 'bpmn:UserTask', expected: 'UserTask_1' },
-        { type: 'bpmn:ServiceTask', expected: 'ServiceTask_1' },
-        { type: 'bpmn:ExclusiveGateway', expected: 'Gateway_1' },
-        { type: 'bpmn:ParallelGateway', expected: 'Gateway_2' },
-        { type: 'bpmn:SequenceFlow', expected: 'Flow_1' },
-        { type: 'bpmn:Participant', expected: 'Participant_1' },
-        { type: 'bpmn:Lane', expected: 'Lane_1' },
-      ];
-
-      tests.forEach(test => {
-        const id = IdGenerator.generateElementId(test.type);
-        expect(id).toBe(test.expected);
-      });
-    });
-
-    it('should use Element prefix for unknown types', () => {
-      const id = IdGenerator.generateElementId('bpmn:Unknown');
-      expect(id).toBe('Element_1');
-    });
-  });
-
   describe('reset', () => {
     it('should reset all counters', () => {
       IdGenerator.generate('Task');

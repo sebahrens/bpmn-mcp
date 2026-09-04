@@ -944,6 +944,10 @@ export class BpmnRequestHandler {
         id: e.id,
         type: e.type,
         name: e.name,
+        // Every row carries its kind, not just associations: an agent paging a
+        // mixed listing has to tell participants, lanes, flow nodes and
+        // artifacts apart without a lookup table of BPMN type strings.
+        kind: e.kind,
         ownerId: e.ownerId,
         scopeId: e.scopeId,
         processRef: e.kind === 'participant' ? e.processRef : undefined,
@@ -1025,6 +1029,7 @@ export class BpmnRequestHandler {
       id: element.id,
       type: element.type,
       name: element.name,
+      kind: element.kind,
       ownerId: element.ownerId,
       scopeId: element.scopeId,
       processRef: element.kind === 'participant' ? element.processRef : undefined,
@@ -1621,7 +1626,10 @@ export class BpmnRequestHandler {
     const path = this.engine.getDiagramsPath();
     
     return textToolResult('get_diagrams_path', { path },
-      `BPMN diagrams are saved to: ${path}\n\nYou can set a custom path using the environment variable: MCP_BPMN_DIAGRAMS_PATH`);
+      `BPMN diagrams are saved to: ${path}\n\n`
+      + 'Call get_workspace for the launch cwd and the immutable startup boundary, and '
+      + 'select_workspace to switch to another existing directory below that boundary '
+      + 'for the rest of this session.');
   }
 
   private async getWorkspace(): Promise<CallToolResult> {

@@ -2146,6 +2146,9 @@ export class BpmnDocumentSerializer {
     if (element.type !== 'bpmn:DataObjectReference') return;
 
     const dataObjectId = element.properties.dataObjectRef;
+    // An imported reference may legally carry no dataObjectRef at all; it
+    // serializes back without the attribute rather than failing the export.
+    if (dataObjectId === undefined) return;
     if (typeof dataObjectId !== 'string' || dataObjectId.length === 0) {
       throw new Error(`Data object reference ${element.id} has an invalid dataObjectRef`);
     }
@@ -2491,13 +2494,17 @@ export class BpmnDocumentSerializer {
     for (const element of document.elements.values()) {
       if (element.type !== 'bpmn:DataObjectReference') continue;
       const dataObjectRef = element.properties.dataObjectRef;
+      // dataObjectRef is use="optional" in the XSD. A reference without one
+      // names no state this model manages, so it is carried through as an
+      // opaque shape rather than rejected.
+      if (dataObjectRef === undefined) continue;
       const dataObject = typeof dataObjectRef === 'string'
         ? document.dataObjects.get(dataObjectRef)
         : undefined;
       if (!dataObject) {
         throw new Error(`Data object reference ${element.id} has an invalid dataObjectRef`);
       }
-      if (dataObject.ownerId !== element.ownerId || dataObject.scopeId !== element.scopeId) {
+      if (!this.isVisibleDataObjectScope(element, dataObject, document)) {
         throw new Error(`Data object reference ${element.id} crosses data object scope`);
       }
       if (dataObject.itemSubjectRef !== undefined && dataObject.itemSubjectRef !== null
@@ -2507,6 +2514,29 @@ export class BpmnDocumentSerializer {
         );
       }
     }
+  }
+
+  /**
+   * A data object is in scope for its own container and for every container
+   * nested inside it, so a reference in a subprocess may name a data object
+   * declared by an enclosing subprocess or by the process itself. Only a
+   * reference reaching sideways into a scope that does not enclose it, or into
+   * another process, crosses a real boundary.
+   */
+  private isVisibleDataObjectScope(
+    element: BpmnDocumentElement,
+    dataObject: BpmnDataObject,
+    document: BpmnDocument
+  ): boolean {
+    if (dataObject.ownerId !== element.ownerId) return false;
+    const visited = new Set<string>();
+    let scopeId: string | undefined = element.scopeId;
+    while (typeof scopeId === 'string' && !visited.has(scopeId)) {
+      if (dataObject.scopeId === scopeId) return true;
+      visited.add(scopeId);
+      scopeId = document.elements.get(scopeId)?.scopeId;
+    }
+    return false;
   }
 
   private assertImportedConnections(document: BpmnDocument): void {

@@ -327,6 +327,50 @@ describe('BpmnValidator', () => {
         </bpmn:process>`)
     },
     {
+      code: 'BPMN_MISSING_EVENT_DEFINITION',
+      elementId: 'Boundary_NoDefinition',
+      violation: definitions(`
+        <bpmn:process id="Process_BoundaryDefinition">
+          <bpmn:task id="Task_BoundaryHost" />
+          <bpmn:boundaryEvent id="Boundary_NoDefinition" attachedToRef="Task_BoundaryHost" />
+        </bpmn:process>`),
+      // A boundary event only interrupts or observes its activity when
+      // something triggers it; the same event with a trigger is legal.
+      twin: definitions(`
+        <bpmn:process id="Process_BoundaryDefinition">
+          <bpmn:task id="Task_BoundaryHost" />
+          <bpmn:boundaryEvent id="Boundary_Triggered" attachedToRef="Task_BoundaryHost">
+            <bpmn:timerEventDefinition id="Timer_BoundaryTriggered" />
+          </bpmn:boundaryEvent>
+        </bpmn:process>`)
+    },
+    {
+      code: 'BPMN_MISSING_EVENT_DEFINITION',
+      elementId: 'Catch_NoDefinition',
+      violation: definitions(`
+        <bpmn:process id="Process_CatchDefinition">
+          <bpmn:task id="Task_BeforeCatch" />
+          <bpmn:intermediateCatchEvent id="Catch_NoDefinition" />
+          <bpmn:sequenceFlow id="Flow_ToCatch"
+            sourceRef="Task_BeforeCatch" targetRef="Catch_NoDefinition" />
+        </bpmn:process>`),
+      // An intermediate catch event waits for a trigger, so it needs one; an
+      // intermediate throw event is reached by control flow and stays legal
+      // with no definition at all.
+      twin: definitions(`
+        <bpmn:process id="Process_CatchDefinition">
+          <bpmn:task id="Task_BeforeCatch" />
+          <bpmn:intermediateCatchEvent id="Catch_Message">
+            <bpmn:messageEventDefinition id="Message_Catch" />
+          </bpmn:intermediateCatchEvent>
+          <bpmn:intermediateThrowEvent id="Throw_Bare" />
+          <bpmn:sequenceFlow id="Flow_ToCatch"
+            sourceRef="Task_BeforeCatch" targetRef="Catch_Message" />
+          <bpmn:sequenceFlow id="Flow_ToThrow"
+            sourceRef="Catch_Message" targetRef="Throw_Bare" />
+        </bpmn:process>`)
+    },
+    {
       code: 'BPMN_DUPLICATE_LANE_ASSIGNMENT',
       elementId: 'Lane_Second',
       violation: definitions(`
@@ -369,6 +413,47 @@ describe('BpmnValidator', () => {
       expect(clean.valid).toBe(true);
     }
   );
+
+  describe('BPMN_MISSING_EVENT_DEFINITION', () => {
+    // The schema offers two ways to give a catch event its trigger: an inline
+    // eventDefinition, or eventDefinitionRef pointing at a root-level one that
+    // several events share. Reading only the inline form would report every
+    // document using the shared form as broken.
+    it('accepts a catch event whose trigger is a referenced root-level definition', async () => {
+      const shared = definitions(`
+        <bpmn:signalEventDefinition id="Signal_Shared" />
+        <bpmn:process id="Process_SharedDefinition" isExecutable="true">
+          <bpmn:startEvent id="Start_Shared" />
+          <bpmn:intermediateCatchEvent id="Catch_Shared">
+            <bpmn:eventDefinitionRef>Signal_Shared</bpmn:eventDefinitionRef>
+          </bpmn:intermediateCatchEvent>
+          <bpmn:endEvent id="End_Shared" />
+          <bpmn:sequenceFlow id="Flow_Shared_1" sourceRef="Start_Shared" targetRef="Catch_Shared" />
+          <bpmn:sequenceFlow id="Flow_Shared_2" sourceRef="Catch_Shared" targetRef="End_Shared" />
+        </bpmn:process>`);
+
+      const result = await validator.validate(shared, 'full');
+
+      expect(issueCodes(result)).not.toContain('BPMN_MISSING_EVENT_DEFINITION');
+      expect(result.errors).toEqual([]);
+    });
+
+    it('leaves start, end and intermediate throw events without a definition alone', async () => {
+      const plainEvents = definitions(`
+        <bpmn:process id="Process_PlainEvents" isExecutable="true">
+          <bpmn:startEvent id="Start_Plain" />
+          <bpmn:intermediateThrowEvent id="Throw_Plain" />
+          <bpmn:endEvent id="End_Plain" />
+          <bpmn:sequenceFlow id="Flow_Plain_1" sourceRef="Start_Plain" targetRef="Throw_Plain" />
+          <bpmn:sequenceFlow id="Flow_Plain_2" sourceRef="Throw_Plain" targetRef="End_Plain" />
+        </bpmn:process>`);
+
+      const result = await validator.validate(plainEvents, 'full');
+
+      expect(issueCodes(result)).not.toContain('BPMN_MISSING_EVENT_DEFINITION');
+      expect(result.errors).toEqual([]);
+    });
+  });
 
   describe('BPMN_INVALID_DEFINITIONS', () => {
     // bpmn-moddle 9 always parses a document as bpmn:Definitions and throws
@@ -637,6 +722,114 @@ describe('BpmnValidator', () => {
       const result = await validator.validate(xml, level);
       expect(result.errors).toEqual([]);
     }
+  });
+
+  describe('executable profile guidance', () => {
+    // An event subprocess is triggered by its own start event, never by a
+    // sequence flow from the enclosing scope — the semantic rule
+    // BPMN_EVENT_SUBPROCESS_HAS_SEQUENCE_FLOW rejects exactly the wiring these
+    // warnings used to ask for. An ad-hoc subprocess coordinates unordered
+    // activities and needs neither a start nor an end event.
+    const eventSubprocess = definitions(`
+      <bpmn:process id="Process_EventSubProfile" isExecutable="true">
+        <bpmn:startEvent id="Start_Profile" />
+        <bpmn:task id="Task_Profile" />
+        <bpmn:endEvent id="End_Profile" />
+        <bpmn:sequenceFlow id="Flow_P1" sourceRef="Start_Profile" targetRef="Task_Profile" />
+        <bpmn:sequenceFlow id="Flow_P2" sourceRef="Task_Profile" targetRef="End_Profile" />
+        <bpmn:subProcess id="SubProcess_EventProfile" triggeredByEvent="true">
+          <bpmn:startEvent id="Start_EventProfile">
+            <bpmn:errorEventDefinition id="Error_EventProfile" />
+          </bpmn:startEvent>
+          <bpmn:endEvent id="End_EventProfile" />
+          <bpmn:sequenceFlow id="Flow_EventProfile"
+            sourceRef="Start_EventProfile" targetRef="End_EventProfile" />
+        </bpmn:subProcess>
+      </bpmn:process>`);
+
+    const adHocSubprocess = definitions(`
+      <bpmn:process id="Process_AdHocProfile" isExecutable="true">
+        <bpmn:startEvent id="Start_AdHocProfile" />
+        <bpmn:adHocSubProcess id="SubProcess_AdHocProfile">
+          <bpmn:task id="Task_AdHocA" />
+          <bpmn:task id="Task_AdHocB" />
+        </bpmn:adHocSubProcess>
+        <bpmn:endEvent id="End_AdHocProfile" />
+        <bpmn:sequenceFlow id="Flow_AdHoc1"
+          sourceRef="Start_AdHocProfile" targetRef="SubProcess_AdHocProfile" />
+        <bpmn:sequenceFlow id="Flow_AdHoc2"
+          sourceRef="SubProcess_AdHocProfile" targetRef="End_AdHocProfile" />
+      </bpmn:process>`);
+
+    it('does not ask an event subprocess for incoming or outgoing sequence flows', async () => {
+      const result = await validator.validate(eventSubprocess, 'full');
+
+      expect(result.issues.filter(issue => issue.elementId === 'SubProcess_EventProfile'))
+        .toEqual([]);
+      expect(result.errors).toEqual([]);
+    });
+
+    it('does not ask an ad-hoc subprocess for a start or end event', async () => {
+      const result = await validator.validate(adHocSubprocess, 'full');
+
+      expect(result.issues.filter(issue => issue.elementId === 'SubProcess_AdHocProfile'))
+        .toEqual([]);
+      expect(result.errors).toEqual([]);
+    });
+
+    it('still asks an ordinary disconnected subprocess for incoming and outgoing flows',
+      async () => {
+        const plain = definitions(`
+          <bpmn:process id="Process_PlainProfile" isExecutable="true">
+            <bpmn:startEvent id="Start_PlainProfile" />
+            <bpmn:endEvent id="End_PlainProfile" />
+            <bpmn:sequenceFlow id="Flow_PlainProfile"
+              sourceRef="Start_PlainProfile" targetRef="End_PlainProfile" />
+            <bpmn:subProcess id="SubProcess_PlainProfile">
+              <bpmn:startEvent id="Start_InnerPlain" />
+              <bpmn:endEvent id="End_InnerPlain" />
+              <bpmn:sequenceFlow id="Flow_InnerPlain"
+                sourceRef="Start_InnerPlain" targetRef="End_InnerPlain" />
+            </bpmn:subProcess>
+          </bpmn:process>`);
+
+        const result = await validator.validate(plain, 'full');
+        const flagged = result.issues
+          .filter(issue => issue.elementId === 'SubProcess_PlainProfile')
+          .map(issue => issue.code)
+          .sort();
+
+        expect(flagged).toEqual([
+          'BPMN_PROFILE_MISSING_INCOMING_FLOW',
+          'BPMN_PROFILE_MISSING_OUTGOING_FLOW'
+        ]);
+      });
+
+    it('still asks an ordinary subprocess scope for a start and an end event', async () => {
+      const plain = definitions(`
+        <bpmn:process id="Process_PlainScope" isExecutable="true">
+          <bpmn:startEvent id="Start_PlainScope" />
+          <bpmn:subProcess id="SubProcess_PlainScope">
+            <bpmn:task id="Task_InnerScope" />
+          </bpmn:subProcess>
+          <bpmn:endEvent id="End_PlainScope" />
+          <bpmn:sequenceFlow id="Flow_Scope1"
+            sourceRef="Start_PlainScope" targetRef="SubProcess_PlainScope" />
+          <bpmn:sequenceFlow id="Flow_Scope2"
+            sourceRef="SubProcess_PlainScope" targetRef="End_PlainScope" />
+        </bpmn:process>`);
+
+      const result = await validator.validate(plain, 'full');
+      const flagged = result.issues
+        .filter(issue => issue.elementId === 'SubProcess_PlainScope')
+        .map(issue => issue.code)
+        .sort();
+
+      expect(flagged).toEqual([
+        'BPMN_PROFILE_MISSING_END_EVENT',
+        'BPMN_PROFILE_MISSING_START_EVENT'
+      ]);
+    });
   });
 
   describe('subprocess scope resolution', () => {

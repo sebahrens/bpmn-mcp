@@ -26,33 +26,4 @@ export class IdGenerator {
   static reset(): void {
     this.counters.clear();
   }
-
-  /**
-   * Generate ID for specific BPMN element types
-   */
-  static generateElementId(type: string): string {
-    const typeMap: Record<string, string> = {
-      'bpmn:Process': 'Process',
-      'bpmn:StartEvent': 'StartEvent',
-      'bpmn:EndEvent': 'EndEvent',
-      'bpmn:Task': 'Task',
-      'bpmn:UserTask': 'UserTask',
-      'bpmn:ServiceTask': 'ServiceTask',
-      'bpmn:ExclusiveGateway': 'Gateway',
-      'bpmn:ParallelGateway': 'Gateway',
-      'bpmn:InclusiveGateway': 'Gateway',
-      'bpmn:EventBasedGateway': 'Gateway',
-      'bpmn:SequenceFlow': 'Flow',
-      'bpmn:MessageFlow': 'MessageFlow',
-      'bpmn:Participant': 'Participant',
-      'bpmn:Lane': 'Lane',
-      'bpmn:SubProcess': 'SubProcess',
-      'bpmn:BoundaryEvent': 'BoundaryEvent',
-      'bpmn:IntermediateCatchEvent': 'IntermediateEvent',
-      'bpmn:IntermediateThrowEvent': 'IntermediateEvent'
-    };
-
-    const prefix = typeMap[type] || 'Element';
-    return this.generate(prefix);
-  }
 }
