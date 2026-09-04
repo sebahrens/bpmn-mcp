@@ -9,7 +9,7 @@ release. It does not require authenticated Codex or Claude accounts.
    checks into WSL2, record its SHA-256, and export its absolute Linux path:
 
    ```sh
-   export MCP_BPMN_PACKAGE_TARBALL=/tmp/mcp-bpmn-server-0.2.0.tgz
+   export MCP_BPMN_PACKAGE_TARBALL=/tmp/bpmn-mcp-0.2.0.tgz
    export MCP_BPMN_PACKAGE_SHA256='<SHA-256 copied from the macOS gate evidence>'
    test -f "$MCP_BPMN_PACKAGE_TARBALL"
    test "$(sha256sum "$MCP_BPMN_PACKAGE_TARBALL" | awk '{print $1}')" = \

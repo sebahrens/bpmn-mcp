@@ -3,7 +3,7 @@
 set -eu
 
 PROGRAM_NAME=mcp-bpmn
-PACKAGE_NAME=mcp-bpmn-server
+PACKAGE_NAME=bpmn-mcp
 SKILL_NAME=bpmn-modeler
 MINIMUM_NODE_VERSION=22.12.0
 OWNERSHIP_MARKER=mcp-bpmn-installer
@@ -51,7 +51,7 @@ done
 
 APP_DIR=$INSTALL_ROOT/app
 STATE_FILE=$INSTALL_ROOT/.mcp-bpmn-installer-owned
-SERVER_BIN=$APP_DIR/node_modules/.bin/mcp-bpmn-server
+SERVER_BIN=$APP_DIR/node_modules/.bin/bpmn-mcp
 DIAGRAMS_EXPLICIT=0
 LEGACY_DEFAULT_DIAGRAMS=
 if [ "${MCP_BPMN_DIAGRAMS_PATH+x}" = x ]; then
@@ -891,8 +891,8 @@ build_and_install_artifact() {
     npm install --omit=dev --no-audit --no-fund --prefix "$TEMP_DIR/app" \
       "$tarball_path" \
     || fail "npm could not install the packed artifact"
-  [ -x "$TEMP_DIR/app/node_modules/.bin/mcp-bpmn-server" ] \
-    || fail "the installed artifact does not provide an executable mcp-bpmn-server"
+  [ -x "$TEMP_DIR/app/node_modules/.bin/bpmn-mcp" ] \
+    || fail "the installed artifact does not provide an executable bpmn-mcp"
 
   PACKAGE_VERSION=$(node -e '
     const metadata = require(process.argv[1]);

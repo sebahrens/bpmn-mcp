@@ -496,9 +496,9 @@ for (const manifestPath of [
 }
 
 const packagedMcpServer = mcpMetadata.mcpServers?.['mcp-bpmn'];
-if (packagedMcpServer?.command !== 'mcp-bpmn-server'
+if (packagedMcpServer?.command !== 'bpmn-mcp'
   || JSON.stringify(packagedMcpServer.args) !== '[]') {
-  throw new Error('mcp.json must launch the stable installed mcp-bpmn-server executable');
+  throw new Error('mcp.json must launch the stable installed bpmn-mcp executable');
 }
 
 const claudeMcpServer = claudePluginMetadata.mcpServers?.['mcp-bpmn'];
@@ -900,7 +900,7 @@ try {
     installRoot,
     'node_modules',
     '.bin',
-    'mcp-bpmn-server'
+    'bpmn-mcp'
   );
   const installedBinTarget = realpathSync(installedBin);
   if (!installedBinTarget.startsWith(`${realpathSync(installedPackageRoot)}/`)) {

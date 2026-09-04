@@ -104,9 +104,9 @@ case "${1:-}" in
       fi
       shift
     done
-    : > "$destination/mcp-bpmn-server-$package_version.tgz"
-    printf '> mcp-bpmn-server@%s prepack\n' "$package_version"
-    printf '[{"filename":"mcp-bpmn-server-%s.tgz"}]\n' "$package_version"
+    : > "$destination/bpmn-mcp-$package_version.tgz"
+    printf '> bpmn-mcp@%s prepack\n' "$package_version"
+    printf '[{"filename":"bpmn-mcp-%s.tgz"}]\n' "$package_version"
     ;;
   install)
     [ "${FAKE_FAIL_NPM_INSTALL:-0}" != 1 ] || exit 42
@@ -127,11 +127,11 @@ case "${1:-}" in
       fi
       shift
     done
-    package_root=$prefix/node_modules/mcp-bpmn-server
+    package_root=$prefix/node_modules/bpmn-mcp
     mkdir -p "$prefix/node_modules/.bin" "$package_root/skills/bpmn-modeler/references"
-    printf '#!/bin/sh\nexit 0\n' > "$prefix/node_modules/.bin/mcp-bpmn-server"
-    chmod +x "$prefix/node_modules/.bin/mcp-bpmn-server"
-    printf '{"name":"mcp-bpmn-server","version":"%s"}\n' "$package_version" > "$package_root/package.json"
+    printf '#!/bin/sh\nexit 0\n' > "$prefix/node_modules/.bin/bpmn-mcp"
+    chmod +x "$prefix/node_modules/.bin/bpmn-mcp"
+    printf '{"name":"bpmn-mcp","version":"%s"}\n' "$package_version" > "$package_root/package.json"
     printf '%s\n' '---' 'name: bpmn-modeler' 'description: test skill' '---' > "$package_root/skills/bpmn-modeler/SKILL.md"
     printf 'test reference for %s\n' "$package_version" > "$package_root/skills/bpmn-modeler/references/workflows.md"
     ;;
@@ -357,7 +357,7 @@ set -eu
 if [ "${FAKE_FAIL_SKILL_COPY:-0}" = 1 ]; then
   for argument in "$@"; do
     case "$argument" in
-      */node_modules/mcp-bpmn-server/skills/bpmn-modeler/.) exit 42 ;;
+      */node_modules/bpmn-mcp/skills/bpmn-modeler/.) exit 42 ;;
     esac
   done
 fi
@@ -457,9 +457,9 @@ assert_equals "$(sed -n '2p' "$CODEX_STATE")" ''
   if (registration.env !== undefined) process.exit(1);
 ' "$CLAUDE_STATE" || fail 'default Claude registration unexpectedly pinned a workspace'
 assert_contains "$(cat "$FAKE_STATE_DIR/codex.log")" \
-  "argv|<mcp>|<add>|<mcp-bpmn>|<-->|<$DEFAULT_PREFIX/app/node_modules/.bin/mcp-bpmn-server>"
+  "argv|<mcp>|<add>|<mcp-bpmn>|<-->|<$DEFAULT_PREFIX/app/node_modules/.bin/bpmn-mcp>"
 assert_contains "$(cat "$FAKE_STATE_DIR/claude.log")" \
-  "argv|<mcp>|<add>|<--scope>|<user>|<mcp-bpmn>|<$DEFAULT_PREFIX/app/node_modules/.bin/mcp-bpmn-server>"
+  "argv|<mcp>|<add>|<--scope>|<user>|<mcp-bpmn>|<$DEFAULT_PREFIX/app/node_modules/.bin/bpmn-mcp>"
 
 # Updating legacy installer state removes only the historical default path.
 sed '/^diagrams-path-explicit=/d; s|^diagrams-path=.*|diagrams-path='"$HOME"'/mcp-bpmn|' \
@@ -467,10 +467,10 @@ sed '/^diagrams-path-explicit=/d; s|^diagrams-path=.*|diagrams-path='"$HOME"'/mc
   > "$DEFAULT_PREFIX/.mcp-bpmn-installer-owned.legacy"
 mv -f "$DEFAULT_PREFIX/.mcp-bpmn-installer-owned.legacy" \
   "$DEFAULT_PREFIX/.mcp-bpmn-installer-owned"
-printf '%s\n%s\n' "$DEFAULT_PREFIX/app/node_modules/.bin/mcp-bpmn-server" \
+printf '%s\n%s\n' "$DEFAULT_PREFIX/app/node_modules/.bin/bpmn-mcp" \
   "$HOME/mcp-bpmn" > "$CODEX_STATE"
 set_claude_registration "$CLAUDE_STATE" \
-  "$DEFAULT_PREFIX/app/node_modules/.bin/mcp-bpmn-server" "$HOME/mcp-bpmn"
+  "$DEFAULT_PREFIX/app/node_modules/.bin/bpmn-mcp" "$HOME/mcp-bpmn"
 make -s -C "$SOURCE_ROOT" update >/dev/null
 assert_equals "$(sed -n '2p' "$CODEX_STATE")" ''
 assert_contains "$(cat "$DEFAULT_PREFIX/.mcp-bpmn-installer-owned")" \
@@ -489,9 +489,9 @@ MCP_BPMN_DIAGRAMS_PATH=$CASE_ROOT/'user diagrams'
 export PREFIX MCP_BPMN_DIAGRAMS_PATH
 
 install_output=$(make -s -C "$SOURCE_ROOT" install)
-assert_contains "$install_output" "registered Codex MCP command: $PREFIX/app/node_modules/.bin/mcp-bpmn-server"
-assert_contains "$install_output" "registered Claude Code user MCP command: $PREFIX/app/node_modules/.bin/mcp-bpmn-server"
-assert_file "$PREFIX/app/node_modules/.bin/mcp-bpmn-server"
+assert_contains "$install_output" "registered Codex MCP command: $PREFIX/app/node_modules/.bin/bpmn-mcp"
+assert_contains "$install_output" "registered Claude Code user MCP command: $PREFIX/app/node_modules/.bin/bpmn-mcp"
+assert_file "$PREFIX/app/node_modules/.bin/bpmn-mcp"
 assert_file "$CODEX_HOME/skills/bpmn-modeler/SKILL.md"
 assert_file "$CLAUDE_CONFIG_DIR/skills/bpmn-modeler/SKILL.md"
 [ ! -L "$CODEX_HOME/skills/bpmn-modeler" ] \
@@ -499,21 +499,21 @@ assert_file "$CLAUDE_CONFIG_DIR/skills/bpmn-modeler/SKILL.md"
 [ ! -L "$CLAUDE_CONFIG_DIR/skills/bpmn-modeler" ] \
   || fail 'Claude Code skill was symlinked instead of copied'
 assert_contains "$(cat "$CODEX_HOME/skills/bpmn-modeler/.mcp-bpmn-installer-owned")" \
-  'package=mcp-bpmn-server@0.2.0'
+  'package=bpmn-mcp@0.2.0'
 assert_contains "$(cat "$CLAUDE_CONFIG_DIR/skills/bpmn-modeler/.mcp-bpmn-installer-owned")" \
-  'package=mcp-bpmn-server@0.2.0'
-[ "$(sed -n '1p' "$CODEX_STATE")" = "$PREFIX/app/node_modules/.bin/mcp-bpmn-server" ] \
+  'package=bpmn-mcp@0.2.0'
+[ "$(sed -n '1p' "$CODEX_STATE")" = "$PREFIX/app/node_modules/.bin/bpmn-mcp" ] \
   || fail 'Codex did not receive the stable absolute executable'
-[ "$(claude_registration_field "$CLAUDE_STATE" command)" = "$PREFIX/app/node_modules/.bin/mcp-bpmn-server" ] \
+[ "$(claude_registration_field "$CLAUDE_STATE" command)" = "$PREFIX/app/node_modules/.bin/bpmn-mcp" ] \
   || fail 'Claude Code did not receive the stable absolute executable'
 assert_contains "$(cat "$FAKE_STATE_DIR/codex.log")" \
   'argv|<mcp>|<get>|<mcp-bpmn>|<--json>'
 assert_contains "$(cat "$FAKE_STATE_DIR/codex.log")" \
-  "argv|<mcp>|<add>|<mcp-bpmn>|<--env>|<MCP_BPMN_DIAGRAMS_PATH=$MCP_BPMN_DIAGRAMS_PATH>|<-->|<$PREFIX/app/node_modules/.bin/mcp-bpmn-server>"
+  "argv|<mcp>|<add>|<mcp-bpmn>|<--env>|<MCP_BPMN_DIAGRAMS_PATH=$MCP_BPMN_DIAGRAMS_PATH>|<-->|<$PREFIX/app/node_modules/.bin/bpmn-mcp>"
 assert_contains "$(cat "$FAKE_STATE_DIR/claude.log")" \
   'argv|<mcp>|<get>|<mcp-bpmn>'
 assert_contains "$(cat "$FAKE_STATE_DIR/claude.log")" \
-  "argv|<mcp>|<add>|<--scope>|<user>|<mcp-bpmn>|<$PREFIX/app/node_modules/.bin/mcp-bpmn-server>|<-e>|<MCP_BPMN_DIAGRAMS_PATH=$MCP_BPMN_DIAGRAMS_PATH>"
+  "argv|<mcp>|<add>|<--scope>|<user>|<mcp-bpmn>|<$PREFIX/app/node_modules/.bin/bpmn-mcp>|<-e>|<MCP_BPMN_DIAGRAMS_PATH=$MCP_BPMN_DIAGRAMS_PATH>"
 assert_contains "$(cat "$FAKE_STATE_DIR/npm.log")" "prefix=<$NPM_CONFIG_PREFIX>|<pack>|<--silent>|<--pack-destination>"
 assert_contains "$(cat "$FAKE_STATE_DIR/npm.log")" "prefix=<$NPM_CONFIG_PREFIX>|<install>|<--omit=dev>|<--no-audit>|<--no-fund>|<--prefix>"
 assert_contains "$(cat "$FAKE_STATE_DIR/npm.log")" "cache=<$TMPDIR/mcp-bpmn-install."
@@ -521,7 +521,7 @@ assert_contains "$(cat "$FAKE_STATE_DIR/npm.log")" "cache=<$TMPDIR/mcp-bpmn-inst
 candidate_dir=$CASE_ROOT/'release candidates'
 mkdir -p "$candidate_dir"
 candidate_dir=$(CDPATH= cd -P "$candidate_dir" && pwd -P)
-candidate_tarball=$candidate_dir/mcp-bpmn-server-0.2.0.tgz
+candidate_tarball=$candidate_dir/bpmn-mcp-0.2.0.tgz
 : > "$candidate_tarball"
 candidate_sha256=$($REAL_NODE -e '
   const { createHash } = require("node:crypto");
@@ -591,8 +591,8 @@ unset MCP_BPMN_DIAGRAMS_PATH
 make -s -C "$SOURCE_ROOT" install >/dev/null
 FAKE_PACKAGE_VERSION=0.3.0 make -s -C "$SOURCE_ROOT" update >/dev/null
 assert_contains "$(cat "$PREFIX/.mcp-bpmn-installer-owned")" \
-  'package=mcp-bpmn-server@0.3.0'
-assert_contains "$(cat "$PREFIX/app/node_modules/mcp-bpmn-server/package.json")" \
+  'package=bpmn-mcp@0.3.0'
+assert_contains "$(cat "$PREFIX/app/node_modules/bpmn-mcp/package.json")" \
   '"version":"0.3.0"'
 persisted_doctor_output=$(make -s -C "$SOURCE_ROOT" doctor)
 assert_contains "$persisted_doctor_output" "Diagrams directory: $configured_diagrams (present)"
@@ -629,7 +629,7 @@ assert_contains "$(cat "$FAKE_STATE_DIR/claude.log")" \
 assert_contains "$(cat "$FAKE_STATE_DIR/claude.log")" \
   'argv|<mcp>|<remove>|<--scope>|<user>|<mcp-bpmn>'
 assert_contains "$(cat "$FAKE_STATE_DIR/claude.log")" \
-  "argv|<mcp>|<add>|<--scope>|<user>|<mcp-bpmn>|<$PREFIX/app/node_modules/.bin/mcp-bpmn-server>|<-e>|<MCP_BPMN_DIAGRAMS_PATH=$MCP_BPMN_DIAGRAMS_PATH>"
+  "argv|<mcp>|<add>|<--scope>|<user>|<mcp-bpmn>|<$PREFIX/app/node_modules/.bin/bpmn-mcp>|<-e>|<MCP_BPMN_DIAGRAMS_PATH=$MCP_BPMN_DIAGRAMS_PATH>"
 
 rm -rf "$CODEX_HOME/skills/bpmn-modeler"
 dangling_skill_target=$CASE_ROOT/'missing third-party Codex skill'
@@ -658,7 +658,7 @@ make -s -C "$SOURCE_ROOT" install-claude >/dev/null
 [ ! -s "$FAKE_STATE_DIR/codex.log" ] || fail 'targeted Claude install invoked Codex'
 [ -s "$FAKE_STATE_DIR/claude.log" ] || fail 'targeted Claude install did not invoke Claude Code'
 
-printf '%s\n%s\n' "$PREFIX/app/node_modules/.bin/mcp-bpmn-server" /other/diagrams \
+printf '%s\n%s\n' "$PREFIX/app/node_modules/.bin/bpmn-mcp" /other/diagrams \
   > "$CODEX_STATE"
 if env_conflict_output=$("$INSTALLER" install codex 2>&1); then
   fail 'installer silently replaced a registration with a different diagrams path'
@@ -669,7 +669,7 @@ make -s -C "$SOURCE_ROOT" install-codex FORCE=1 >/dev/null
 doctor_output=$(make -s -C "$SOURCE_ROOT" doctor)
 assert_contains "$doctor_output" 'Platform:'
 assert_contains "$doctor_output" 'WSL detected:'
-assert_contains "$doctor_output" "Installed executable: $PREFIX/app/node_modules/.bin/mcp-bpmn-server"
+assert_contains "$doctor_output" "Installed executable: $PREFIX/app/node_modules/.bin/bpmn-mcp"
 assert_contains "$doctor_output" 'Codex MCP registration: owned'
 assert_contains "$doctor_output" 'Claude MCP registration: owned'
 assert_contains "$doctor_output" 'Codex skill discovery: installed'
@@ -794,7 +794,7 @@ mv -f "$FAKE_BIN/codex-missing" "$FAKE_BIN/codex"
 mv -f "$FAKE_BIN/claude-missing" "$FAKE_BIN/claude"
 make -s -C "$SOURCE_ROOT" install-codex >/dev/null
 make -s -C "$SOURCE_ROOT" install-claude >/dev/null
-[ "$(claude_registration_field "$CLAUDE_STATE" command)" = "$PREFIX/app/node_modules/.bin/mcp-bpmn-server" ] \
+[ "$(claude_registration_field "$CLAUDE_STATE" command)" = "$PREFIX/app/node_modules/.bin/bpmn-mcp" ] \
   || fail 'targeted Claude Code install did not register the stable executable'
 
 if old_node_output=$(FAKE_NODE_VERSION=22.11.9 "$INSTALLER" install codex 2>&1); then
@@ -885,11 +885,11 @@ assert_file "$HOME/unrelated.conf"
 assert_contains "$(cat "$FAKE_STATE_DIR/codex.log")" \
   'argv|<mcp>|<remove>|<mcp-bpmn>'
 assert_contains "$(cat "$FAKE_STATE_DIR/codex.log")" \
-  "argv|<mcp>|<add>|<mcp-bpmn>|<--env>|<MCP_BPMN_DIAGRAMS_PATH=$MCP_BPMN_DIAGRAMS_PATH>|<-->|<$PREFIX/app/node_modules/.bin/mcp-bpmn-server>"
+  "argv|<mcp>|<add>|<mcp-bpmn>|<--env>|<MCP_BPMN_DIAGRAMS_PATH=$MCP_BPMN_DIAGRAMS_PATH>|<-->|<$PREFIX/app/node_modules/.bin/bpmn-mcp>"
 assert_contains "$(cat "$FAKE_STATE_DIR/claude.log")" \
   'argv|<mcp>|<remove>|<--scope>|<user>|<mcp-bpmn>'
 assert_contains "$(cat "$FAKE_STATE_DIR/claude.log")" \
-  "argv|<mcp>|<add>|<--scope>|<user>|<mcp-bpmn>|<$PREFIX/app/node_modules/.bin/mcp-bpmn-server>|<-e>|<MCP_BPMN_DIAGRAMS_PATH=$MCP_BPMN_DIAGRAMS_PATH>"
+  "argv|<mcp>|<add>|<--scope>|<user>|<mcp-bpmn>|<$PREFIX/app/node_modules/.bin/bpmn-mcp>|<-e>|<MCP_BPMN_DIAGRAMS_PATH=$MCP_BPMN_DIAGRAMS_PATH>"
 
 FORCE=1 "$INSTALLER" install all >/dev/null
 
@@ -1007,8 +1007,8 @@ if interrupted_snapshot_output=$(FAKE_PACKAGE_VERSION=0.2.1 \
   fail 'installer succeeded after interruption between rollback move and marker creation'
 fi
 assert_contains "$interrupted_snapshot_output" 'rolled back the incomplete installation'
-assert_equals "$(cat "$PREFIX/app/node_modules/mcp-bpmn-server/package.json")" \
-  '{"name":"mcp-bpmn-server","version":"0.2.0"}'
+assert_equals "$(cat "$PREFIX/app/node_modules/bpmn-mcp/package.json")" \
+  '{"name":"bpmn-mcp","version":"0.2.0"}'
 assert_equals "$(cat "$PREFIX/.mcp-bpmn-installer-owned")" "$old_state"
 
 if staged_skill_output=$(FAKE_PACKAGE_VERSION=0.2.1 FAKE_FAIL_SKILL_COPY=1 \
@@ -1019,8 +1019,8 @@ assert_contains "$staged_skill_output" 'rolled back the incomplete installation'
 [ -z "$(find "$CODEX_HOME/skills" "$CLAUDE_CONFIG_DIR/skills" \
   -name '.mcp-bpmn-skill.*' -print)" ] \
   || fail 'failed update left an adjacent staged skill directory'
-assert_equals "$(cat "$PREFIX/app/node_modules/mcp-bpmn-server/package.json")" \
-  '{"name":"mcp-bpmn-server","version":"0.2.0"}'
+assert_equals "$(cat "$PREFIX/app/node_modules/bpmn-mcp/package.json")" \
+  '{"name":"bpmn-mcp","version":"0.2.0"}'
 assert_equals "$(cat "$PREFIX/.mcp-bpmn-installer-owned")" "$old_state"
 
 printf 'unrelated-codex-setting=true\n' >> "$CODEX_HOME/config.toml"
@@ -1038,8 +1038,8 @@ if failed_update_output=$(FAKE_PACKAGE_VERSION=0.3.0 FAKE_FAIL_CLAUDE_ADD=1 \
   fail 'installer succeeded after injected Claude failure during update'
 fi
 assert_contains "$failed_update_output" 'could not add the Claude Code user registration'
-assert_equals "$(cat "$PREFIX/app/node_modules/mcp-bpmn-server/package.json")" \
-  '{"name":"mcp-bpmn-server","version":"0.2.0"}'
+assert_equals "$(cat "$PREFIX/app/node_modules/bpmn-mcp/package.json")" \
+  '{"name":"bpmn-mcp","version":"0.2.0"}'
 assert_equals "$(cat "$PREFIX/.mcp-bpmn-installer-owned")" "$old_state"
 assert_equals "$(cat "$CODEX_STATE")" "$old_codex_registration"
 assert_equals "$(cat "$CLAUDE_STATE")" "$old_claude_registration"
@@ -1069,7 +1069,7 @@ assert_contains "$late_claude_replacement_output" \
 assert_equals "$(claude_registration_field "$CLAUDE_STATE" command)" /late/claude/server
 assert_equals "$(claude_registration_field "$CLAUDE_STATE" diagrams)" /late/claude/diagrams
 set_claude_registration "$CLAUDE_STATE" \
-  "$PREFIX/app/node_modules/.bin/mcp-bpmn-server" "$MCP_BPMN_DIAGRAMS_PATH"
+  "$PREFIX/app/node_modules/.bin/bpmn-mcp" "$MCP_BPMN_DIAGRAMS_PATH"
 
 if late_claude_deletion_output=$(FAKE_PACKAGE_VERSION=0.3.0 \
   FAKE_DELETE_CLAUDE_AFTER_ADD=1 "$INSTALLER" update claude 2>&1); then
@@ -1081,7 +1081,7 @@ if claude_registration_field "$CLAUDE_STATE" command >/dev/null 2>&1; then
   fail 'rollback resurrected a Claude registration deleted after add'
 fi
 set_claude_registration "$CLAUDE_STATE" \
-  "$PREFIX/app/node_modules/.bin/mcp-bpmn-server" "$MCP_BPMN_DIAGRAMS_PATH"
+  "$PREFIX/app/node_modules/.bin/bpmn-mcp" "$MCP_BPMN_DIAGRAMS_PATH"
 
 if late_replacement_output=$(FAKE_PACKAGE_VERSION=0.3.0 FAKE_FAIL_CLAUDE_ADD=1 \
   FAKE_REPLACE_CODEX_ON_CLAUDE_FAILURE=1 "$INSTALLER" update all 2>&1); then
@@ -1091,8 +1091,8 @@ assert_contains "$late_replacement_output" \
   "preserving Codex 'mcp-bpmn' registration changed by another process during rollback"
 assert_equals "$(sed -n '1p' "$CODEX_STATE")" /late/third-party/server
 assert_equals "$(sed -n '2p' "$CODEX_STATE")" /late/third-party/diagrams
-assert_equals "$(cat "$PREFIX/app/node_modules/mcp-bpmn-server/package.json")" \
-  '{"name":"mcp-bpmn-server","version":"0.2.0"}'
+assert_equals "$(cat "$PREFIX/app/node_modules/bpmn-mcp/package.json")" \
+  '{"name":"bpmn-mcp","version":"0.2.0"}'
 assert_equals "$(cat "$PREFIX/.mcp-bpmn-installer-owned")" "$old_state"
 
 if unreadable_replacement_output=$(FAKE_PACKAGE_VERSION=0.3.0 FORCE=1 \

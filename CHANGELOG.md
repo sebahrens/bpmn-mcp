@@ -161,6 +161,11 @@ unsupported shape or connector.
 
 ### Changed
 
+- **Compatibility:** the npm package is now `bpmn-mcp`, and its executable and
+  the `command` in `mcp.json` are `bpmn-mcp` too. The MCP server also reports
+  `bpmn-mcp` as its name. The previous name was never published, so nothing
+  installed depends on it, but a local checkout that registered the old
+  executable needs its client configuration updated.
 - This repository is a hard fork. `LICENSE` keeps its MIT terms and the upstream
   copyright line, and carries the fork author's copyright alongside it. The
   author, repository, bugs and homepage metadata, the clone commands in the

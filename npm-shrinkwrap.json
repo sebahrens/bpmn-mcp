@@ -1,11 +1,11 @@
 {
-  "name": "mcp-bpmn-server",
+  "name": "bpmn-mcp",
   "version": "0.3.0",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
-      "name": "mcp-bpmn-server",
+      "name": "bpmn-mcp",
       "version": "0.3.0",
       "license": "MIT",
       "dependencies": {
@@ -20,7 +20,7 @@
         "zod-to-json-schema": "^3.25.2"
       },
       "bin": {
-        "mcp-bpmn-server": "dist/server/index.js"
+        "bpmn-mcp": "dist/server/index.js"
       },
       "devDependencies": {
         "@types/jest": "^29.5.13",

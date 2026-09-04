@@ -122,7 +122,7 @@ instructions but do not automatically discover the optional Agent Skill.
 ### Install a packed release artifact
 
 This repository currently documents an npm tarball install rather than assuming
-that `mcp-bpmn-server` is available from the public npm registry. A release
+that `bpmn-mcp` is available from the public npm registry. A release
 producer can build the canonical CLI-only artifact from a source checkout:
 
 ```bash
@@ -135,12 +135,12 @@ executable:
 
 ```bash
 consumer_dir=$(mktemp -d)
-npm install --prefix "$consumer_dir" "$artifact_dir"/mcp-bpmn-server-*.tgz
-"$consumer_dir/node_modules/.bin/mcp-bpmn-server"
+npm install --prefix "$consumer_dir" "$artifact_dir"/bpmn-mcp-*.tgz
+"$consumer_dir/node_modules/.bin/bpmn-mcp"
 ```
 
 For an MCP client, use the absolute value of
-`$consumer_dir/node_modules/.bin/mcp-bpmn-server` as `command` and an empty
+`$consumer_dir/node_modules/.bin/bpmn-mcp` as `command` and an empty
 `args` array. The package is a CLI, not an importable JavaScript library.
 
 ### Agent plugins and evaluations
@@ -1266,11 +1266,14 @@ and npm 10.9.7 using:
 npm pack --dry-run --json
 ```
 
-That command reported approximately **358 kB** compressed, **2,079,332** unpacked
-bytes, and **141** files. Most of the unpacked size is not executable code:
-`.js` accounts for about 689 kB, TypeScript declarations for about 327 kB, and
-source maps (`.js.map` plus `.d.ts.map`) for about 684 kB together, all emitted
+That command reported approximately **410 kB** compressed, **2,353,180** unpacked
+bytes, and **153** files. Most of the unpacked size is not executable code:
+`.js` accounts for about 811 kB, TypeScript declarations for about 354 kB, and
+source maps (`.js.map` plus `.d.ts.map`) for about 798 kB together, all emitted
 because `tsconfig.json` compiles the whole of `src/**/*`.
+
+Measure it after a build: `npm pack` reports only the files that exist, so
+running it against a cleaned `dist/` reports a fraction of the real artifact.
 
 These figures describe the npm tarball, not an installed server: the tarball
 bundles no production dependencies, while installation resolves the nine direct

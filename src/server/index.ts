@@ -28,7 +28,7 @@ const SERVER_INSTRUCTIONS = [
 // Create server instance
 const server = new Server(
   {
-    name: 'mcp-bpmn-server',
+    name: 'bpmn-mcp',
     version: packageMetadata.version,
   },
   {

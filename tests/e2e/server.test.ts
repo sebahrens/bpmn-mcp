@@ -1926,7 +1926,7 @@ describe('MCP Server End-to-End Tests', () => {
         protocolVersion: LATEST_PROTOCOL_VERSION,
         capabilities: { tools: {} },
         serverInfo: {
-          name: 'mcp-bpmn-server',
+          name: 'bpmn-mcp',
           version: packageMetadata.version
         },
         instructions: expect.any(String)

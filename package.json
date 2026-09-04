@@ -1,9 +1,9 @@
 {
-  "name": "mcp-bpmn-server",
+  "name": "bpmn-mcp",
   "version": "0.3.0",
   "description": "MCP server for AI-powered BPMN diagram creation with Mermaid-to-BPMN conversion",
   "bin": {
-    "mcp-bpmn-server": "./dist/server/index.js"
+    "bpmn-mcp": "./dist/server/index.js"
   },
   "files": [
     "dist",

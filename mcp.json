@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "mcp-bpmn": {
-      "command": "mcp-bpmn-server",
+      "command": "bpmn-mcp",
       "args": [],
       "env": {}
     }
