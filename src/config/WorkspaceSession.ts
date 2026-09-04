@@ -27,6 +27,8 @@ export interface WorkspaceInfo {
   workspace: string;
   source: WorkspaceSource;
   configPath?: string;
+  /** Why a startup configuration was refused, when one was. */
+  startupFailure?: string;
 }
 
 export interface WorkspaceSelectionOptions {
@@ -156,7 +158,11 @@ export class WorkspaceSession {
       startupBoundary: this.startupBoundary,
       workspace: this.currentWorkspace,
       source: this.currentSource,
-      ...(this.configPath ? { configPath: this.configPath } : {})
+      ...(this.configPath ? { configPath: this.configPath } : {}),
+      // A configuration that could not be applied is why the workspace is not
+      // where the operator expects. Reporting it here is the only way an agent
+      // finds out without first attempting a selection and failing.
+      ...(this.startupFailure ? { startupFailure: this.startupFailure } : {})
     };
   }
 

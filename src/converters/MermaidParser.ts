@@ -1,4 +1,10 @@
-import { GENERIC_EVENT_LABELS } from './ASTTypes.js';
+import {
+  GENERIC_EVENT_LABELS,
+  NEUTRAL_SUBTYPE_CLASSES,
+  SUBTYPE_CLASS_NAMES,
+  SUBTYPE_HOSTS,
+  normalizeSubtypeClass
+} from './ASTTypes.js';
 import type {
   EdgeType,
   MermaidAST,
@@ -67,6 +73,13 @@ interface MatchedConnector {
   label?: string;
   dropped: DroppedEdgeStyle[];
   length: number;
+}
+
+/** One `:::class` suffix, kept until the node's final type is known. */
+interface PendingClassAnnotation {
+  nodeId: string;
+  name: string;
+  location: SourceLocation;
 }
 
 interface OpenSubgraph {
@@ -158,6 +171,17 @@ const UNSUPPORTED_CONNECTORS: Array<{ pattern: RegExp; alternative: string }> = 
   }
 ];
 
+/** How each Mermaid node type is named back to the author in a diagnostic. */
+const SUBTYPE_HOST_DESCRIPTIONS: Record<NodeType, string> = {
+  process: 'a task',
+  decision: 'a gateway',
+  start: 'a start event',
+  end: 'an end event',
+  terminator: 'an intermediate event',
+  subprocess: 'a subprocess',
+  data: 'a data object'
+};
+
 /** One `;`-separated statement, with its 0-based start offset in the raw line. */
 interface Statement {
   text: string;
@@ -226,6 +250,7 @@ export class MermaidParser {
     const edgeIdOccurrences = new Map<string, number>();
     const subgraphLocations = new Map<MermaidSubgraph, SourceLocation>();
     const openSubgraphs: OpenSubgraph[] = [];
+    const classAnnotations: PendingClassAnnotation[] = [];
     let firstContentLocation: SourceLocation | undefined;
     let recognizedDocumentSyntax = false;
 
@@ -363,6 +388,7 @@ export class MermaidParser {
           edgeLocations,
           edgeIdOccurrences,
           openSubgraphs,
+          classAnnotations,
           errors,
           warnings
         );
@@ -382,6 +408,18 @@ export class MermaidParser {
     }
 
     this.inferNodeTypes(ast);
+    // Subtype steering is resolved only now: an event's legal definitions
+    // depend on whether it ended up a start, an end or an intermediate event,
+    // which type inference has only just decided (mcp-bpmn-j21.12).
+    this.applyClassAnnotations(ast, classAnnotations, errors, warnings);
+    // A line that failed to parse takes its nodes, its edges and its subgraph
+    // membership with it, so every analysis that reads the graph as a whole is
+    // now reading a graph the author never wrote. One unsupported shape used to
+    // produce three further diagnostics pointing at correctly written nodes
+    // (mcp-bpmn-j21.13). Those analyses are withheld until the structure parses;
+    // nothing is lost, because a document with errors cannot convert anyway and
+    // they all run on the next attempt.
+    const structureIsComplete = errors.length === 0;
     this.validateAST(
       ast,
       nodeLocations,
@@ -389,6 +427,7 @@ export class MermaidParser {
       subgraphLocations,
       firstContentLocation ?? { line: 1, column: 1, source: lines[0] ?? '' },
       recognizedDocumentSyntax,
+      structureIsComplete,
       errors,
       warnings
     );
@@ -472,6 +511,7 @@ export class MermaidParser {
     edgeLocations: Map<MermaidEdge, SourceLocation>,
     edgeIdOccurrences: Map<string, number>,
     openSubgraphs: OpenSubgraph[],
+    classAnnotations: PendingClassAnnotation[],
     errors: ParseError[],
     warnings: ParseWarning[]
   ): void {
@@ -484,7 +524,7 @@ export class MermaidParser {
     let cursor = this.skipWhitespace(text, first.end);
     if (cursor === text.length) {
       for (const endpoint of first.endpoints) {
-        this.addClassAnnotationWarning(endpoint, location, warnings);
+        this.recordClassAnnotation(endpoint, location, classAnnotations);
         this.addNode(
           endpoint.node,
           this.at(location, endpoint.start),
@@ -509,7 +549,7 @@ export class MermaidParser {
     }
 
     for (const endpoint of first.endpoints) {
-      this.addClassAnnotationWarning(endpoint, location, warnings);
+      this.recordClassAnnotation(endpoint, location, classAnnotations);
       this.addNode(
         endpoint.node,
         this.at(location, endpoint.start),
@@ -547,7 +587,7 @@ export class MermaidParser {
       }
 
       for (const endpoint of targets.endpoints) {
-        this.addClassAnnotationWarning(endpoint, location, warnings);
+        this.recordClassAnnotation(endpoint, location, classAnnotations);
         this.addNode(
           endpoint.node,
           this.at(location, endpoint.start),
@@ -830,17 +870,93 @@ export class MermaidParser {
     };
   }
 
-  private addClassAnnotationWarning(
+  private recordClassAnnotation(
     endpoint: ParsedEndpoint,
     location: SourceLocation,
-    warnings: ParseWarning[]
+    classAnnotations: PendingClassAnnotation[]
   ): void {
     if (!endpoint.classAnnotation) return;
-    warnings.push(this.warning(
-      'UNSUPPORTED_DIRECTIVE',
-      this.at(location, endpoint.classAnnotation.index),
-      `Unsupported Mermaid CSS class "${endpoint.classAnnotation.name}"; ignored`
-    ));
+    classAnnotations.push({
+      nodeId: endpoint.node.id,
+      name: endpoint.classAnnotation.name,
+      location: this.at(location, endpoint.classAnnotation.index)
+    });
+  }
+
+  /**
+   * Resolves every `:::class` suffix against the node's final type. A class in
+   * the steering vocabulary refines the node, a class naming the default a shape
+   * already carries is accepted and refines nothing, and everything else stays
+   * the styling hook it has always been: warned about once and ignored.
+   */
+  private applyClassAnnotations(
+    ast: MermaidAST,
+    classAnnotations: readonly PendingClassAnnotation[],
+    errors: ParseError[],
+    warnings: ParseWarning[]
+  ): void {
+    const nodesById = new Map(ast.nodes.map(node => [node.id, node]));
+
+    for (const annotation of classAnnotations) {
+      const node = nodesById.get(annotation.nodeId);
+      if (!node) continue;
+      const normalized = normalizeSubtypeClass(annotation.name);
+
+      const neutralHost = NEUTRAL_SUBTYPE_CLASSES[normalized];
+      if (neutralHost !== undefined) {
+        if (neutralHost !== node.type) {
+          errors.push(this.error(
+            'INVALID_NODE_SUBTYPE',
+            annotation.location,
+            this.subtypeHostFailure(annotation.name, node, [neutralHost])
+          ));
+        }
+        continue;
+      }
+
+      const subtype = SUBTYPE_CLASS_NAMES[normalized];
+      if (subtype === undefined) {
+        warnings.push(this.warning(
+          'UNSUPPORTED_DIRECTIVE',
+          annotation.location,
+          `Unsupported Mermaid CSS class "${annotation.name}"; ignored`
+        ));
+        continue;
+      }
+
+      if (!SUBTYPE_HOSTS[subtype].has(node.type)) {
+        errors.push(this.error(
+          'INVALID_NODE_SUBTYPE',
+          annotation.location,
+          this.subtypeHostFailure(annotation.name, node, [...SUBTYPE_HOSTS[subtype]])
+        ));
+        continue;
+      }
+
+      if (node.subtype !== undefined && node.subtype !== subtype) {
+        errors.push(this.error(
+          'INVALID_NODE_SUBTYPE',
+          annotation.location,
+          `Mermaid node ${node.id} is already refined as ":::${node.subtype}", so `
+            + `":::${annotation.name}" conflicts with it; give a node one BPMN subtype class.`
+        ));
+        continue;
+      }
+      node.subtype = subtype;
+    }
+  }
+
+  private subtypeHostFailure(
+    name: string,
+    node: MermaidNode,
+    hosts: readonly NodeType[]
+  ): string {
+    const legal = hosts.map(host => SUBTYPE_HOST_DESCRIPTIONS[host]);
+    const named = legal.length > 1
+      ? `${legal.slice(0, -1).join(', ')} or ${legal.at(-1)}`
+      : legal[0];
+    return `The BPMN subtype class ":::${name}" cannot refine Mermaid node ${node.id}, `
+      + `which is ${SUBTYPE_HOST_DESCRIPTIONS[node.type]}; it applies to ${named}.`;
   }
 
   private parseConnector(text: string, start: number): ParsedConnector | ConnectorFailure {
@@ -1015,6 +1131,8 @@ export class MermaidParser {
     subgraphLocations: Map<MermaidSubgraph, SourceLocation>,
     fallbackLocation: SourceLocation,
     recognizedDocumentSyntax: boolean,
+    /** False once a line failed to parse, so the graph is missing content. */
+    structureIsComplete: boolean,
     errors: ParseError[],
     warnings: ParseWarning[]
   ): void {
@@ -1078,7 +1196,7 @@ export class MermaidParser {
       }
     }
 
-    if (ast.subgraphs.length > 0) {
+    if (structureIsComplete && ast.subgraphs.length > 0) {
       for (const node of ast.nodes) {
         if (!ownerByNode.has(node.id)) {
           errors.push(this.error(
@@ -1109,6 +1227,8 @@ export class MermaidParser {
       ));
       return;
     }
+
+    if (!structureIsComplete) return;
 
     if (!ast.nodes.some(node => node.type === 'start')) {
       warnings.push(this.warning(

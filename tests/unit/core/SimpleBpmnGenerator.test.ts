@@ -3,6 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import BpmnModdle from 'bpmn-moddle';
 import { SimpleBpmnGenerator } from '../../../src/core/SimpleBpmnGenerator.js';
+import { MermaidConverter } from '../../../src/converters/MermaidConverter.js';
 import { SimpleBpmnEngine } from '../../../src/core/SimpleBpmnEngine.js';
 import type { MermaidAST } from '../../../src/converters/ASTTypes.js';
 
@@ -137,5 +138,135 @@ describe('SimpleBpmnGenerator collaboration semantics', () => {
     duplicateSubgraph.subgraphs[1].id = duplicateSubgraph.subgraphs[0].id;
     await expect(new SimpleBpmnGenerator().generateBpmn(duplicateSubgraph, 'Duplicate subgraph'))
       .rejects.toThrow('Duplicate Mermaid subgraph ID');
+  });
+});
+
+describe('SimpleBpmnGenerator subtype steering (mcp-bpmn-j21.12)', () => {
+  const converter = new MermaidConverter();
+
+  const typeOf = (
+    conversion: { elements: Array<{ id: string; type: string }> },
+    mermaidId: string
+  ): string | undefined =>
+    conversion.elements.find(element => element.id.endsWith(`_${mermaidId}`))?.type;
+
+  it.each([
+    ['user', 'bpmn:UserTask'],
+    ['service', 'bpmn:ServiceTask'],
+    ['script', 'bpmn:ScriptTask'],
+    ['businessRule', 'bpmn:BusinessRuleTask'],
+    ['manual', 'bpmn:ManualTask'],
+    ['receive', 'bpmn:ReceiveTask'],
+    ['send', 'bpmn:SendTask']
+  ])('converts a task refined with :::%s to %s', async (subtype, bpmnType) => {
+    const conversion = await converter.convert(
+      `flowchart TD\n  S((Start)) --> A[Do it]:::${subtype} --> E((End))`,
+      { autoLayout: false }
+    );
+
+    const localName = bpmnType.slice('bpmn:'.length);
+    expect(typeOf(conversion, 'A')).toBe(bpmnType);
+    expect(conversion.xml)
+      .toContain(`<bpmn:${localName[0].toLowerCase()}${localName.slice(1)}`);
+  });
+
+  it.each([
+    ['parallel', 'bpmn:ParallelGateway'],
+    ['inclusive', 'bpmn:InclusiveGateway'],
+    ['eventBased', 'bpmn:EventBasedGateway'],
+    ['complex', 'bpmn:ComplexGateway']
+  ])('converts a gateway refined with :::%s to %s', async (subtype, bpmnType) => {
+    const conversion = await converter.convert(
+      `flowchart TD\n  S((Start)) --> G{Which?}:::${subtype}\n  G --> A[One]\n  G --> B[Two]`,
+      { autoLayout: false }
+    );
+
+    expect(typeOf(conversion, 'G')).toBe(bpmnType);
+  });
+
+  it('leaves an unrefined shape on its default BPMN type', async () => {
+    const conversion = await converter.convert(
+      'flowchart TD\n  S((Start)) --> A[Do it] --> G{Which?}\n  G --> E((End))',
+      { autoLayout: false }
+    );
+
+    expect(typeOf(conversion, 'A')).toBe('bpmn:Task');
+    expect(typeOf(conversion, 'G')).toBe('bpmn:ExclusiveGateway');
+  });
+
+  it.each([
+    ['message', 'bpmn:messageEventDefinition'],
+    ['timer', 'bpmn:timerEventDefinition'],
+    ['signal', 'bpmn:signalEventDefinition'],
+    ['conditional', 'bpmn:conditionalEventDefinition']
+  ])('gives a start event refined with :::%s the %s', async (subtype, definition) => {
+    const conversion = await converter.convert(
+      `flowchart TD\n  S((Order placed)):::${subtype} --> A[Work] --> E((End))`,
+      { autoLayout: false }
+    );
+
+    expect(typeOf(conversion, 'S')).toBe('bpmn:StartEvent');
+    expect(conversion.xml).toMatch(new RegExp(`<bpmn:startEvent[^>]*>[\\s\\S]*?<${definition}`));
+  });
+
+  it.each([
+    ['error', 'bpmn:errorEventDefinition'],
+    ['terminate', 'bpmn:terminateEventDefinition'],
+    ['escalation', 'bpmn:escalationEventDefinition'],
+    ['cancel', 'bpmn:cancelEventDefinition']
+  ])('gives an end event refined with :::%s the %s', async (subtype, definition) => {
+    const conversion = await converter.convert(
+      `flowchart TD\n  S((Start)) --> A[Work] --> E((Stopped)):::${subtype}`,
+      { autoLayout: false }
+    );
+
+    expect(typeOf(conversion, 'E')).toBe('bpmn:EndEvent');
+    expect(conversion.xml).toMatch(new RegExp(`<bpmn:endEvent[^>]*>[\\s\\S]*?<${definition}`));
+  });
+
+  it.each([
+    ['message', 'bpmn:IntermediateCatchEvent'],
+    ['timer', 'bpmn:IntermediateCatchEvent'],
+    ['conditional', 'bpmn:IntermediateCatchEvent'],
+    ['signal', 'bpmn:IntermediateCatchEvent'],
+    ['escalation', 'bpmn:IntermediateThrowEvent'],
+    ['compensation', 'bpmn:IntermediateThrowEvent']
+  ])('makes an intermediate event refined with :::%s a %s', async (subtype, bpmnType) => {
+    const conversion = await converter.convert(
+      `flowchart TD\n  S((Start)) --> W((Wait)):::${subtype} --> E((End))`,
+      { autoLayout: false }
+    );
+
+    expect(typeOf(conversion, 'W')).toBe(bpmnType);
+  });
+
+  it('leaves an unrefined intermediate event a throw event with no definition', async () => {
+    const conversion = await converter.convert(
+      'flowchart TD\n  S((Start)) --> W((Wait)) --> E((End))',
+      { autoLayout: false }
+    );
+
+    expect(typeOf(conversion, 'W')).toBe('bpmn:IntermediateThrowEvent');
+    expect(conversion.xml).not.toContain('EventDefinition');
+  });
+
+  it('counts refined activities, gateways and events in the conversion statistics', async () => {
+    const conversion = await converter.convert([
+      'flowchart TD',
+      '  S((Order placed)):::message --> A[Approve]:::user',
+      '  A --> G{Split}:::parallel',
+      '  G --> B[Charge]:::service',
+      '  G --> W((Await shipment)):::timer',
+      '  B --> E((Done)):::terminate',
+      '  W --> E'
+    ].join('\n'), { autoLayout: false });
+
+    expect(conversion.warnings).toEqual([]);
+    expect(conversion.statistics).toMatchObject({
+      totalElements: 6,
+      tasks: 2,
+      gateways: 1,
+      events: 3
+    });
   });
 });

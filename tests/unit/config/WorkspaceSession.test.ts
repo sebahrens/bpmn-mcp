@@ -191,11 +191,12 @@ describe('WorkspaceSession', () => {
 
         const session = WorkspaceSession.fromLaunch(root, {});
 
-        expect(session.getInfo()).toEqual({
+        expect(session.getInfo()).toMatchObject({
           launchCwd: root,
           startupBoundary: root,
           workspace: root,
-          source: 'launch_cwd'
+          source: 'launch_cwd',
+          startupFailure: expect.stringContaining('.mcp-bpmn.json')
         });
         expect(session.getStartupFailure()).toContain('.mcp-bpmn.json');
       });
@@ -251,15 +252,53 @@ describe('WorkspaceSession', () => {
           MCP_BPMN_DIAGRAMS_PATH: await buildOverride(root)
         });
 
-        expect(session.getInfo()).toEqual({
+        expect(session.getInfo()).toMatchObject({
           launchCwd: root,
           startupBoundary: root,
           workspace: root,
-          source: 'launch_cwd'
+          source: 'launch_cwd',
+          startupFailure: expect.stringContaining('MCP_BPMN_DIAGRAMS_PATH')
         });
         expect(session.getStartupFailure()).toContain('MCP_BPMN_DIAGRAMS_PATH');
       }
     );
+
+    it('reports a refused startup configuration through get_workspace', async () => {
+      // The reason was carried on the session but nothing surfaced it until a
+      // workspace switch was attempted and failed (mcp-bpmn-8u0.21).
+      await fs.writeFile(path.join(root, '.mcp-bpmn.json'), '{not json');
+      const session = WorkspaceSession.fromLaunch(root, {});
+      const handler = new BpmnRequestHandler(
+        new SimpleBpmnEngine(session.path),
+        undefined,
+        undefined,
+        undefined,
+        session
+      );
+
+      try {
+        const workspace = await handler.handleRequest('get_workspace', {});
+
+        expect(workspace.isError).toBeUndefined();
+        expect(workspace.structuredContent).toMatchObject({
+          source: 'launch_cwd',
+          startupFailure: expect.stringContaining('.mcp-bpmn.json')
+        });
+      } finally {
+        await handler.shutdown();
+      }
+    });
+
+    it('reports no startup failure when the configuration was applied', async () => {
+      await fs.writeFile(
+        path.join(root, '.mcp-bpmn.json'),
+        JSON.stringify({ path: 'diagrams' })
+      );
+      await fs.mkdir(path.join(root, 'diagrams'), { recursive: true });
+      const session = WorkspaceSession.fromLaunch(root, {});
+
+      expect(session.getInfo()).not.toHaveProperty('startupFailure');
+    });
 
     it('keeps a usable MCP_BPMN_DIAGRAMS_PATH free of any startup failure', async () => {
       const override = path.join(root, 'override');

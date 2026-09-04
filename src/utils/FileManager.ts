@@ -4,7 +4,6 @@ import os from 'os';
 import {
   assertSafeFilename,
   errnoDetail,
-  isPathContained,
   SafeFileStore,
   SafeFilePathError
 } from './SafeFilePath.js';
@@ -108,16 +107,6 @@ export class FileManager {
       : 'process';
     
     return `${baseName}_${timestamp}.bpmn`;
-  }
-
-  /**
-   * Validate that the target path is within allowed directory
-   */
-  validatePath(targetPath: string, allowedDir: string): boolean {
-    const resolvedTarget = path.resolve(targetPath);
-    const resolvedAllowed = path.resolve(allowedDir);
-
-    return isPathContained(resolvedTarget, resolvedAllowed);
   }
 
   /**
@@ -330,48 +319,9 @@ export class FileManager {
   }
 
   /**
-   * List BPMN files in the output directory
-   */
-  async listBpmnFiles(directory?: string): Promise<string[]> {
-    const targetDir = directory || this.defaultDirectory;
-    
-    try {
-      await this.ensureDirectory(targetDir);
-      const files = await fs.readdir(targetDir);
-      return files
-        .filter(file => file.endsWith('.bpmn'))
-        .sort((a, b) => b.localeCompare(a)); // Sort by name, newest first
-    } catch {
-      return [];
-    }
-  }
-
-  /**
    * Get the default output directory
    */
   getDefaultDirectory(): string {
     return this.defaultDirectory;
-  }
-
-  /**
-   * Get file stats
-   */
-  async getFileInfo(filePath: string): Promise<{
-    exists: boolean;
-    size?: number;
-    modified?: Date;
-  }> {
-    try {
-      const stats = await fs.stat(filePath);
-      return {
-        exists: true,
-        size: stats.size,
-        modified: stats.mtime
-      };
-    } catch {
-      return {
-        exists: false
-      };
-    }
   }
 }

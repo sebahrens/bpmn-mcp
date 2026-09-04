@@ -41,7 +41,7 @@ const validArguments = {
   update_connection: {
     connectionId: 'Flow_1',
     label: 'Updated',
-    expectedSemanticRevision: `sha256:${'a'.repeat(64)}`
+    expectedSemanticRevision: `sha256:${'a'.repeat(32)}`
   },
   update_element_geometry: {
     elementId: 'Task_1',
@@ -199,7 +199,7 @@ describe('MCP request validation boundary', () => {
         maximum: TOOL_INPUT_LIMITS.coordinate.max
       });
     expect(updateConnectionGeometrySchema.properties.expectedGeometryRevision.pattern)
-      .toBe('^sha256:[a-f0-9]{64}$');
+      .toBe('^sha256:[a-f0-9]{32}$');
 
     const defaultCases: Array<[ToolName, unknown, Record<string, unknown>]> = [
       ['new_bpmn', { name: 'Defaults' }, { type: 'process' }],
@@ -228,7 +228,7 @@ describe('MCP request validation boundary', () => {
         waypoints: [{ x: 100, y: 100 }, { x: 200, y: 100 }]
       }, { endpointPolicy: 'exact', collisionPolicy: 'reject-new', dryRun: false }],
       ['apply_geometry_patch', {
-        expectedRevision: `sha256:${'a'.repeat(64)}:v1`,
+        expectedRevision: `sha256:${'a'.repeat(32)}:v1`,
         elementUpdates: [{
           elementId: 'Task_1',
           bounds: { x: 100, y: 100, width: 100, height: 80 }
@@ -267,7 +267,7 @@ describe('MCP request validation boundary', () => {
         expectedSemanticRevision: 'nope'
       }, /expectedSemanticRevision: Semantic revision must be a token returned by a prior result/],
       ['apply_geometry_patch', {
-        expectedRevision: `sha256:${'a'.repeat(64)}:v1`,
+        expectedRevision: `sha256:${'a'.repeat(32)}:v1`,
         connectionUpdates: [{
           connectionId: 'Flow_1',
           waypoints: [{ x: 100, y: 100 }, { x: 200, y: 100 }],
@@ -442,7 +442,7 @@ describe('MCP request validation boundary', () => {
     }],
     ['endpoint semantic update without snapping', 'update_connection', {
       connectionId: 'Flow_1', targetId: 'Task_2',
-      expectedSemanticRevision: `sha256:${'a'.repeat(64)}`
+      expectedSemanticRevision: `sha256:${'a'.repeat(32)}`
     }],
     ['empty geometry patch', 'apply_geometry_patch', {}],
     ['unguarded geometry patch element', 'apply_geometry_patch', {
@@ -452,14 +452,14 @@ describe('MCP request validation boundary', () => {
       }]
     }],
     ['duplicate geometry patch element', 'apply_geometry_patch', {
-      expectedRevision: `sha256:${'a'.repeat(64)}:v1`,
+      expectedRevision: `sha256:${'a'.repeat(32)}:v1`,
       elementUpdates: [0, 1].map(() => ({
         elementId: 'Task_1',
         bounds: { x: 10, y: 20, width: 100, height: 80 }
       }))
     }],
     ['geometry patch over total item limit', 'apply_geometry_patch', {
-      expectedRevision: `sha256:${'a'.repeat(64)}:v1`,
+      expectedRevision: `sha256:${'a'.repeat(32)}:v1`,
       elementUpdates: Array.from({ length: 128 }, (_, index) => ({
         elementId: `Task_${index}`,
         bounds: { x: index, y: 20, width: 100, height: 80 }

@@ -153,6 +153,12 @@ export function supportsConditionalOutgoingFlow(element: BpmnDocumentElement): b
   );
 }
 
+/** Every BPMN type that is an activity, and so can be a compensation handler. */
+export function isActivityType(type: string): boolean {
+  return /Task$/.test(type)
+    || ['bpmn:SubProcess', 'bpmn:Transaction', 'bpmn:CallActivity'].includes(type);
+}
+
 function isFlowContainerType(type: string): boolean {
   return type === 'bpmn:SubProcess' || type === 'bpmn:Transaction';
 }
@@ -1329,6 +1335,12 @@ export class BpmnDocumentSerializer {
     if (element.properties.triggeredByEvent === true) {
       semantic.triggeredByEvent = true;
     }
+    // A compensation handler runs only when compensation is thrown. The
+    // attribute is what tells a reader, and an engine, that the activity is
+    // deliberately outside the normal flow rather than unreachable.
+    if (element.properties.isForCompensation === true) {
+      semantic.isForCompensation = true;
+    }
     this.applyDocumentation(semantic, element.properties.documentation);
     if (element.type === 'bpmn:CallActivity'
       && typeof element.properties.calledElement === 'string') {
@@ -2330,6 +2342,9 @@ export class BpmnDocumentSerializer {
     // one and its start event could not even be renamed.
     if (item.triggeredByEvent === true) {
       properties.triggeredByEvent = true;
+    }
+    if (item.isForCompensation === true) {
+      properties.isForCompensation = true;
     }
     const documentation = item.documentation?.[0]?.text;
     if (typeof documentation === 'string' && documentation.length > 0) {

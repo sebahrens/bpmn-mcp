@@ -45,7 +45,9 @@ describe('lane semantics', () => {
 
   it('advertises required assignments and persists two laid-out lanes across reopen and mutation', async () => {
     const laneTool = tools.find(tool => tool.name === 'add_lane')!;
-    expect(laneTool.inputSchema.required).toEqual(['poolId', 'name', 'flowNodeIds']);
+    // name became optional when add_lane learned to target an existing lane by
+    // id, where the name is a rename rather than a requirement (mcp-bpmn-9sv.19).
+    expect(laneTool.inputSchema.required).toEqual(['poolId', 'flowNodeIds']);
     expect((laneTool.inputSchema.properties!.flowNodeIds as any).minItems).toBe(1);
 
     await handler.handleRequest('new_bpmn', { name: 'Departments', type: 'collaboration' });

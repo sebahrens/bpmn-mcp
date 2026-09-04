@@ -67,15 +67,33 @@ Supported input is a `graph` or `flowchart` (or recognizable declaration-less fl
 - quoted labels (`A["Review (draft)"]`, `subgraph cust ["Customer Side"]`). Quotes are delimiters and are removed; anything inside them, including `]`, `|`, `&`, `-->` and markdown backticks, is kept as the name, and `#quot;`/`#35;` entity codes are decoded;
 - edges `-->`, `--->`, `---`, `==>`, `===`, `-.->` and `-.-`, each with an optional label written either inline (`A -- yes --> B`, `A -. retry .-> B`, `A == ship ==> B`) or between pipes (`A -->|yes| B`), but not both on one edge. Arrowless (`---`) and thick (`==>`) links convert to ordinary directed sequence flows and warn that the styling is dropped, as dotted edges already do. `~~~`, `<-->`, `--o` and `--x` are rejected with `UNSUPPORTED_CONNECTOR`;
 - `&` endpoint lists (`A --> B & C`, `A & B --> C`), expanded to the cartesian product of both sides;
-- one level of non-nested subgraphs, declared as `subgraph id[Title]`, `subgraph id["Title"]`, `subgraph "Title"` or `subgraph Title`. A title without an explicit ID gets a unique ID derived from it.
+- one level of non-nested subgraphs, declared as `subgraph id[Title]`, `subgraph id["Title"]`, `subgraph "Title"` or `subgraph Title`. A title without an explicit ID gets a unique ID derived from it;
+- the `:::class` node suffix, to refine what the shape already decided (see below).
 
 Start/end labels and endpoint position can infer start and end events. Other terminator nodes become intermediate throw events. Without subgraphs the result is a process. With subgraphs, each subgraph becomes a white-box pool, every node must belong to one subgraph, internal edges become sequence flows, and cross-subgraph edges become message flows.
 
 Mermaid draws several arrows out of a node to mean a choice; BPMN reads them as a parallel (AND) split in which every branch runs. The conversion follows the diagram, and a non-decision node with two or more outgoing sequence flows raises `IMPLICIT_PARALLEL_SPLIT` at that node. Treat it as a question for the user: an exclusive choice must be written as a decision node (`A{...}`), or modeled with the typed gateway tools.
 
+### Steering the BPMN subtype from Mermaid
+
+A shape picks the BPMN family; the Mermaid class suffix `:::name` picks the member of that family. The suffix is ordinary Mermaid, so a steered diagram still renders in any Mermaid viewer, and the class name is matched ignoring case, `-` and `_` (`:::businessRule`, `:::business-rule` and `:::BUSINESS_RULE` are one class). Write at most one subtype class per node. `classDef` and `class` statements remain styling: they are ignored with a warning and steer nothing, so a class must be written on the node itself.
+
+| Shape | Class | Result |
+| --- | --- | --- |
+| `A[Label]` | none, or `:::task` | `bpmn:Task` |
+| `A[Label]` | `:::user`, `:::service`, `:::script`, `:::businessRule`, `:::manual`, `:::receive`, `:::send` | the matching typed task |
+| `A{Label}` | none, or `:::exclusive` | `bpmn:ExclusiveGateway` |
+| `A{Label}` | `:::parallel`, `:::inclusive`, `:::eventBased`, `:::complex` | the matching gateway |
+| `A((Label))` | none | start, end, or intermediate throw event, as inferred today |
+| `A((Label))` | `:::message`, `:::timer`, `:::error`, `:::signal`, `:::conditional`, `:::escalation`, `:::compensation`, `:::cancel`, `:::terminate` | the same event, carrying that event definition |
+
+An intermediate event with a definition catches when BPMN allows it to (`message`, `timer`, `conditional`, `signal`) and throws otherwise (`escalation`, `compensation`), so a mid-flow message is received; to send one, use `:::send` on a task. An event class is refused where BPMN does not allow it — `:::timer` on an end event, `:::error` anywhere but an end event — with `INVALID_NODE_SUBTYPE` naming the legal placements, as is a class on the wrong family (`:::user` on a gateway). An unrecognized class is still ignored with a warning and refines nothing.
+
+Subprocess and data-object shapes take no subtype class, and there is no Mermaid form for boundary attachment, event-definition payloads (timer expressions, message names), conditions, default flows, lanes, black-box pools, or multi-instance settings. Use `preview_mermaid` to confirm the mapping before importing, then the typed tools for anything above.
+
 `auto_layout` takes the same two reading directions through its `direction` argument (`left-to-right`, the default, or `top-to-bottom`), and a layout that reproduces the geometry already on the diagram is not committed at all: it returns `changed: false` and leaves the revision alone. It still has no spacing, subset, or pinned-element controls, so every coordinate is replaced each time it does commit.
 
-Use typed tools instead when the request needs activity subtypes, non-exclusive gateways, event definitions, boundary attachment, conditions/default flows, lanes, black-box pools, annotations/associations, multi-instance settings, or Camunda 7 user-task fields. Mermaid directives, CSS classes, and edge styles can be ignored with warnings; nested subgraphs and unsupported diagram syntax fail. A data-object node cannot be a sequence/message-flow endpoint.
+Use typed tools instead when the request needs event-definition payloads, boundary attachment, conditions/default flows, lanes, black-box pools, annotations/associations, multi-instance settings, or Camunda 7 user-task fields. Mermaid directives, CSS classes, and edge styles can be ignored with warnings; nested subgraphs and unsupported diagram syntax fail. A data-object node cannot be a sequence/message-flow endpoint.
 
 ## Unsupported or non-editable areas
 

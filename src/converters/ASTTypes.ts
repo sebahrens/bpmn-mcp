@@ -27,10 +27,111 @@ export function isGenericEventLabel(type: 'start' | 'end', label: string): boole
   return GENERIC_EVENT_LABELS[type].has(label.trim().toLowerCase());
 }
 
+/**
+ * BPMN refinements an author can steer from Mermaid with the `:::class` node
+ * suffix, which every Mermaid renderer accepts, so a steered diagram still
+ * draws (mcp-bpmn-j21.12). The suffix refines what the shape already decided;
+ * it never changes a task into a gateway.
+ */
+export type TaskSubtype =
+  | 'user'
+  | 'service'
+  | 'script'
+  | 'businessRule'
+  | 'manual'
+  | 'receive'
+  | 'send';
+
+export type GatewaySubtype =
+  | 'parallel'
+  | 'inclusive'
+  | 'eventBased'
+  | 'complex';
+
+/** Event definitions, spelled as the BPMN event-definition names. */
+export type EventSubtype =
+  | 'message'
+  | 'timer'
+  | 'error'
+  | 'signal'
+  | 'conditional'
+  | 'escalation'
+  | 'compensation'
+  | 'cancel'
+  | 'terminate';
+
+export type NodeSubtype = TaskSubtype | GatewaySubtype | EventSubtype;
+
+/**
+ * The Mermaid node types each subtype may refine. For events this is BPMN's own
+ * legality table (see EVENT_DEFINITION_RULES in BpmnDocument): a timer can start
+ * or interrupt a flow but cannot end one, and an error can only end one. Writing
+ * a subtype where BPMN does not allow it is reported against the author's own
+ * Mermaid, not against generated BPMN ids much later.
+ */
+export const SUBTYPE_HOSTS: Record<NodeSubtype, ReadonlySet<NodeType>> = {
+  user: new Set<NodeType>(['process']),
+  service: new Set<NodeType>(['process']),
+  script: new Set<NodeType>(['process']),
+  businessRule: new Set<NodeType>(['process']),
+  manual: new Set<NodeType>(['process']),
+  receive: new Set<NodeType>(['process']),
+  send: new Set<NodeType>(['process']),
+  parallel: new Set<NodeType>(['decision']),
+  inclusive: new Set<NodeType>(['decision']),
+  eventBased: new Set<NodeType>(['decision']),
+  complex: new Set<NodeType>(['decision']),
+  message: new Set<NodeType>(['start', 'end', 'terminator']),
+  timer: new Set<NodeType>(['start', 'terminator']),
+  signal: new Set<NodeType>(['start', 'end', 'terminator']),
+  conditional: new Set<NodeType>(['start', 'terminator']),
+  escalation: new Set<NodeType>(['end', 'terminator']),
+  compensation: new Set<NodeType>(['end', 'terminator']),
+  error: new Set<NodeType>(['end']),
+  cancel: new Set<NodeType>(['end']),
+  terminate: new Set<NodeType>(['end'])
+};
+
+/**
+ * An intermediate event carrying one of these catches rather than throws. A
+ * mid-flow message is therefore received; to send one, use a send task
+ * (`:::send`), which is how BPMN says it anyway.
+ */
+export const INTERMEDIATE_CATCH_SUBTYPES: ReadonlySet<NodeSubtype> = new Set<NodeSubtype>([
+  'message',
+  'timer',
+  'conditional',
+  'signal'
+]);
+
+/**
+ * Class names that name the default a shape already carries. They are accepted
+ * so an author can spell every branch of a diagram the same way, and refine
+ * nothing.
+ */
+export const NEUTRAL_SUBTYPE_CLASSES: Record<string, NodeType> = {
+  task: 'process',
+  exclusive: 'decision'
+};
+
+/**
+ * Class-name spellings, matched on the name with case, `-` and `_` ignored, so
+ * `:::businessRule`, `:::business-rule` and `:::BUSINESS_RULE` are one class.
+ */
+export const SUBTYPE_CLASS_NAMES: Record<string, NodeSubtype> = Object.fromEntries(
+  (Object.keys(SUBTYPE_HOSTS) as NodeSubtype[]).map(subtype => [normalizeSubtypeClass(subtype), subtype])
+);
+
+export function normalizeSubtypeClass(name: string): string {
+  return name.replace(/[-_]/g, '').toLowerCase();
+}
+
 export interface MermaidNode {
   id: string;
   type: NodeType;
   label: string;
+  /** BPMN refinement asked for with `:::class`, already checked against `type`. */
+  subtype?: NodeSubtype;
 }
 
 export interface MermaidEdge {
@@ -71,7 +172,8 @@ export type ParseErrorCode =
   | 'DUPLICATE_SUBGRAPH'
   | 'MISSING_SUBGRAPH_OWNER'
   | 'MULTIPLE_SUBGRAPH_OWNERS'
-  | 'UNSUPPORTED_EDGE_ENDPOINT';
+  | 'UNSUPPORTED_EDGE_ENDPOINT'
+  | 'INVALID_NODE_SUBTYPE';
 
 export type ParseWarningCode =
   | 'UNSUPPORTED_DIRECTIVE'

@@ -140,7 +140,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
       expect(mapping.flows.every(flow => flow.type === 'bpmn:SequenceFlow')).toBe(true);
       expect(mapping.flows.map(flow => flow.label).filter(Boolean).sort())
         .toEqual(['no', 'yes']);
-      expect(JSON.parse(preview.content[0].text as string)).toEqual(mapping);
+      expect((preview.structuredContent as Record<string, any>)).toEqual(mapping);
 
       // Nothing was created, opened, or replaced.
       expect(diagramContext.getCurrent()).toBe(before);
@@ -481,7 +481,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
       const details = await handler.handleRequest('get_element', {
         elementId: 'IntermediateCatchEvent_1'
       });
-      expect(JSON.parse(details.content[0].text as string).properties).toMatchObject({
+      expect((details.structuredContent as Record<string, any>).properties).toMatchObject({
         eventDefinition: 'timer',
         eventDefinitionPayload: {
           definitionId: expect.any(String),
@@ -906,7 +906,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
       expect(parsed.elementsById.Task_1.default).toBe(parsed.elementsById[defaultFlow.id]);
 
       const details = await handler.handleRequest('get_element', { elementId: 'Task_1' });
-      const detailBody = JSON.parse(details.content[0].text as string);
+      const detailBody = (details.structuredContent as Record<string, any>);
       expect(detailBody.defaultFlow).toBe(defaultFlow.id);
       expect(detailBody.outgoing).toEqual(expect.arrayContaining([
         expect.objectContaining({
@@ -953,7 +953,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
         limit: 2,
         offset: 2
       });
-      expect(JSON.parse(sequencePage.content[0].text as string)).toMatchObject({
+      expect((sequencePage.structuredContent as Record<string, any>)).toMatchObject({
         count: 4,
         returnedCount: 2,
         offset: 2,
@@ -969,7 +969,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
       const conditional = await handler.handleRequest('get_connection', {
         connectionId: 'Flow_Approved'
       });
-      const conditionalView = JSON.parse(conditional.content[0].text as string);
+      const conditionalView = (conditional.structuredContent as Record<string, any>);
       expect(conditionalView).toEqual({
         id: 'Flow_Approved',
         type: 'bpmn:SequenceFlow',
@@ -986,15 +986,15 @@ describe('BpmnRequestHandler Integration Tests', () => {
         waypoints: [{ x: 430, y: 208 }, { x: 490, y: 208 }],
         edgeId: 'Flow_Approved_CustomDI',
         labelBounds: { x: 444, y: 186, width: 62, height: 14 },
-        geometryRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-        semanticRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        geometryRevision: expect.stringMatching(/^sha256:[a-f0-9]{32}$/),
+        semanticRevision: expect.stringMatching(/^sha256:[a-f0-9]{32}$/),
         revision: expect.any(String)
       });
 
       const defaultFlow = await handler.handleRequest('get_connection', {
         connectionId: 'Flow_To_End'
       });
-      expect(JSON.parse(defaultFlow.content[0].text as string)).toMatchObject({
+      expect((defaultFlow.structuredContent as Record<string, any>)).toMatchObject({
         isDefault: true,
         defaultOwnerId: 'SubProcess_Preserved'
       });
@@ -1004,7 +1004,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
         sourceId: 'Task_Unrelated',
         targetId: 'Participant_External'
       });
-      expect(JSON.parse(message.content[0].text as string)).toMatchObject({
+      expect((message.structuredContent as Record<string, any>)).toMatchObject({
         count: 1,
         connections: [{
           id: 'MessageFlow_Notice',
@@ -1027,7 +1027,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
       const association = await handler.handleRequest('get_connection', {
         connectionId: associationId
       });
-      expect(JSON.parse(association.content[0].text as string)).toMatchObject({
+      expect((association.structuredContent as Record<string, any>)).toMatchObject({
         id: associationId,
         type: 'bpmn:Association',
         associationDirection: 'Both',
@@ -1164,7 +1164,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
           connectionId,
           label: 'After',
           condition: { body: '${revised}' },
-          semanticRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/)
+          semanticRevision: expect.stringMatching(/^sha256:[a-f0-9]{32}$/)
         },
         diagnostics: expect.any(Array),
         introducedDiagnostics: [],
@@ -1558,7 +1558,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
         after: {
           waypoints,
           labelBounds: original.labelBounds,
-          geometryRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/)
+          geometryRevision: expect.stringMatching(/^sha256:[a-f0-9]{32}$/)
         },
         diagnostics: expect.any(Array),
         introducedDiagnostics: expect.any(Array),
@@ -1826,7 +1826,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
       const listing = await handler.handleRequest('list_elements', {
         elementType: 'bpmn:Association'
       });
-      expect(JSON.parse(listing.content[0].text as string)).toMatchObject({
+      expect((listing.structuredContent as Record<string, any>)).toMatchObject({
         count: 1,
         elements: [{
           id: 'Association_1',
@@ -1839,7 +1839,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
       const details = await handler.handleRequest('get_element', {
         elementId: 'Association_1'
       });
-      expect(JSON.parse(details.content[0].text as string)).toMatchObject({
+      expect((details.structuredContent as Record<string, any>)).toMatchObject({
         id: 'Association_1',
         kind: 'association',
         associationDirection: 'One'
@@ -2015,7 +2015,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
 
     it('should list all active elements with stable pagination metadata', async () => {
       const result = await handler.handleRequest('list_elements', {});
-      const listing = JSON.parse(result.content[0].text as string);
+      const listing = (result.structuredContent as Record<string, any>);
 
       expect(result.isError).toBeUndefined();
       expect(listing.elements.map((element: { id: string }) => element.id)).toEqual([
@@ -2054,11 +2054,14 @@ describe('BpmnRequestHandler Integration Tests', () => {
       const listing = await handler.handleRequest('list_elements', {});
       const listingText = listing.content[0].text as string;
 
-      // The text block is the same payload as structuredContent, not a second
-      // pretty-printed copy of it.
-      expect(JSON.parse(listingText)).toEqual(listing.structuredContent);
-      expect(listingText).toBe(JSON.stringify(listing.structuredContent));
-      expect(listingText).not.toContain('\n');
+      // The text block summarises the result rather than repeating it. Sending
+      // the payload in both fields made every query cost twice its size in an
+      // agent's context (mcp-bpmn-8u0.25), so the copy is what must not return.
+      expect(() => JSON.parse(listingText)).toThrow();
+      expect(listingText.length)
+        .toBeLessThan(JSON.stringify(listing.structuredContent).length);
+      expect(listingText).toContain('element(s)');
+      expect(listingText).toContain('Task_1');
 
       const rows = (listing.structuredContent as {
         elements: Array<Record<string, unknown>>;
@@ -2115,9 +2118,8 @@ describe('BpmnRequestHandler Integration Tests', () => {
         associatedElementId: task.elementId
       });
 
-      const listing = JSON.parse(
-        (await handler.handleRequest('list_elements', {})).content[0].text as string
-      ) as { elements: Array<{ id: string; kind?: string }> };
+      const listing = (await handler.handleRequest('list_elements', {}))
+        .structuredContent as { elements: Array<{ id: string; kind?: string }> };
 
       const missingKind = listing.elements
         .filter(element => element.kind === undefined)
@@ -2133,7 +2135,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
 
     it('should return element identity, type, and name', async () => {
       const result = await handler.handleRequest('get_element', { elementId: 'Task_1' });
-      const details = JSON.parse(result.content[0].text as string);
+      const details = (result.structuredContent as Record<string, any>);
 
       expect(result.isError).toBeUndefined();
       expect(details).toMatchObject({
@@ -2162,7 +2164,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
 
       const valid = await handler.handleRequest('get_element', { elementId: 'Task_1' });
       expect(valid.isError).toBeUndefined();
-      expect(JSON.parse(valid.content[0].text as string)).toMatchObject({
+      expect((valid.structuredContent as Record<string, any>)).toMatchObject({
         id: 'Task_1',
         name: 'Task'
       });
@@ -2174,7 +2176,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
         name: 'Updated Task'
       });
       const result = await handler.handleRequest('get_element', { elementId: 'Task_1' });
-      const details = JSON.parse(result.content[0].text as string);
+      const details = (result.structuredContent as Record<string, any>);
 
       expect(updated.isError).toBeUndefined();
       expect(details.name).toBe('Updated Task');
@@ -2720,7 +2722,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
         connectionId: connected.connectionId,
         proposedWaypoints: expect.any(Array),
         proposedLabelBounds: expect.any(Object),
-        geometryRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        geometryRevision: expect.stringMatching(/^sha256:[a-f0-9]{32}$/),
         scoreBreakdown: {
           shapeCollisions: 0,
           labelCollisions: 0,
@@ -3245,7 +3247,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
   describe('diagram storage utilities', () => {
     it('should list an empty sandbox with stable pagination metadata', async () => {
       const result = await handler.handleRequest('list_diagrams', {});
-      const listing = JSON.parse(result.content[0].text as string);
+      const listing = (result.structuredContent as Record<string, any>);
 
       expect(result.isError).toBeUndefined();
       expect(listing).toEqual({
@@ -3274,7 +3276,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
         .sort((left, right) => left.filename!.localeCompare(right.filename!));
 
       const result = await handler.handleRequest('list_diagrams', {});
-      const listing = JSON.parse(result.content[0].text as string);
+      const listing = (result.structuredContent as Record<string, any>);
 
       expect(result.isError).toBeUndefined();
       expect(listing).toMatchObject({
@@ -3316,7 +3318,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
       const result = await handler.handleRequest('validate', {});
 
       expect(result.isError).toBeUndefined();
-      const validation = JSON.parse(result.content[0].text as string);
+      const validation = (result.structuredContent as Record<string, any>);
       expect(validation.valid).toBe(true);
       // One issues list carrying each issue's own severity; errors and
       // warnings used to repeat the same objects.
@@ -3349,7 +3351,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
       const result = await handler.handleRequest('validate', {});
 
       expect(result.isError).toBeUndefined();
-      const validation = JSON.parse(result.content[0].text as string);
+      const validation = (result.structuredContent as Record<string, any>);
       expect(validation.valid).toBe(true);
       expect(validation).not.toHaveProperty('errors');
       expect(validation.issues.filter(
@@ -3428,6 +3430,197 @@ describe('BpmnRequestHandler Integration Tests', () => {
     });
   });
 
+  describe('authoring gaps found by driving the server', () => {
+    const exportedXml = async (): Promise<string> => {
+      const exported = await handler.handleRequest('export', { format: 'xml' });
+      const block = exported.content.find(item => item.type === 'text' && item.text.includes('<'));
+      return block && block.type === 'text' ? block.text : '';
+    };
+
+    it('creates a timer boundary event through build_process', async () => {
+      // build_process demanded eventDefinitionPayload and its own schema
+      // rejected the key, so a timer event was unreachable (mcp-bpmn-9sv.17).
+      await handler.handleRequest('new_bpmn', { name: 'Timer build' });
+      const built = await handler.handleRequest('build_process', {
+        nodes: [
+          { kind: 'activity', ref: 'wait', activityType: 'userTask', name: 'Await payment' },
+          {
+            kind: 'event',
+            ref: 'timeout',
+            eventType: 'boundary',
+            name: '14 days',
+            eventDefinition: 'timer',
+            eventDefinitionPayload: { timer: { type: 'timeDuration', expression: 'P14D' } },
+            attachTo: 'wait',
+            cancelActivity: true
+          }
+        ],
+        flows: []
+      });
+
+      expect(built.isError).toBeUndefined();
+      const xml = await exportedXml();
+      expect(xml).toContain('<bpmn:timeDuration');
+      expect(xml).toContain('P14D');
+    });
+
+    it('marks a compensation handler and an event subprocess, and round-trips both', async () => {
+      // Neither flag could be set by any tool, so the constructs could be
+      // imported but never authored (mcp-bpmn-9sv.18, mcp-bpmn-9sv.20).
+      await handler.handleRequest('new_bpmn', { name: 'Flags' });
+      const handlerTask = await handler.handleRequest('add_activity', {
+        activityType: 'task',
+        name: 'Release stock',
+        properties: { isForCompensation: true }
+      });
+      const eventSubprocess = await handler.handleRequest('add_activity', {
+        activityType: 'subProcess',
+        name: 'On escalation',
+        properties: { isExpanded: true, triggeredByEvent: true }
+      });
+
+      expect(handlerTask.isError).toBeUndefined();
+      expect(eventSubprocess.isError).toBeUndefined();
+
+      const xml = await exportedXml();
+      expect(xml).toMatch(/<bpmn:task[^>]*isForCompensation="true"/);
+      expect(xml).toMatch(/<bpmn:subProcess[^>]*triggeredByEvent="true"/);
+
+      const filename = `flags-${Date.now()}.bpmn`;
+      await handler.handleRequest('save_as', { filename });
+      await handler.handleRequest('close', {});
+      const reopened = await handler.handleRequest('open_bpmn', { filename });
+      expect(reopened.isError).toBeUndefined();
+
+      const reexported = await exportedXml();
+      expect(reexported).toMatch(/isForCompensation="true"/);
+      expect(reexported).toMatch(/triggeredByEvent="true"/);
+    });
+
+    it('rejects both flags on an element type that cannot carry them', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Flag guards' });
+      const onEvent = await handler.handleRequest('add_activity', {
+        activityType: 'task',
+        name: 'Not a subprocess',
+        properties: { triggeredByEvent: true }
+      });
+
+      expect(onEvent.isError).toBe(true);
+      expect((onEvent.structuredContent as { message: string }).message)
+        .toContain('only valid on bpmn:SubProcess');
+    });
+
+    it('numbers a new diagram from one instead of continuing the previous one', async () => {
+      // A fresh diagram used to start at Task_4 (mcp-bpmn-8u0.27).
+      await handler.handleRequest('new_bpmn', { name: 'First' });
+      const firstTask = await handler.handleRequest('add_activity', {
+        activityType: 'task',
+        name: 'One'
+      });
+      await handler.handleRequest('new_bpmn', { name: 'Second' });
+      const secondTask = await handler.handleRequest('add_activity', {
+        activityType: 'task',
+        name: 'One'
+      });
+
+      expect((firstTask.structuredContent as { elementId: string }).elementId).toBe('Task_1');
+      expect((secondTask.structuredContent as { elementId: string }).elementId).toBe('Task_1');
+    });
+
+    it('names the missing id when a lane member does not exist', async () => {
+      // The message said "is not a flow node" about an id that was never there
+      // (mcp-bpmn-8u0.22).
+      await handler.handleRequest('new_bpmn', { name: 'Lane errors', type: 'collaboration' });
+      const pool = await handler.handleRequest('add_pool', { name: 'Pool' });
+      const poolId = (pool.structuredContent as { elementId: string }).elementId;
+      const missing = await handler.handleRequest('add_lane', {
+        poolId,
+        name: 'Ops',
+        flowNodeIds: ['Task_404']
+      });
+
+      expect(missing.structuredContent).toMatchObject({
+        code: 'element_not_found',
+        elementId: 'Task_404'
+      });
+
+      const artifact = await handler.handleRequest('add_data_object', {
+        name: 'Claim form',
+        ownerId: (pool.structuredContent as { processId: string }).processId
+      });
+      expect(artifact.isError).toBeUndefined();
+      const wrongKind = await handler.handleRequest('add_lane', {
+        poolId,
+        name: 'Ops',
+        flowNodeIds: [(artifact.structuredContent as { referenceId: string }).referenceId]
+      });
+      expect(wrongKind.structuredContent).toMatchObject({
+        code: 'wrong_object_kind',
+        message: expect.stringContaining('not a flow node')
+      });
+    });
+  });
+
+  describe('lane membership after the fact', () => {
+    it('adds a node to an existing lane instead of creating a duplicate', async () => {
+      // add_lane with an existing name silently made a second lane with the
+      // same name, and nothing could join an existing one (mcp-bpmn-9sv.19).
+      await handler.handleRequest('new_bpmn', { name: 'Lanes', type: 'collaboration' });
+      const pool = await handler.handleRequest('add_pool', { name: 'Retailer' });
+      const poolId = (pool.structuredContent as { elementId: string }).elementId;
+      const processId = (pool.structuredContent as { processId: string }).processId;
+      const first = await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'One', ownerId: processId
+      });
+      const lane = await handler.handleRequest('add_lane', {
+        poolId,
+        name: 'Sales',
+        flowNodeIds: [(first.structuredContent as { elementId: string }).elementId]
+      });
+      expect(lane.structuredContent).toMatchObject({ created: true, assignedFlowNodeCount: 1 });
+
+      const later = await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Two', ownerId: processId
+      });
+      const joined = await handler.handleRequest('add_lane', {
+        poolId,
+        laneId: (lane.structuredContent as { laneId: string }).laneId,
+        flowNodeIds: [(later.structuredContent as { elementId: string }).elementId]
+      });
+
+      expect(joined.structuredContent).toMatchObject({
+        laneId: (lane.structuredContent as { laneId: string }).laneId,
+        created: false,
+        assignedFlowNodeCount: 2
+      });
+
+      const lanes = await handler.handleRequest('list_elements', { elementType: 'bpmn:Lane' });
+      expect((lanes.structuredContent as { count: number }).count).toBe(1);
+    });
+
+    it('refuses a second lane with a name the pool already uses', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Dup lanes', type: 'collaboration' });
+      const pool = await handler.handleRequest('add_pool', { name: 'Retailer' });
+      const poolId = (pool.structuredContent as { elementId: string }).elementId;
+      const processId = (pool.structuredContent as { processId: string }).processId;
+      const nodes = await Promise.all([1, 2].map(index => handler.handleRequest('add_activity', {
+        activityType: 'task', name: `Task ${index}`, ownerId: processId
+      })));
+      const ids = nodes.map(node => (node.structuredContent as { elementId: string }).elementId);
+      const first = await handler.handleRequest('add_lane', {
+        poolId, name: 'Sales', flowNodeIds: [ids[0]]
+      });
+
+      const duplicate = await handler.handleRequest('add_lane', {
+        poolId, name: 'Sales', flowNodeIds: [ids[1]]
+      });
+
+      expect(duplicate.isError).toBe(true);
+      expect((duplicate.structuredContent as { message: string }).message)
+        .toContain(`Pass laneId "${(first.structuredContent as { laneId: string }).laneId}"`);
+    });
+  });
+
   describe('caller-chosen filenames', () => {
     it('creates a new diagram directly under the requested filename', async () => {
       const created = await handler.handleRequest('new_bpmn', {
@@ -3439,7 +3632,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
       expect(created.structuredContent).toMatchObject({ filename: 'approval-process.bpmn' });
 
       const listed = await handler.handleRequest('list_diagrams', {});
-      const listing = JSON.parse(listed.content[0].text as string);
+      const listing = (listed.structuredContent as Record<string, any>);
       const filenames = listing.diagrams.map((diagram: { filename: string }) => diagram.filename);
       expect(filenames).toContain('approval-process.bpmn');
       // No placeholder was ever written, so there is nothing to clean up.
@@ -3466,7 +3659,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
         removedPreviousFile: false
       });
       const listed = await handler.handleRequest('list_diagrams', {});
-      const listing = JSON.parse(listed.content[0].text as string);
+      const listing = (listed.structuredContent as Record<string, any>);
       const filenames = listing.diagrams.map((diagram: { filename: string }) => diagram.filename);
       expect(filenames).toEqual(expect.arrayContaining(['first-name.bpmn', 'second-name.bpmn']));
     });
@@ -3515,7 +3708,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
       }
 
       const validated = await handler.handleRequest('validate', { level: 'full' });
-      expect(JSON.parse(validated.content[0].text as string).valid).toBe(true);
+      expect((validated.structuredContent as Record<string, any>).valid).toBe(true);
     });
 
     it('connects to elements that already exist alongside new refs', async () => {
@@ -3741,7 +3934,7 @@ describe('BpmnRequestHandler Integration Tests', () => {
       const stale = await handler.handleRequest('update_connection', {
         connectionId: flow.connectionId,
         label: 'Approved',
-        expectedRevision: `sha256:${'a'.repeat(64)}:v1`
+        expectedRevision: `sha256:${'a'.repeat(32)}:v1`
       });
 
       expect(stale.isError).toBe(true);

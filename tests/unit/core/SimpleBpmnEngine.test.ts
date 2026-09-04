@@ -972,7 +972,7 @@ describe('SimpleBpmnEngine schema-aware document model', () => {
     });
     expect(added.isError).toBeUndefined();
     const listed = await handler.handleRequest('list_elements', {});
-    const elements = JSON.parse(listed.content[0].text as string).elements;
+    const elements = (listed.structuredContent as Record<string, any>).elements;
     expect(elements).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: participant.id,

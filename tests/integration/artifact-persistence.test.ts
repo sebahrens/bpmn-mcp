@@ -97,8 +97,8 @@ describe('managed rendered artifact persistence', () => {
     expect(context).toMatchObject(before);
 
     const listing = await handler.handleRequest('list_diagrams', {});
-    expect(JSON.parse(textOf(listing)).diagrams).toHaveLength(1);
-    expect(JSON.parse(textOf(listing)).diagrams[0].filename).toBe(before.filename);
+    expect((listing.structuredContent as Record<string, any>).diagrams).toHaveLength(1);
+    expect((listing.structuredContent as Record<string, any>).diagrams[0].filename).toBe(before.filename);
   });
 
   it('preserves an artifact unless overwrite is explicit, then replaces it atomically', async () => {

@@ -6,6 +6,7 @@ import {
   FileManager,
   MermaidFileTooLargeError
 } from '../../../src/utils/FileManager.js';
+import { isPathContained } from '../../../src/utils/SafeFilePath.js';
 
 describe('FileManager behavior matrix', () => {
   let root: string;
@@ -21,16 +22,36 @@ describe('FileManager behavior matrix', () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  it('normalizes generated filenames and keeps path validation separator-aware', () => {
+  it('normalizes generated filenames', () => {
     const filename = fileManager.generateDefaultFilename('Order / Intake...');
 
     expect(filename).toMatch(/^Order___Intake_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-\d{3}Z\.bpmn$/);
     expect(fileManager.sanitizeFilename('../unsafe name')).toBe('_unsafe_name');
-    expect(fileManager.validatePath(path.join(root, 'inside.bpmn'), root)).toBe(true);
-    expect(fileManager.validatePath(`${root}-sibling/outside.bpmn`, root)).toBe(false);
   });
 
-  it('saves, reads, lists, and reports metadata inside its unique temporary root', async () => {
+  // FileManager.validatePath was a one-line wrapper around the production
+  // containment predicate with no caller of its own (mcp-bpmn-iqa.13). The
+  // separator-aware containment it stood for is asserted against that predicate
+  // directly, and the escape it was meant to stop is asserted through the live
+  // save API that actually enforces the workspace boundary.
+  it('keeps the workspace boundary separator-aware through the live save API', async () => {
+    expect(isPathContained(path.join(root, 'inside.bpmn'), root)).toBe(true);
+    expect(isPathContained(`${root}-sibling/outside.bpmn`, root)).toBe(false);
+
+    await expect(fileManager.saveBpmnFile('<xml />', {
+      filename: 'outside.bpmn',
+      directory: `${root}-sibling`
+    })).resolves.toEqual({ success: false, error: 'Invalid save directory' });
+    await expect(fileManager.saveBpmnFile('<xml />', { filename: '../outside.bpmn' }))
+      .resolves.toEqual({ success: false, error: 'Invalid filename' });
+    await expect(fs.readdir(root)).resolves.toEqual([]);
+  });
+
+  // listBpmnFiles and getFileInfo were unreachable duplicates of the engine's
+  // own listing and of fs.stat (mcp-bpmn-iqa.13), so what the round trip has to
+  // show is that the saved file really landed, at the reported path, with the
+  // reported bytes.
+  it('saves and reads back exactly the bytes it wrote inside its unique temporary root', async () => {
     const xml = '<bpmn:process id="Process_1" name="Order Intake" />';
     const saved = await fileManager.saveBpmnFile(xml);
 
@@ -38,15 +59,9 @@ describe('FileManager behavior matrix', () => {
     expect(saved.filePath).toBe(path.join(await fs.realpath(root), saved.filename!));
     await expect(fileManager.readBpmnFile(saved.filename!, Buffer.byteLength(xml)))
       .resolves.toBe(xml);
-    await expect(fileManager.listBpmnFiles()).resolves.toEqual([saved.filename]);
-    const fileInfo = await fileManager.getFileInfo(saved.filePath!);
-    expect(fileInfo).toMatchObject({
-      exists: true,
-      size: Buffer.byteLength(xml)
-    });
-    expect(Number.isFinite(fileInfo.modified?.getTime())).toBe(true);
-    await expect(fileManager.getFileInfo(path.join(root, 'missing.bpmn')))
-      .resolves.toEqual({ exists: false });
+    await expect(fs.readdir(root)).resolves.toEqual([saved.filename]);
+    expect((await fs.stat(saved.filePath!)).size).toBe(Buffer.byteLength(xml));
+    await expect(fileManager.readBpmnFile('missing.bpmn', 1024)).rejects.toThrow();
   });
 
   it('preserves an existing destination unless overwrite is explicitly enabled', async () => {
@@ -142,18 +157,19 @@ describe('FileManager behavior matrix', () => {
     );
   });
 
-  it('filters and deterministically orders directory listings', async () => {
-    await Promise.all([
-      fs.writeFile(path.join(root, 'a.bpmn'), 'a'),
-      fs.writeFile(path.join(root, 'z.bpmn'), 'z'),
-      fs.writeFile(path.join(root, 'ignored.txt'), 'text')
-    ]);
-
-    await expect(fileManager.listBpmnFiles()).resolves.toEqual(['z.bpmn', 'a.bpmn']);
-
+  // The listing this used to assert now belongs to SimpleBpmnEngine.listDiagrams
+  // (mcp-bpmn-iqa.13). What is still FileManager's own is that a first save
+  // creates the workspace it was configured with and disturbs nothing beside it.
+  it('creates a missing workspace on first save and leaves unrelated files alone', async () => {
+    await fs.writeFile(path.join(root, 'ignored.txt'), 'text');
     const nestedRoot = path.join(root, 'new-directory');
     const nestedManager = new FileManager(nestedRoot);
-    await expect(nestedManager.listBpmnFiles()).resolves.toEqual([]);
+
+    await expect(nestedManager.saveBpmnFile('<xml />', { filename: 'a.bpmn' }))
+      .resolves.toMatchObject({ success: true, filename: 'a.bpmn' });
+
     expect((await fs.stat(nestedRoot)).isDirectory()).toBe(true);
+    await expect(fs.readdir(nestedRoot)).resolves.toEqual(['a.bpmn']);
+    await expect(fs.readdir(root)).resolves.toEqual(['ignored.txt', 'new-directory']);
   });
 });

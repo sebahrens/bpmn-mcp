@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CallToolResult, ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import { SimpleBpmnEngine } from '../../src/core/SimpleBpmnEngine.js';
 import { diagramContext } from '../../src/core/DiagramContext.js';
 import { BpmnRequestHandler } from '../../src/server/handlers.js';
@@ -280,9 +281,30 @@ describe('MCP tool behavior annotations', () => {
 
     const first = successfulContent(await handler.handleRequest('add_lane', laneArgs));
     const afterFirstLane = await storedFiles(directory);
-    const second = successfulContent(await handler.handleRequest('add_lane', laneArgs));
 
-    expect(first.laneId).not.toBe(second.laneId);
+    // Repeating the call used to create a second lane with the same name and
+    // no warning (mcp-bpmn-9sv.19). It is now rejected, and the error names
+    // the lane to target instead.
+    const repeated = await handler.handleRequest('add_lane', laneArgs);
+    expect(repeated.isError).toBe(true);
+    expect((repeated.structuredContent as { message: string }).message)
+      .toContain(`already has a lane named "Operators" (${first.laneId})`);
+    expect(await storedFiles(directory)).toEqual(afterFirstLane);
+
+    const moved = successfulContent(await handler.handleRequest('add_activity', {
+      activityType: 'task',
+      name: 'Second task',
+      ownerId: pool.processId
+    }));
+    const joined = successfulContent(await handler.handleRequest('add_lane', {
+      poolId: pool.elementId,
+      laneId: first.laneId,
+      flowNodeIds: [moved.elementId]
+    }));
+
+    expect(joined.laneId).toBe(first.laneId);
+    expect(joined.created).toBe(false);
+    expect(joined.assignedFlowNodeCount).toBe(2);
     expect(await storedFiles(directory)).not.toEqual(afterFirstLane);
     expect(EXPECTED_ANNOTATIONS.add_lane).toMatchObject({
       destructiveHint: true,
@@ -389,17 +411,60 @@ describe('structured tool errors', () => {
 describe('advertised schema cost', () => {
   // tools/list is sent to the model before it can do anything, so its size is
   // a per-session tax on every agent. It was 168 KB before the expanded XML
-  // NCName pattern was dropped from every id-valued field; the error branch
-  // each outputSchema now advertises costs some of that back, and is required
-  // for clients to accept error results at all. This bound is deliberately
-  // close to the current size so a regression is noticed; raise it
-  // consciously when the tool surface grows.
-  const MAX_TOOLS_LIST_BYTES = 140_000;
+  // NCName pattern was dropped from every id-valued field, and 137 KB before
+  // output-schema prose was dropped and repeated output sub-schemas were
+  // shared through $ref (mcp-bpmn-8u0.24). This bound is deliberately close to
+  // the current size so a regression is noticed; raise it consciously when the
+  // tool surface grows.
+  const MAX_TOOLS_LIST_BYTES = 120_000;
 
   it('keeps the advertised tool list within its size budget', () => {
     const advertised = JSON.stringify(tools);
 
     expect(advertised.length).toBeLessThan(MAX_TOOLS_LIST_BYTES);
+  });
+
+  it('carries no prose in output schemas, which no reader ever sees', () => {
+    // Hosts hand the input schema to the model and keep the output schema for
+    // validation; a validator ignores descriptions. Advertising them cost
+    // 18,768 bytes of every agent's context before its first call.
+    const described = tools
+      .filter(tool => JSON.stringify(tool.outputSchema).includes('"description"'))
+      .map(tool => tool.name);
+
+    expect(described).toEqual([]);
+  });
+
+  it('resolves every $ref it advertises, and they still constrain', async () => {
+    // Sharing a repeated sub-schema is only safe if the pointer resolves from
+    // the document root. A $ref that resolves to nothing silently accepts
+    // anything, so this asserts the referenced constraint still bites.
+    const withRefs = tools.filter(tool => JSON.stringify(tool.outputSchema).includes('"$ref"'));
+    expect(withRefs.length).toBeGreaterThan(0);
+
+    const dangling = withRefs.flatMap(tool => Array.from(
+      JSON.stringify(tool.outputSchema).matchAll(/"\$ref":"([^"]+)"/g),
+      match => match[1]
+    ).filter(pointer => !pointer.startsWith('#/anyOf/0/')).map(
+      pointer => `${tool.name}: ${pointer}`
+    ));
+    expect(dangling).toEqual([]);
+
+    const validator = new AjvJsonSchemaValidator();
+    const newBpmn = tools.find(tool => tool.name === 'new_bpmn')!;
+    const validate = validator.getValidator(newBpmn.outputSchema as never);
+    const result = {
+      processId: 'Process_1',
+      name: 'Sized',
+      type: 'process',
+      extensionProfile: 'portable',
+      filename: 'sized.bpmn',
+      revision: `sha256:${'a'.repeat(32)}:v1`
+    };
+
+    expect(await validate(result)).toMatchObject({ valid: true });
+    // filename is the field reached through the $ref; an empty one must fail.
+    expect(await validate({ ...result, filename: '' })).toMatchObject({ valid: false });
   });
 
   it('does not embed the expanded XML NCName character class in any schema', () => {

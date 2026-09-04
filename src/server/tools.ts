@@ -105,14 +105,14 @@ const opaqueExpressionBody = () => z.string()
   .refine(value => value.trim().length > 0, 'Expression body must not be blank');
 const extensionProfile = z.enum(['portable', 'camunda7']);
 const DOCUMENT_REVISION_FORMAT = 'Document revision must be a token returned by a prior '
-  + 'result, of the form "sha256:<64 lowercase hex characters>:v<number>"';
+  + 'result, of the form "sha256:<32 lowercase hex characters>:v<number>"';
 const GEOMETRY_REVISION_FORMAT = 'Geometry revision must be a token returned by a prior '
-  + 'result, of the form "sha256:<64 lowercase hex characters>"';
+  + 'result, of the form "sha256:<32 lowercase hex characters>"';
 const SEMANTIC_REVISION_FORMAT = 'Semantic revision must be a token returned by a prior '
-  + 'result, of the form "sha256:<64 lowercase hex characters>"';
+  + 'result, of the form "sha256:<32 lowercase hex characters>"';
 const revision = z.string()
-  .max(96)
-  .regex(/^sha256:[a-f0-9]{64}:v\d+$/, DOCUMENT_REVISION_FORMAT)
+  .max(64)
+  .regex(/^sha256:[a-f0-9]{32}:v\d+$/, DOCUMENT_REVISION_FORMAT)
   .describe('Opaque document revision token for optimistic concurrency');
 const expectedRevisionField = {
   expectedRevision: revision.optional().describe(
@@ -209,7 +209,7 @@ const geometryPatchConnectionUpdate = z.object({
     'Optional additional compare-and-set guard for current BPMNEdge waypoints'
   ),
   expectedGeometryRevision: z.string()
-    .regex(/^sha256:[a-f0-9]{64}$/, GEOMETRY_REVISION_FORMAT).optional().describe(
+    .regex(/^sha256:[a-f0-9]{32}$/, GEOMETRY_REVISION_FORMAT).optional().describe(
     'Compare-and-set guard for the complete current BPMNEdge geometry'
   ),
   endpointPolicy: z.enum(['exact', 'snap-to-boundary']).default('exact').describe(
@@ -245,13 +245,56 @@ const multiInstance = z.object({
     'ID of an existing BPMN ItemAwareElement receiving the aggregate loop output'
   )
 }).strict();
+/**
+ * Details an event definition needs beyond its type. Shared by add_event and
+ * build_process: a timer or conditional definition is rejected without it, so a
+ * tool that accepts `eventDefinition` must accept this too.
+ */
+const eventDefinitionPayload = z.object({
+  definitionId: bpmnId().optional().describe(
+    'Stable child event-definition ID (generated when omitted)'
+  ),
+  reference: z.object({
+    id: bpmnId().optional(),
+    name: name().optional(),
+    code: expression().optional()
+  }).strict().optional().describe(
+    'Root message, signal, error, or escalation definition; id is generated when omitted'
+  ),
+  timer: z.object({
+    type: z.enum(['timeDate', 'timeDuration', 'timeCycle']),
+    expression: expression(),
+    language: language().optional()
+  }).strict().optional(),
+  condition: z.object({
+    expression: expression(),
+    language: language().optional()
+  }).strict().optional(),
+  activityRef: bpmnId().optional().describe(
+    'Activity targeted by a compensation throw'
+  ),
+  waitForCompletion: z.boolean().optional().describe('Compensation throw behavior')
+}).strict().optional().describe(
+  'Definition details. Timer requires timer; conditional requires condition. '
+  + 'Message/signal/error/escalation roots are generated and may be named or '
+  + 'assigned a stable ID here.'
+);
+
 const activityProperties = z.object({
   isExpanded: z.boolean().optional(),
   calledElement: extensionString().optional(),
   assignee: extensionString().optional(),
   candidateGroups: candidateGroups().optional(),
   dueDate: extensionString().optional(),
-  multiInstance: multiInstance.optional()
+  multiInstance: multiInstance.optional(),
+  isForCompensation: z.boolean().optional().describe(
+    'Marks a compensation handler: the activity runs only when compensation is '
+    + 'thrown, so it sits outside the normal flow and takes no sequence flows'
+  ),
+  triggeredByEvent: z.boolean().optional().describe(
+    'Marks a subProcess as an event subprocess, triggered by its own start '
+    + 'event rather than by an incoming sequence flow'
+  )
 }).strict();
 const elementUpdateProperties = z.object({
   isExpanded: z.boolean().optional(),
@@ -265,6 +308,14 @@ const elementUpdateProperties = z.object({
   candidateGroups: candidateGroups().nullable().optional(),
   dueDate: extensionString().nullable().optional(),
   multiInstance: multiInstance.optional(),
+  isForCompensation: z.boolean().optional().describe(
+    'Marks a compensation handler: the activity runs only when compensation is '
+    + 'thrown, so it sits outside the normal flow and takes no sequence flows'
+  ),
+  triggeredByEvent: z.boolean().optional().describe(
+    'Marks a subProcess as an event subprocess, triggered by its own start '
+    + 'event rather than by an incoming sequence flow'
+  ),
   isCollection: z.boolean().optional(),
   itemSubjectRef: bpmnId().nullable().optional()
 }).strict();
@@ -293,6 +344,7 @@ const buildNode = z.discriminatedUnion('kind', [
       'message', 'timer', 'error', 'signal', 'conditional',
       'escalation', 'compensation', 'cancel', 'terminate'
     ]).optional(),
+    eventDefinitionPayload: eventDefinitionPayload,
     attachTo: bpmnId().optional().describe('Required activity ID for boundary events'),
     cancelActivity: z.boolean().optional(),
     ...buildOwnership
@@ -374,10 +426,10 @@ const outputGeometryBounds = outputPosition.extend({
   height: z.number().finite()
 }).strict();
 const outputGeometryRevision = z.string()
-  .regex(/^sha256:[a-f0-9]{64}$/, GEOMETRY_REVISION_FORMAT)
+  .regex(/^sha256:[a-f0-9]{32}$/, GEOMETRY_REVISION_FORMAT)
   .describe('Opaque revision of this connection BPMNEdge geometry');
 const outputSemanticRevision = z.string()
-  .regex(/^sha256:[a-f0-9]{64}$/, SEMANTIC_REVISION_FORMAT)
+  .regex(/^sha256:[a-f0-9]{32}$/, SEMANTIC_REVISION_FORMAT)
   .describe('Opaque revision of this connection semantic state');
 const outputGeometryLabel = z.object({
   id: z.string().min(1),
@@ -559,6 +611,7 @@ const outputSchemas = {
       elementId: outputBpmnId,
       type: z.string().min(1),
       name: z.string().optional(),
+      eventDefinition: z.string().min(1).optional(),
       ownerId: outputBpmnId
     }).strict()).max(MAX_INPUT_ARRAY_ITEMS),
     flows: z.array(z.object({
@@ -576,7 +629,8 @@ const outputSchemas = {
   }).strict(),
   open_bpmn: outputDiagram.extend({
     elementCount: outputCount,
-    connectionCount: outputCount
+    connectionCount: outputCount,
+    laneCount: outputCount
   }).strict(),
   open_mermaid_file: outputDiagram.extend({
     sourceFilename: z.string().min(1),
@@ -669,6 +723,7 @@ const outputSchemas = {
   add_lane: z.object({
     laneId: outputBpmnId,
     poolId: outputBpmnId,
+    created: z.boolean(),
     assignedFlowNodeCount: outputCount,
     filename: outputFilename,
     ...outputMutationRevisions
@@ -892,7 +947,8 @@ const outputSchemas = {
     startupBoundary: z.string().min(1),
     workspace: z.string().min(1),
     source: z.enum(['environment', 'repository_config', 'launch_cwd', 'selection']),
-    configPath: z.string().min(1).optional()
+    configPath: z.string().min(1).optional(),
+    startupFailure: z.string().min(1).optional()
   }).strict(),
   select_workspace: z.object({
     launchCwd: z.string().min(1),
@@ -956,9 +1012,20 @@ export const toolDefinitions = {
       + 'start/begin or end/stop/finish becomes that event whatever its shape; -->, -.-> and '
       + 'labelled edges become sequence flows, and an edge crossing subgraphs becomes a '
       + 'message flow; each subgraph becomes a pool. Any other shape is reported as a '
-      + 'diagnostic instead of being guessed. Parallel and inclusive gateways, user and '
-      + 'service tasks, and message or timer events have no Mermaid form: import first, then '
-      + 'add or retype them with add_gateway, add_activity and add_event.',
+      + 'diagnostic instead of being guessed. A :::class suffix on a node refines what its '
+      + 'shape decided, matched ignoring case, - and _: on ID[Label], :::user, :::service, '
+      + ':::script, :::businessRule, :::manual, :::receive or :::send selects that typed '
+      + 'task; on ID{Label}, :::parallel, :::inclusive, :::eventBased or :::complex selects '
+      + 'that gateway; on ID((Label)), :::message, :::timer, :::error, :::signal, '
+      + ':::conditional, :::escalation, :::compensation, :::cancel or :::terminate adds that '
+      + 'event definition, and an intermediate event carrying one becomes '
+      + 'bpmn:IntermediateCatchEvent where BPMN allows the definition to be caught. :::task '
+      + 'and :::exclusive name the defaults. A class BPMN does not allow on that node is '
+      + 'reported as INVALID_NODE_SUBTYPE naming the legal placements; an unrecognized class '
+      + 'is ignored with a warning, and classDef/class statements remain styling that steers '
+      + 'nothing. Boundary attachment, event-definition payloads (timer expressions, message '
+      + 'names), conditions, default flows, lanes and black-box pools still have no Mermaid '
+      + 'form: import first, then use add_event, add_activity, add_gateway and update_element.',
     outputSchema: outputSchemas.preview_mermaid,
     schema: z.object({
       mermaidCode: boundedTrimmedString(TOOL_INPUT_LIMITS.mermaidCode)
@@ -967,7 +1034,7 @@ export const toolDefinitions = {
   },
   open_bpmn: {
     annotations: IDEMPOTENT_UPDATE,
-    description: 'Open an existing BPMN file and set it as current context, replacing and closing whatever diagram was current (unsaved changes in it are discarded)',
+    description: 'Open an existing BPMN file and set it as current context, replacing and closing whatever diagram was current (unsaved changes in it are discarded). elementCount counts flow nodes and pools; lanes are reported separately and associations count as connections, so list_elements returns a larger total',
     outputSchema: outputSchemas.open_bpmn,
     schema: z.object({
       filename: filename().describe('Filename of the BPMN diagram to open')
@@ -1046,33 +1113,7 @@ export const toolDefinitions = {
       ]).optional().describe(
         'Event definition type. The event kind/type combination must be BPMN-legal.'
       ),
-      eventDefinitionPayload: z.object({
-        definitionId: bpmnId().optional().describe(
-          'Stable child event-definition ID (generated when omitted)'
-        ),
-        reference: z.object({
-          id: bpmnId().optional(),
-          name: name().optional(),
-          code: expression().optional()
-        }).strict().optional().describe(
-          'Root message, signal, error, or escalation definition; id is generated when omitted'
-        ),
-        timer: z.object({
-          type: z.enum(['timeDate', 'timeDuration', 'timeCycle']),
-          expression: expression(),
-          language: language().optional()
-        }).strict().optional(),
-        condition: z.object({
-          expression: expression(),
-          language: language().optional()
-        }).strict().optional(),
-        activityRef: bpmnId().optional().describe(
-          'Activity targeted by a compensation throw'
-        ),
-        waitForCompletion: z.boolean().optional().describe('Compensation throw behavior')
-      }).strict().optional().describe(
-        'Definition details. Timer requires timer; conditional requires condition. Message/signal/error/escalation roots are generated and may be named or assigned a stable ID here.'
-      ),
+      eventDefinitionPayload: eventDefinitionPayload,
       cancelActivity: z.boolean().optional().describe(
         'Whether a boundary event interrupts its attached activity; compensation boundaries must be false'
       ),
@@ -1253,11 +1294,16 @@ export const toolDefinitions = {
   },
   add_lane: {
     annotations: DESTRUCTIVE_NON_IDEMPOTENT,
-    description: 'Add a lane to a white-box pool and assign flow nodes to it. Existing assignments are moved from their previous lane.',
+    description: 'Add a lane to a white-box pool and assign flow nodes to it, or add flow nodes to an existing lane by passing laneId. Existing assignments are moved from their previous lane. A second lane with a name the pool already uses is rejected, and the error names the lane to target instead.',
     outputSchema: outputSchemas.add_lane,
     schema: z.object({
       poolId: bpmnId().describe('ID of the pool to add lane to'),
-      name: name().describe('Name of the lane'),
+      laneId: bpmnId().optional().describe(
+        'Existing lane to add these flow nodes to. Omit to create a new lane.'
+      ),
+      name: name().optional().describe(
+        'Name of the lane. Required when creating one; renames the lane when laneId is given'
+      ),
       flowNodeIds: withJsonSchemaMetadata(
         z.array(bpmnId())
           .min(TOOL_INPUT_LIMITS.laneFlowNodeIds.minItems)
@@ -1273,7 +1319,7 @@ export const toolDefinitions = {
       ),
       position: z.enum(['top', 'bottom'])
         .default('bottom')
-        .describe('Position relative to existing lanes'),
+        .describe('Position relative to existing lanes; ignored when laneId is given'),
       ...expectedRevisionField
     }).strict()
   },
@@ -1749,6 +1795,28 @@ export type ParsedToolRequest = {
 
 export const toolNames = Object.keys(toolDefinitions) as ToolName[];
 
+/**
+ * Drop every `description` from a schema tree.
+ *
+ * Output-schema prose is read by nobody: hosts pass the input schema to the
+ * model and keep the output schema for validation, and a validator ignores
+ * descriptions. Advertising them cost 18,768 bytes of every agent's context
+ * window before it could make a single call (mcp-bpmn-8u0.24).
+ */
+function withoutDescriptions<T>(node: T): T {
+  if (Array.isArray(node)) {
+    return node.map(withoutDescriptions) as unknown as T;
+  }
+  if (node && typeof node === 'object') {
+    return Object.fromEntries(
+      Object.entries(node as Record<string, unknown>)
+        .filter(([key]) => key !== 'description')
+        .map(([key, value]) => [key, withoutDescriptions(value)])
+    ) as T;
+  }
+  return node;
+}
+
 function toJsonObjectSchema(schema: z.ZodTypeAny): Tool['inputSchema'] {
   const { $schema: _schemaUri, ...jsonSchema } = zodToJsonSchema(schema, {
     $refStrategy: 'none',
@@ -1777,26 +1845,70 @@ const TOOL_ERROR_OUTPUT_SCHEMA = {
   type: 'object',
   required: ['code', 'message'],
   properties: {
-    code: { type: 'string', description: 'Stable machine-readable failure code' },
-    message: { type: 'string' },
-    recovery: { type: 'string', description: 'Suggested next action' }
+    code: { type: 'string' },
+    message: { type: 'string' }
   },
-  additionalProperties: true,
-  description: 'Failure payload returned when isError is true'
+  additionalProperties: true
 } as const;
+
+/**
+ * Build one tool's output schema, sharing every repeated sub-schema through a
+ * single `definitions` block.
+ *
+ * Shapes like a BPMN id, a revision token and a set of bounds appear dozens of
+ * times across these schemas; inlined, they were most of the payload. A `$ref`
+ * resolves against the document root, so the definitions are hoisted above the
+ * anyOf rather than left inside its first branch, where `#/definitions/...`
+ * would not resolve. The e2e suite compiles every advertised schema with Ajv
+ * and validates real results against it, which is what proves the references
+ * resolve (mcp-bpmn-8u0.24).
+ */
+function toToolOutputSchema(schema: z.ZodTypeAny): Tool['outputSchema'] {
+  const { $schema: _schemaUri, ...jsonSchema } = zodToJsonSchema(schema, {
+    $refStrategy: 'root',
+    target: 'jsonSchema7',
+    postProcess: jsonDescription
+  }) as Record<string, unknown>;
+
+  return {
+    type: 'object',
+    anyOf: [
+      rebaseRefs(withoutDescriptions(jsonSchema), '#/anyOf/0'),
+      TOOL_ERROR_OUTPUT_SCHEMA
+    ]
+  } as unknown as Tool['outputSchema'];
+}
+
+/**
+ * Re-point document-relative `$ref`s at the schema's new position.
+ *
+ * The generator emits `#/properties/x` for a sub-schema it has already seen,
+ * which resolves from the root of the document it produced. Wrapping that
+ * document as the first branch of an `anyOf` moves it, so every such pointer
+ * has to gain the `#/anyOf/0` prefix or it silently resolves to nothing.
+ */
+function rebaseRefs<T>(node: T, prefix: string): T {
+  if (Array.isArray(node)) {
+    return node.map(item => rebaseRefs(item, prefix)) as unknown as T;
+  }
+  if (node && typeof node === 'object') {
+    return Object.fromEntries(
+      Object.entries(node as Record<string, unknown>).map(([key, value]) => (
+        key === '$ref' && typeof value === 'string' && value.startsWith('#/')
+          ? [key, `${prefix}${value.slice(1)}`]
+          : [key, rebaseRefs(value, prefix)]
+      ))
+    ) as T;
+  }
+  return node;
+}
 
 export const tools: Tool[] = toolNames.map(name => ({
   name,
   annotations: toolDefinitions[name].annotations,
   description: toolDefinitions[name].description,
   inputSchema: toJsonObjectSchema(toolDefinitions[name].schema),
-  outputSchema: {
-    type: 'object',
-    anyOf: [
-      toJsonObjectSchema(toolDefinitions[name].outputSchema),
-      TOOL_ERROR_OUTPUT_SCHEMA
-    ]
-  } as unknown as Tool['outputSchema']
+  outputSchema: toToolOutputSchema(toolDefinitions[name].outputSchema)
 }));
 
 export function parseToolRequest(name: string, args: unknown): ParsedToolRequest {

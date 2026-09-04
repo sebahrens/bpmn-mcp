@@ -268,7 +268,13 @@ export class BpmnValidator {
     this.validateLanes(containers, semanticById, issues);
 
     if (level === 'full') {
-      this.validateExecutableProfile(processes, containers, issues);
+      this.validateExecutableProfile(
+        processes,
+        containers,
+        collaborationContexts,
+        semanticById,
+        issues
+      );
     }
 
     return this.result(level, issues);
@@ -811,10 +817,19 @@ export class BpmnValidator {
   private validateExecutableProfile(
     processes: any[],
     containers: FlowContainer[],
+    collaborationContexts: CollaborationContext[],
+    semanticById: Map<string, SemanticElement>,
     issues: BpmnValidationIssue[]
   ): void {
     const executableOwners = new Set(
       processes.filter(process => process.isExecutable === true).map(process => process.id)
+    );
+    const compensationHandlers = this.collectCompensationHandlers(
+      [
+        ...containers.flatMap(container => container.associations),
+        ...collaborationContexts.flatMap(context => context.associations)
+      ],
+      semanticById
     );
     for (const container of containers.filter(item => executableOwners.has(item.ownerId))) {
       const incoming = new Set(container.sequenceFlows.map(flow => flow.targetRef?.id));
@@ -822,9 +837,10 @@ export class BpmnValidator {
       const starts = container.flowNodes.filter(node => node.$type === 'bpmn:StartEvent');
       const ends = container.flowNodes.filter(node => node.$type === 'bpmn:EndEvent');
       // An ad-hoc subprocess holds activities its performer may run in any
-      // order, or not at all; the schema gives it no entry or exit point, so
-      // asking it for a start and an end event asks for something the construct
-      // does not have.
+      // order, or not at all; the schema gives it no entry or exit point and
+      // orders nothing inside it, so asking it for a start and an end event —
+      // or asking its activities for the sequence flows the construct exists to
+      // do without — asks for something that cannot be there.
       const boundedScope = !this.isInstance(container.element, 'bpmn:AdHocSubProcess');
       if (boundedScope && starts.length === 0) {
         this.addIssue(issues, {
@@ -842,12 +858,19 @@ export class BpmnValidator {
           elementId: container.element.id
         });
       }
+      if (!boundedScope) continue;
       for (const node of container.flowNodes) {
         // An event subprocess is started by its own event-defined start event
         // and never by the enclosing scope's control flow: the semantic rule
         // BPMN_EVENT_SUBPROCESS_HAS_SEQUENCE_FLOW rejects exactly the wiring
         // these two warnings used to ask for.
         if (node.triggeredByEvent === true && this.isInstance(node, 'bpmn:SubProcess')) continue;
+        // A compensation handler is reached by a compensation throw, and its
+        // compensation boundary event reaches it by an Association. Neither end
+        // of that pair belongs to the sequence flow, so both warnings would ask
+        // for wiring that BPMN forbids.
+        if (compensationHandlers.has(node.id)) continue;
+        if (this.isCompensationBoundaryEvent(node)) continue;
         if (!incoming.has(node.id)
           && !['bpmn:StartEvent', 'bpmn:BoundaryEvent'].includes(node.$type)) {
           this.addIssue(issues, {
@@ -867,6 +890,41 @@ export class BpmnValidator {
         }
       }
     }
+  }
+
+  /**
+   * Ids of the activities that serve as compensation handlers.
+   *
+   * BPMN attaches a handler to its compensation boundary event with an
+   * Association and keeps it out of the sequence flow entirely, so the handler
+   * is recognised structurally: it is the target of an Association whose source
+   * is a compensation boundary event. `isForCompensation` is honoured as well
+   * wherever a document carries it, which covers a handler that is marked but
+   * not yet associated.
+   */
+  private collectCompensationHandlers(
+    associations: any[],
+    semanticById: Map<string, SemanticElement>
+  ): Set<string> {
+    const handlers = new Set<string>();
+    for (const [id, indexed] of semanticById) {
+      if (indexed.element?.isForCompensation === true) handlers.add(id);
+    }
+    for (const association of associations) {
+      if (!this.isCompensationBoundaryEvent(association.sourceRef)) continue;
+      const target = association.targetRef;
+      if (typeof target?.id === 'string' && this.isInstance(target, 'bpmn:Activity')) {
+        handlers.add(target.id);
+      }
+    }
+    return handlers;
+  }
+
+  private isCompensationBoundaryEvent(element: any): boolean {
+    return element?.$type === 'bpmn:BoundaryEvent'
+      && (element.eventDefinitions || []).some(
+        (definition: any) => definition.$type === 'bpmn:CompensateEventDefinition'
+      );
   }
 
   private isInstance(element: any, type: string): boolean {

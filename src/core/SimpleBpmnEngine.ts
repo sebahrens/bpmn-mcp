@@ -57,6 +57,7 @@ import {
   isBpmnFlowNodeType,
   BpmnXmlParseError,
   isBpmnQName,
+  isActivityType,
   isSupportedEventDefinitionType,
   resolveAssociationOwnership,
   supportsEventDefinition,
@@ -64,6 +65,13 @@ import {
 } from './BpmnDocument.js';
 import { BpmnDocumentLayoutAdapter } from './layout/adapters/BpmnDocumentLayoutAdapter.js';
 import { applyCollaborationLayoutPolicy } from './layout/CollaborationLayoutPolicy.js';
+import { restoreDroppedLayoutEdges } from './layout/LayoutEdgeRestoration.js';
+import { applyPinnedElements } from './layout/LayoutPinning.js';
+import {
+  applyLayoutSpacing,
+  assertLayoutSpacing,
+  DEFAULT_LAYOUT_SPACING
+} from './layout/LayoutSpacing.js';
 import {
   ConnectionRouter,
   type ConnectionRouteCandidate,
@@ -91,6 +99,22 @@ import {
  */
 export interface AutoLayoutResult extends BpmnLayoutResult {
   changed: boolean;
+}
+
+/** The knobs `auto_layout` offers on top of the layout engine's own ranking. */
+export interface AutoLayoutOptions {
+  /**
+   * Multiplier for the gaps the ranked layout leaves between its ranks, from
+   * 0.5 to 4. The layout engine takes no options of its own, so the gaps are
+   * stretched afterwards.
+   */
+  spacing?: number;
+  /**
+   * Elements whose current bounds the layout must keep. The ranked result is
+   * repaired around them, and a pin that cannot be honoured fails the call
+   * rather than being dropped.
+   */
+  pinnedElementIds?: string[];
 }
 
 /** Every coordinate a layout is allowed to move, in comparison order. */
@@ -275,6 +299,21 @@ export interface DeleteElementResult {
   removedElementIds: string[];
 }
 
+/**
+ * Revision tokens are compared for equality and never inverted, so half a
+ * SHA-256 is ample: 128 bits makes an accidental collision impossible in
+ * practice while halving what every mutation result costs an agent to read
+ * (mcp-bpmn-8u0.26).
+ */
+const REVISION_DIGEST_HEX_LENGTH = 32;
+const REVISION_DIGEST_PREFIX = 'sha256:';
+
+function revisionDigest(content: string): string {
+  return createHash('sha256').update(content, 'utf8')
+    .digest('hex')
+    .slice(0, REVISION_DIGEST_HEX_LENGTH);
+}
+
 export function connectionGeometryRevision(
   connectionId: string,
   edge: {
@@ -283,13 +322,12 @@ export function connectionGeometryRevision(
     labelBounds?: Position & Size;
   }
 ): string {
-  const digest = createHash('sha256').update(JSON.stringify({
+  return REVISION_DIGEST_PREFIX + revisionDigest(JSON.stringify({
     connectionId,
     edgeId: edge.id,
     waypoints: edge.waypoints,
     labelBounds: edge.labelBounds ?? null
-  })).digest('hex');
-  return `sha256:${digest}`;
+  }));
 }
 
 export function connectionSemanticState(
@@ -315,13 +353,13 @@ export function connectionSemanticState(
     defaultOwnerId,
     associationDirection: connection.associationDirection
   };
-  const semanticRevision = `sha256:${createHash('sha256').update(JSON.stringify({
+  const semanticRevision = REVISION_DIGEST_PREFIX + revisionDigest(JSON.stringify({
     ...value,
     label: value.label ?? null,
     condition: value.condition ?? null,
     defaultOwnerId: value.defaultOwnerId ?? null,
     associationDirection: value.associationDirection ?? null
-  })).digest('hex')}`;
+  }));
   return { ...value, semanticRevision };
 }
 
@@ -386,7 +424,12 @@ export class SimpleBpmnEngine {
       throw new Error(`Unsupported BPMN root type: ${String(type)}`);
     }
 
-    const rootId = this.generateUniqueId(undefined, type === 'process' ? 'Process' : 'Collaboration');
+    // A diagram created from scratch numbers its elements from one, so the
+    // same modelling steps always produce the same ids and two runs of an agent
+    // script diff cleanly. Opening a file must not reset: those ids are already
+    // allocated and the generator has to keep clear of them.
+    IdGenerator.resetElementCounters();
+    const rootId = this.generateUniqueRootId(type === 'process' ? 'Process' : 'Collaboration');
     const context = createProcessContext(rootId, name, type, extensionProfile);
     this.assignInitialFilename(context, filename);
 
@@ -563,9 +606,19 @@ export class SimpleBpmnEngine {
 
       for (const [index, node] of plan.nodes.entries()) {
         const { ref, ...definition } = node;
+        // A boundary event names its host, and that host is usually created in
+        // the same request. Resolve it like a flow endpoint so a caller does
+        // not have to split the build in two just to attach an event.
+        const attachTo = definition.properties?.attachTo;
+        const resolvedAttachTo = typeof attachTo === 'string'
+          ? idByRef.get(attachTo)
+          : undefined;
+        const resolvedDefinition = resolvedAttachTo === undefined
+          ? definition
+          : { ...definition, properties: { ...definition.properties, attachTo: resolvedAttachTo } };
         let created: BpmnDocumentElement;
         try {
-          created = await this.createElement(processId, definition);
+          created = await this.createElement(processId, resolvedDefinition);
         } catch (error) {
           throw new Error(
             `nodes[${index}] (ref "${ref}"): ${error instanceof Error ? error.message : String(error)}`
@@ -928,10 +981,11 @@ export class SimpleBpmnEngine {
   async addLane(
     processId: string,
     poolId: string,
-    name: string,
+    name: string | undefined,
     flowNodeIds: string[],
     position: 'top' | 'bottom' = 'bottom',
-    expectedRevision?: string
+    expectedRevision?: string,
+    laneId?: string
   ): Promise<BpmnLane> {
     const context = this.getProcess(processId);
     return this.commitMutation(context, working => {
@@ -963,12 +1017,45 @@ export class SimpleBpmnEngine {
       const processRef = participant.processRef;
       for (const memberId of flowNodeIds) {
         const member = working.elements.get(memberId);
-        if (!member || member.kind !== 'flowNode') {
-          throw new Error(`Lane member ${memberId} is not a flow node`);
+        // Missing and wrong-kind are different problems with different fixes,
+        // and saying "is not a flow node" about an id that does not exist sends
+        // the caller looking for an element that was never there.
+        if (!member) {
+          throw new Error(`Lane member "${memberId}" not found`);
+        }
+        if (member.kind !== 'flowNode') {
+          throw new Error(
+            `Lane member ${memberId} is a ${member.type}, which is not a flow node`
+          );
         }
         if (member.ownerId !== processRef || member.scopeId !== processRef) {
           throw new Error(`Lane member ${memberId} is not in participant ${poolId}'s process scope`);
         }
+      }
+
+      // Adding to a lane that already exists is the common case once elements
+      // are created after the lanes, so it is an explicit argument rather than
+      // a second lane that happens to share a name.
+      const existingLane = laneId === undefined ? undefined : working.document.lanes.get(laneId);
+      if (laneId !== undefined) {
+        if (!existingLane) {
+          throw new Error(`Lane "${laneId}" not found`);
+        }
+        if (existingLane.processId !== processRef) {
+          throw new Error(`Lane ${laneId} does not belong to participant ${poolId}`);
+        }
+      } else if (name !== undefined) {
+        const duplicate = Array.from(working.document.lanes.values())
+          .find(lane => lane.processId === processRef && lane.name === name);
+        if (duplicate) {
+          throw new Error(
+            `Participant ${poolId} already has a lane named "${name}" (${duplicate.id}). `
+            + `Pass laneId "${duplicate.id}" to add these nodes to it, or choose another name.`
+          );
+        }
+      }
+      if (!existingLane && (name === undefined || name.length === 0)) {
+        throw new Error('A new lane requires a name');
       }
 
       const topLevelLaneSets = Array.from(working.document.laneSets.values())
@@ -994,9 +1081,17 @@ export class SimpleBpmnEngine {
           lane.flowNodeRefs = lane.flowNodeRefs.filter(id => !flowNodeIds.includes(id));
         }
       }
+
+      if (existingLane) {
+        existingLane.flowNodeRefs = [...existingLane.flowNodeRefs, ...flowNodeIds];
+        if (name !== undefined) existingLane.name = name;
+        this.layoutPoolLanes(working, participant.id);
+        return existingLane;
+      }
+
       const lane: BpmnLane = {
         id: this.generateUniqueId(working.document, 'Lane'),
-        name,
+        name: name!,
         processId: processRef,
         laneSetId: laneSet.id,
         flowNodeRefs: [...flowNodeIds],
@@ -2336,16 +2431,22 @@ export class SimpleBpmnEngine {
   /**
    * Rank the diagram with the external layout engine and adopt the result.
    *
-   * `orientation` reflects a left-to-right ranking into a top-to-bottom one;
-   * the layout engine has no direction option of its own. A layout that
-   * reproduces the geometry already on disk is not committed at all, so a
-   * second `auto_layout` call neither bumps the revision nor rewrites the file.
+   * `orientation` reflects a left-to-right ranking into a top-to-bottom one and
+   * `options.spacing` stretches the gaps the ranking left between ranks; the
+   * layout engine has no options of its own, so both are applied to its output.
+   * A layout that reproduces the geometry already on disk is not committed at
+   * all, so a second `auto_layout` call neither bumps the revision nor rewrites
+   * the file.
    */
   async applyAutoLayout(
     processId: string,
     expectedRevision?: string,
-    orientation: LayoutOrientation = 'left-to-right'
+    orientation: LayoutOrientation = 'left-to-right',
+    options: AutoLayoutOptions = {}
   ): Promise<AutoLayoutResult> {
+    const spacing = options.spacing ?? DEFAULT_LAYOUT_SPACING;
+    assertLayoutSpacing(spacing);
+    const pinnedElementIds = options.pinnedElementIds ?? [];
     const snapshot = await this.withProcessLock(processId, async () => {
       const context = this.getProcess(processId);
       const xml = await this.serializer.serialize(this.cloneDocument(context.document), true);
@@ -2371,6 +2472,10 @@ export class SimpleBpmnEngine {
       const preview = this.cloneDocument(context.document);
       applyCollaborationLayoutPolicy(this.cloneDocument(context.document), preview);
       if (orientation === 'top-to-bottom') transposeDocumentGeometry(preview);
+      applyLayoutSpacing(preview, spacing);
+      if (pinnedElementIds.length > 0) {
+        applyPinnedElements(context.document, preview, pinnedElementIds);
+      }
       if (sameDocumentGeometry(context.document, preview)) {
         return { xml: context.xml!, warnings: [], changed: false };
       }
@@ -2380,6 +2485,10 @@ export class SimpleBpmnEngine {
         if (orientation === 'top-to-bottom') {
           transposeDocumentGeometry(working.document);
           this.repositionBoundaryEvents(working);
+        }
+        applyLayoutSpacing(working.document, spacing);
+        if (pinnedElementIds.length > 0) {
+          applyPinnedElements(requested, working.document, pinnedElementIds);
         }
       }, undefined, true, false, expectedRevision);
       return { xml: context.xml!, warnings: [], changed: true };
@@ -2393,6 +2502,14 @@ export class SimpleBpmnEngine {
       // outline, which is no longer on the outline once the host keeps its own
       // proportions. Re-attach before the geometry is compared or committed.
       this.repositionBoundaryEvents(laidOut);
+    }
+    // The gaps come last: they are stretched around whatever the ranking, the
+    // collaboration policy and the reflection settled on.
+    applyLayoutSpacing(laidOut.document, spacing);
+    // Pinning is last: it puts hand-placed bounds back and repairs the ranked
+    // result around them, so it has to see the geometry everything else agreed.
+    if (pinnedElementIds.length > 0) {
+      applyPinnedElements(snapshot.document, laidOut.document, pinnedElementIds);
     }
 
     const current = this.getProcess(processId);
@@ -2465,6 +2582,11 @@ export class SimpleBpmnEngine {
     const context = this.getProcess(processId);
     await this.commitMutation(context, working => {
       this.assertLayoutSemanticsUnchanged(working.document, laidOut.document);
+      // A layout engine only renders what it ranks. Anything it left without a
+      // BPMNEdge - an association anchored on a boundary event, for one - is
+      // taken back from the document being replaced instead of disappearing
+      // with its plane (mcp-bpmn-3g8.15).
+      restoreDroppedLayoutEdges(working.document, laidOut.document);
       working.document = laidOut.document;
       working.elements = laidOut.document.elements;
       working.connections = laidOut.document.connections;
@@ -2666,8 +2788,7 @@ export class SimpleBpmnEngine {
   }
 
   private revisionFor(content: string, mutationVersion: number): string {
-    const digest = createHash('sha256').update(content, 'utf8').digest('hex');
-    return `sha256:${digest}:v${mutationVersion}`;
+    return `${REVISION_DIGEST_PREFIX}${revisionDigest(content)}:v${mutationVersion}`;
   }
 
   private async readDiskRevision(
@@ -3459,9 +3580,9 @@ export class SimpleBpmnEngine {
       'isExpanded', 'calledElement', 'assignee', 'candidateGroups', 'dueDate',
       'eventDefinition', 'eventDefinitionPayload', 'cancelActivity', 'attachTo',
       'blackBox', 'processRef', 'text', 'textFormat', 'dataObjectRef', 'isCollection', 'itemSubjectRef',
-      // Read from imported documents so an event subprocess keeps its identity;
-      // not authored through the tool surface.
-      'multiInstance', 'triggeredByEvent', 'documentation'
+      // Authored through add_activity/update_element and read back from
+      // imported documents.
+      'multiInstance', 'triggeredByEvent', 'documentation', 'isForCompensation'
     ]);
     for (const property of Object.keys(properties)) {
       if (!supportedProperties.has(property)) {
@@ -3482,6 +3603,30 @@ export class SimpleBpmnEngine {
         && (typeof properties.textFormat !== 'string'
           || properties.textFormat.trim().length === 0)) {
         throw new Error('Text annotation textFormat must not be blank');
+      }
+    }
+
+    // Both flags name a BPMN construct rather than a decoration, so they are
+    // rejected on an element type that cannot carry the construct.
+    if (Object.prototype.hasOwnProperty.call(properties, 'triggeredByEvent')
+      && properties.triggeredByEvent !== undefined) {
+      if (typeof properties.triggeredByEvent !== 'boolean') {
+        throw new Error('triggeredByEvent must be a boolean');
+      }
+      if (type !== 'bpmn:SubProcess') {
+        throw new Error(
+          'triggeredByEvent is only valid on bpmn:SubProcess, which is what an '
+          + 'event subprocess is'
+        );
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(properties, 'isForCompensation')
+      && properties.isForCompensation !== undefined) {
+      if (typeof properties.isForCompensation !== 'boolean') {
+        throw new Error('isForCompensation must be a boolean');
+      }
+      if (!isActivityType(type)) {
+        throw new Error('isForCompensation is only valid on an activity');
       }
     }
 
@@ -3881,6 +4026,20 @@ export class SimpleBpmnEngine {
     if (connection.condition) {
       throw new Error('A default sequence flow cannot have a condition');
     }
+  }
+
+  /**
+   * A root id no diagram still held in memory is using. The counter restarts
+   * for every new diagram, so the previous one — which lives on until its
+   * handler releases it — would otherwise be overwritten in the process map.
+   */
+  private generateUniqueRootId(prefix: string): string {
+    let id: string;
+    do {
+      id = IdGenerator.generate(prefix);
+      assertBpmnId(id, `generated ${prefix}.id`);
+    } while (this.processes.has(id));
+    return id;
   }
 
   private generateUniqueId(document: BpmnDocument | undefined, prefix: string): string {

@@ -2,6 +2,7 @@ import BpmnModdle from 'bpmn-moddle';
 import { MermaidConverter } from '../../src/converters/MermaidConverter.js';
 import { BpmnDocumentSerializer } from '../../src/core/BpmnDocument.js';
 import { config } from '../../src/config/index.js';
+import { BpmnValidator } from '../../src/core/BpmnValidator.js';
 
 describe('Mermaid conversion semantics', () => {
   const moddle = new BpmnModdle();
@@ -92,49 +93,28 @@ describe('Mermaid conversion semantics', () => {
     expect(parsed.rootElement.diagrams[0].plane.bpmnElement).toBe(collaboration);
   });
 
-  it('reports lossy Mermaid constructs consistently and advertises only emitted semantics', async () => {
+  it('reports lossy Mermaid constructs and emits only the semantics it claims', async () => {
     const source = 'flowchart TD\n  A((Start)) -.-> B((End))\n  style A fill:#fff';
     const conversion = await converter.convert(source, { autoLayout: false });
-    const validation = await converter.canConvert(source);
-    const analysis = await converter.analyze(source);
 
     expect(conversion.warnings).toEqual([
       '2:14 [UNSUPPORTED_EDGE_STYLE] Dotted Mermaid edge A_to_B is converted without dotted styling',
       '3:3 [UNSUPPORTED_DIRECTIVE] Unsupported Mermaid directive "style"; ignored'
     ]);
-    expect(validation).toMatchObject({
-      valid: true,
-      warnings: conversion.warnings,
-      supportedFeatures: ['Events']
-    });
-    expect(analysis).toMatchObject({
-      warnings: conversion.warnings,
-      estimatedBpmnElements: {
-        tasks: 0,
-        subprocesses: 0,
-        dataObjects: 0,
-        gateways: 0,
-        events: 2,
-        pools: 0,
-        flows: 1
-      }
-    });
+    expect(conversion.elements.map(element => element.type).sort())
+      .toEqual(['bpmn:EndEvent', 'bpmn:StartEvent']);
+    expect(conversion.flows).toHaveLength(1);
+    expect(conversion.pools).toEqual([]);
   });
 
   it('reports standalone data semantics without claiming tasks or swimlanes', async () => {
     const source = 'flowchart TD\n  Record[[Customer record]]';
-    const validation = await converter.canConvert(source);
-    const analysis = await converter.analyze(source);
+    const conversion = await converter.convert(source, { autoLayout: false });
 
-    expect(validation.supportedFeatures).toEqual(['Data objects']);
-    expect(validation.supportedFeatures).not.toContain('Tasks');
-    expect(validation.supportedFeatures).not.toContain('Pools/Swimlanes');
-    expect(analysis.estimatedBpmnElements).toMatchObject({
-      tasks: 0,
-      subprocesses: 0,
-      dataObjects: 1,
-      pools: 0
-    });
+    expect(conversion.elements.map(element => element.type))
+      .toEqual(['bpmn:DataObjectReference']);
+    expect(conversion.flows).toEqual([]);
+    expect(conversion.pools).toEqual([]);
   });
 
   it.each([
@@ -206,7 +186,6 @@ describe('Mermaid conversion semantics', () => {
       /8:3 \[UNSUPPORTED_EDGE_ENDPOINT\].*Mermaid node G is a gateway/
     );
     await expect(converter.convert(source)).rejects.not.toThrow(/Gateway_G|MessageFlow_/);
-    await expect(converter.canConvert(source)).resolves.toMatchObject({ valid: false });
   });
 
   it('names BPMN elements with the quoted label, not with the quotes (mcp-bpmn-j21.4)', async () => {
@@ -311,5 +290,38 @@ describe('Mermaid conversion semantics', () => {
       'retry',
       'approved'
     ]);
+  });
+
+  it('converts a fully steered diagram to valid BPMN (mcp-bpmn-j21.12)', async () => {
+    const source = [
+      'flowchart TD',
+      '  S((Order placed)):::message --> A[Approve]:::user',
+      '  A --> G{Split}:::parallel',
+      '  G --> B[Charge card]:::service',
+      '  G --> W((Await shipment)):::timer',
+      '  B --> E((Done)):::terminate',
+      '  W --> E'
+    ].join('\n');
+
+    const result = await converter.convert(source, { autoLayout: false });
+    const validation = await new BpmnValidator().validate(result.xml, 'full');
+    const parsed = await moddle.fromXML(result.xml);
+    const process = parsed.rootElement.rootElements.find((root: any) => root.$type === 'bpmn:Process');
+    const byId = new Map<string, any>(
+      process.flowElements.map((element: any) => [element.id, element])
+    );
+
+    expect(result.warnings).toEqual([]);
+    expect(validation).toMatchObject({ valid: true, errors: [], warnings: [] });
+    expect(byId.get('Task_A').$type).toBe('bpmn:UserTask');
+    expect(byId.get('Task_B').$type).toBe('bpmn:ServiceTask');
+    expect(byId.get('Gateway_G').$type).toBe('bpmn:ParallelGateway');
+    expect(byId.get('Event_W').$type).toBe('bpmn:IntermediateCatchEvent');
+    expect(byId.get('Event_W').eventDefinitions.map((definition: any) => definition.$type))
+      .toEqual(['bpmn:TimerEventDefinition']);
+    expect(byId.get('StartEvent_S').eventDefinitions.map((definition: any) => definition.$type))
+      .toEqual(['bpmn:MessageEventDefinition']);
+    expect(byId.get('EndEvent_E').eventDefinitions.map((definition: any) => definition.$type))
+      .toEqual(['bpmn:TerminateEventDefinition']);
   });
 });

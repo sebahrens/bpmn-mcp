@@ -1115,7 +1115,7 @@ describe('MCP Server End-to-End Tests', () => {
           isDefault: false,
           edgeId: expect.any(String),
           waypoints: expect.any(Array),
-          geometryRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/)
+          geometryRevision: expect.stringMatching(/^sha256:[a-f0-9]{32}$/)
         }],
         revision: expect.any(String)
       });
@@ -1509,7 +1509,7 @@ describe('MCP Server End-to-End Tests', () => {
         edgeId: 'Flow_Approved_CustomDI',
         waypoints: [{ x: 430, y: 208 }, { x: 490, y: 208 }],
         labelBounds: { x: 444, y: 186, width: 62, height: 14 },
-        geometryRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        geometryRevision: expect.stringMatching(/^sha256:[a-f0-9]{32}$/),
         revision: expect.any(String)
       });
       await call('close');

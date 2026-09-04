@@ -255,11 +255,11 @@ describe('resource exhaustion guards', () => {
     // A real BPMN type that this diagram happens not to contain. The filter
     // only accepts advertised types, so an invented one is rejected outright
     // rather than silently yielding an empty page.
-    const empty = JSON.parse(textOf(await handler.handleRequest('list_elements', {
+    const empty = ((await handler.handleRequest('list_elements', {
       elementType: 'bpmn:ExclusiveGateway',
       limit: 2,
       offset: 0
-    })));
+    })).structuredContent as Record<string, any>);
     expect(empty).toMatchObject({ count: 0, returnedCount: 0, hasMore: false, elements: [] });
 
     const unknownType = await handler.handleRequest('list_elements', {
@@ -278,38 +278,38 @@ describe('resource exhaustion guards', () => {
       });
     }
 
-    const first = JSON.parse(textOf(await handler.handleRequest('list_elements', {
+    const first = ((await handler.handleRequest('list_elements', {
       limit: 2,
       offset: 0
-    })));
-    const middle = JSON.parse(textOf(await handler.handleRequest('list_elements', {
+    })).structuredContent as Record<string, any>);
+    const middle = ((await handler.handleRequest('list_elements', {
       limit: 2,
       offset: 2
-    })));
+    })).structuredContent as Record<string, any>);
     expect(first.elements.map((element: { id: string }) => element.id)).toEqual(['Task_1', 'Task_2']);
     expect(middle.elements.map((element: { id: string }) => element.id)).toEqual(['Task_3', 'Task_4']);
     expect([first.hasMore, middle.hasMore]).toEqual([true, false]);
 
     await handler.handleRequest('add_activity', { activityType: 'task', name: 'Task 5' });
     await handler.handleRequest('connect', { sourceId: 'Task_4', targetId: 'Task_5' });
-    const final = JSON.parse(textOf(await handler.handleRequest('list_elements', {
+    const final = ((await handler.handleRequest('list_elements', {
       limit: 2,
       offset: 4
-    })));
-    const middleAfterGrowth = JSON.parse(textOf(await handler.handleRequest('list_elements', {
+    })).structuredContent as Record<string, any>);
+    const middleAfterGrowth = ((await handler.handleRequest('list_elements', {
       limit: 2,
       offset: 2
-    })));
+    })).structuredContent as Record<string, any>);
     expect(final.elements.map((element: { id: string }) => element.id)).toEqual(['Task_5']);
     expect([middleAfterGrowth.hasMore, final.hasMore]).toEqual([true, false]);
 
     await handler.handleRequest('connect', { sourceId: 'Task_1', targetId: 'Task_3' });
     await handler.handleRequest('connect', { sourceId: 'Task_1', targetId: 'Task_4' });
     await handler.handleRequest('connect', { sourceId: 'Task_1', targetId: 'Task_5' });
-    const dense = JSON.parse(textOf(await handler.handleRequest('list_elements', {
+    const dense = ((await handler.handleRequest('list_elements', {
       limit: 5,
       offset: 0
-    })));
+    })).structuredContent as Record<string, any>);
     expect(dense.elements[0]).toMatchObject({ id: 'Task_1', incoming: 0, outgoing: 4 });
     expect(dense.elements[4]).toMatchObject({ id: 'Task_5', incoming: 2, outgoing: 0 });
   });
@@ -318,20 +318,20 @@ describe('resource exhaustion guards', () => {
     const handler = new BpmnRequestHandler(
       new SimpleBpmnEngine(directory, undefined, passthroughLayout)
     );
-    const empty = JSON.parse(textOf(await handler.handleRequest('list_diagrams', {})));
+    const empty = ((await handler.handleRequest('list_diagrams', {})).structuredContent as Record<string, any>);
     expect(empty).toMatchObject({ count: 0, returnedCount: 0, hasMore: false, diagrams: [] });
 
     for (const name of ['Zulu', 'Alpha', 'Middle']) {
       await handler.handleRequest('new_bpmn', { name });
     }
-    const first = JSON.parse(textOf(await handler.handleRequest('list_diagrams', {
+    const first = ((await handler.handleRequest('list_diagrams', {
       limit: 2,
       offset: 0
-    })));
-    const final = JSON.parse(textOf(await handler.handleRequest('list_diagrams', {
+    })).structuredContent as Record<string, any>);
+    const final = ((await handler.handleRequest('list_diagrams', {
       limit: 2,
       offset: 2
-    })));
+    })).structuredContent as Record<string, any>);
     const filenames = [...first.diagrams, ...final.diagrams]
       .map((diagram: { filename: string }) => diagram.filename);
     expect(filenames).toEqual([...filenames].sort());
@@ -371,10 +371,10 @@ describe('resource exhaustion guards', () => {
     const readSpy = jest.spyOn(fileManager, 'readBpmnFile');
     const handler = new BpmnRequestHandler(engine);
 
-    const fourth = JSON.parse(textOf(await handler.handleRequest('list_diagrams', {
+    const fourth = ((await handler.handleRequest('list_diagrams', {
       limit: 1,
       offset: 3
-    })));
+    })).structuredContent as Record<string, any>);
     expect(fourth).toMatchObject({
       count: 7,
       returnedCount: 1,
@@ -385,10 +385,10 @@ describe('resource exhaustion guards', () => {
     expect(readSpy).toHaveBeenLastCalledWith(filenames[3], expect.any(Number));
 
     readSpy.mockClear();
-    const fifth = JSON.parse(textOf(await handler.handleRequest('list_diagrams', {
+    const fifth = ((await handler.handleRequest('list_diagrams', {
       limit: 1,
       offset: 4
-    })));
+    })).structuredContent as Record<string, any>);
     expect(fifth.diagrams).toEqual([
       expect.objectContaining({ filename: filenames[4], processId: 'Process_4' })
     ]);
@@ -416,7 +416,7 @@ describe('resource exhaustion guards', () => {
     );
     const exact = await exactHandler.handleRequest('list_diagrams', { limit: 1, offset: 0 });
     expect(exact.isError).toBeUndefined();
-    expect(JSON.parse(textOf(exact)).diagrams).toEqual([
+    expect((exact.structuredContent as Record<string, any>).diagrams).toEqual([
       expect.objectContaining({ filename: 'custom.bpmn', processId: 'Process_1', name: 'Budget' })
     ]);
 
@@ -462,7 +462,7 @@ describe('resource exhaustion guards', () => {
   });
 
   it('caps geometry patch size at the request boundary and diagnostic work in the engine', async () => {
-    const revision = `sha256:${'a'.repeat(64)}:v1`;
+    const revision = `sha256:${'a'.repeat(32)}:v1`;
     expect(() => parseToolRequest('apply_geometry_patch', {
       expectedRevision: revision,
       elementUpdates: Array.from({ length: 256 }, (_, index) => ({
@@ -599,12 +599,12 @@ describe('resource exhaustion guards', () => {
     await handler.handleRequest('connect', { sourceId: 'Task_1', targetId: 'Task_2' });
     await handler.handleRequest('connect', { sourceId: 'Task_1', targetId: 'Task_3' });
 
-    const first = JSON.parse(textOf(await handler.handleRequest('list_connections', {
+    const first = ((await handler.handleRequest('list_connections', {
       sourceId: 'Task_1', limit: 1, offset: 0
-    })));
-    const final = JSON.parse(textOf(await handler.handleRequest('list_connections', {
+    })).structuredContent as Record<string, any>);
+    const final = ((await handler.handleRequest('list_connections', {
       sourceId: 'Task_1', limit: 1, offset: 1
-    })));
+    })).structuredContent as Record<string, any>);
     expect(first.connections.map((connection: { id: string }) => connection.id))
       .toEqual(['Flow_1']);
     expect(final.connections.map((connection: { id: string }) => connection.id))

@@ -5,6 +5,7 @@ import { diagramContext } from '../../../src/core/DiagramContext.js';
 import { SimpleBpmnEngine } from '../../../src/core/SimpleBpmnEngine.js';
 import { BpmnRequestHandler } from '../../../src/server/handlers.js';
 import { FileManager } from '../../../src/utils/FileManager.js';
+import { isPathContained } from '../../../src/utils/SafeFilePath.js';
 import { TOOL_INPUT_LIMITS } from '../../../src/config/index.js';
 
 describe('file operation containment', () => {
@@ -157,7 +158,9 @@ describe('file operation containment', () => {
   it('uses separator-aware containment and rejects the directory-capable sibling escape', async () => {
     const fileManager = new FileManager(diagramsRoot);
 
-    expect(fileManager.validatePath(path.join(siblingRoot, 'outside.bpmn'), diagramsRoot)).toBe(false);
+    // The containment predicate is asserted directly rather than through the
+    // caller-less FileManager.validatePath wrapper deleted in mcp-bpmn-iqa.13.
+    expect(isPathContained(path.join(siblingRoot, 'outside.bpmn'), diagramsRoot)).toBe(false);
     await expect(fileManager.saveBpmnFile('<xml />', {
       filename: 'outside.bpmn',
       directory: siblingRoot

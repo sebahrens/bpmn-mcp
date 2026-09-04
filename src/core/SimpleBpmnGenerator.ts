@@ -1,5 +1,12 @@
-import { isGenericEventLabel } from '../converters/ASTTypes.js';
-import type { MermaidAST, MermaidNode, NodeType } from '../converters/ASTTypes.js';
+import { INTERMEDIATE_CATCH_SUBTYPES, isGenericEventLabel } from '../converters/ASTTypes.js';
+import type {
+  EventSubtype,
+  GatewaySubtype,
+  MermaidAST,
+  MermaidNode,
+  NodeType,
+  TaskSubtype
+} from '../converters/ASTTypes.js';
 import type { ConversionResult } from '../converters/types.js';
 import type {
   BpmnArtifactElement,
@@ -34,6 +41,55 @@ const NODE_TYPE_MAPPING: Record<NodeType, {
   data: { prefix: 'DataObjectReference', type: 'bpmn:DataObjectReference' },
   terminator: { prefix: 'Event', type: 'bpmn:IntermediateThrowEvent' }
 };
+
+/**
+ * What a `:::class` suffix refines the shape's default into (mcp-bpmn-j21.12).
+ * The parser has already checked that the subtype is legal on the node it sits
+ * on, so these lookups cannot miss.
+ */
+const TASK_SUBTYPE_TYPES: Record<TaskSubtype, BpmnFlowNodeType> = {
+  user: 'bpmn:UserTask',
+  service: 'bpmn:ServiceTask',
+  script: 'bpmn:ScriptTask',
+  businessRule: 'bpmn:BusinessRuleTask',
+  manual: 'bpmn:ManualTask',
+  receive: 'bpmn:ReceiveTask',
+  send: 'bpmn:SendTask'
+};
+
+const GATEWAY_SUBTYPE_TYPES: Record<GatewaySubtype, BpmnFlowNodeType> = {
+  parallel: 'bpmn:ParallelGateway',
+  inclusive: 'bpmn:InclusiveGateway',
+  eventBased: 'bpmn:EventBasedGateway',
+  complex: 'bpmn:ComplexGateway'
+};
+
+/**
+ * An event subtype names a BPMN event definition rather than a node type, so it
+ * changes the element type only for an intermediate event, where the definition
+ * decides whether the event catches or throws.
+ */
+function resolveNodeBpmnType(
+  node: MermaidNode,
+  fallback: BpmnFlowNodeType | 'bpmn:DataObjectReference'
+): BpmnFlowNodeType | 'bpmn:DataObjectReference' {
+  const subtype = node.subtype;
+  if (subtype === undefined) return fallback;
+  if (node.type === 'process') return TASK_SUBTYPE_TYPES[subtype as TaskSubtype];
+  if (node.type === 'decision') return GATEWAY_SUBTYPE_TYPES[subtype as GatewaySubtype];
+  if (node.type === 'terminator') {
+    return INTERMEDIATE_CATCH_SUBTYPES.has(subtype)
+      ? 'bpmn:IntermediateCatchEvent'
+      : 'bpmn:IntermediateThrowEvent';
+  }
+  return fallback;
+}
+
+/** The event definition a subtype carries onto a start, end or intermediate event. */
+function eventDefinitionFor(node: MermaidNode): EventSubtype | undefined {
+  if (node.type !== 'start' && node.type !== 'end' && node.type !== 'terminator') return undefined;
+  return node.subtype as EventSubtype | undefined;
+}
 
 export class SimpleBpmnGenerator {
   private idCounter = 0;
@@ -110,7 +166,7 @@ export class SimpleBpmnGenerator {
 
     for (const node of cleanedNodes) {
       const nodeType = NODE_TYPE_MAPPING[node.type];
-      const bpmnType = nodeType.type;
+      const bpmnType = resolveNodeBpmnType(node, nodeType.type);
       const bpmnId = `${nodeType.prefix}_${node.id}`;
       const layoutNode = layoutNodesBySemanticId.get(node.id)!;
       const ownerId = hasSubgraphs
@@ -144,6 +200,7 @@ export class SimpleBpmnGenerator {
           properties: { dataObjectRef: dataObjectId }
         };
       } else {
+        const eventDefinition = eventDefinitionFor(node);
         modelElement = {
           kind: 'flowNode',
           id: bpmnId,
@@ -153,7 +210,7 @@ export class SimpleBpmnGenerator {
           scopeId: ownerId,
           position: { x, y },
           size,
-          properties: {}
+          properties: eventDefinition ? { eventDefinition } : {}
         };
       }
       document.elements.set(bpmnId, modelElement);

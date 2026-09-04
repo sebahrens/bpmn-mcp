@@ -6,7 +6,7 @@ import BpmnModdle from 'bpmn-moddle';
 import { SimpleBpmnEngine } from '../../../src/core/SimpleBpmnEngine.js';
 import { applyCollaborationLayoutPolicy } from '../../../src/core/layout/CollaborationLayoutPolicy.js';
 import { ConnectionRouter } from '../../../src/core/layout/ConnectionRouter.js';
-import { validateBpmnGeometry } from '../../helpers/bpmnGeometry.js';
+import { type GeometryDiagnostic, validateBpmnGeometry } from '../../helpers/bpmnGeometry.js';
 
 interface Bounds {
   x: number;
@@ -351,7 +351,194 @@ describe('collaboration auto-layout policy', () => {
     expect(new Set(routedShapes).size).toBe(1);
     expect(new Set(routedEdges).size).toBe(1);
   });
+
+  /**
+   * mcp-bpmn-3g8.16. An agent adds lanes once it has the node ids, so nodes
+   * created afterwards belong to no lane at all. The ranked layout put them
+   * wherever they fell and the bands were drawn over the top, so the picture
+   * said "Sales owns this" while the XML said nobody did.
+   */
+  it('keeps elements no lane claims out of every lane band', async () => {
+    const engine = new SimpleBpmnEngine(directory);
+    const collaboration = await engine.createProcess('Orders', 'collaboration');
+    const pool = await engine.createElement(collaboration.id, {
+      id: 'Participant_1',
+      type: 'bpmn:Participant',
+      name: 'Company'
+    });
+    if (pool.kind !== 'participant' || !pool.processRef) {
+      throw new Error('Expected a white-box pool');
+    }
+    const owner = pool.processRef;
+    const add = async (id: string, type: any, properties?: Record<string, unknown>) => {
+      await engine.createElement(collaboration.id, { id, type, ownerId: owner, properties });
+    };
+    for (const [id, type] of [
+      ['StartEvent_1', 'bpmn:StartEvent'],
+      ['UserTask_1', 'bpmn:UserTask'],
+      ['SendTask_1', 'bpmn:SendTask'],
+      ['EndEvent_2', 'bpmn:EndEvent'],
+      ['Task_1', 'bpmn:Task'],
+      ['ExclusiveGateway_1', 'bpmn:ExclusiveGateway'],
+      ['Task_2', 'bpmn:Task'],
+      ['EndEvent_1', 'bpmn:EndEvent']
+    ] as const) {
+      await add(id, type);
+    }
+    for (const [source, target] of [
+      ['StartEvent_1', 'UserTask_1'],
+      ['UserTask_1', 'SendTask_1'],
+      ['SendTask_1', 'EndEvent_2'],
+      ['Task_1', 'ExclusiveGateway_1'],
+      ['ExclusiveGateway_1', 'Task_2'],
+      ['Task_2', 'EndEvent_1']
+    ] as const) {
+      await engine.connect(collaboration.id, source, target);
+    }
+    const sales = await engine.addLane(
+      collaboration.id,
+      pool.id,
+      'Sales',
+      ['StartEvent_1', 'UserTask_1', 'SendTask_1', 'EndEvent_2'],
+      'top'
+    );
+    const warehouse = await engine.addLane(
+      collaboration.id,
+      pool.id,
+      'Warehouse',
+      ['Task_1', 'ExclusiveGateway_1', 'Task_2', 'EndEvent_1'],
+      'bottom'
+    );
+    // Everything from here on is created after the lanes and therefore belongs
+    // to neither of them.
+    await add('Task_4', 'bpmn:Task');
+    await add('EndEvent_3', 'bpmn:EndEvent');
+    await add('BoundaryEvent_2', 'bpmn:BoundaryEvent', { attachTo: 'UserTask_1' });
+    await engine.connect(collaboration.id, 'Task_4', 'EndEvent_3');
+    await engine.connect(collaboration.id, 'BoundaryEvent_2', 'Task_4');
+
+    await engine.applyAutoLayout(collaboration.id);
+    const xml = await engine.exportXml(collaboration.id);
+    const shapes = await renderedShapes(xml);
+
+    const bands = [sales.id, warehouse.id].map(id => shapes.get(id)!);
+    const drawnInsideABand = ['Task_4', 'EndEvent_3']
+      .filter(id => bands.some(band => overlaps(band, shapes.get(id)!)));
+    expect(drawnInsideABand).toEqual([]);
+    // They still belong to the pool that owns their process, so they stay
+    // inside it - in the strip under the band stack.
+    const unassignedOutsidePool = ['Task_4', 'EndEvent_3']
+      .filter(id => !contains(shapes.get(pool.id)!, shapes.get(id)!));
+    expect(unassignedOutsidePool).toEqual([]);
+    for (const band of bands) {
+      expect(contains(shapes.get(pool.id)!, band)).toBe(true);
+    }
+
+    const report = await validateBpmnGeometry(xml);
+    expect(unrelatedToLaneMembership(report.diagnostics)).toEqual([]);
+  });
+
+  /**
+   * The other half of mcp-bpmn-3g8.16: a boundary event is drawn on its host's
+   * outline, so a host sitting on a divider leaves the event hanging in the
+   * neighbouring lane. The band has to be sized around its members plus their
+   * boundary events, not around its members alone.
+   */
+  it('grows a lane band around the boundary events of its own members', async () => {
+    const engine = new SimpleBpmnEngine(directory);
+    const collaboration = await engine.createProcess('Handling', 'collaboration');
+    const pool = await engine.createElement(collaboration.id, {
+      id: 'Participant_1',
+      type: 'bpmn:Participant',
+      name: 'Company'
+    });
+    if (pool.kind !== 'participant' || !pool.processRef) {
+      throw new Error('Expected a white-box pool');
+    }
+    const owner = pool.processRef;
+    for (const [id, type] of [
+      ['StartEvent_1', 'bpmn:StartEvent'],
+      ['Task_1', 'bpmn:Task'],
+      ['Task_2', 'bpmn:Task']
+    ] as const) {
+      await engine.createElement(collaboration.id, { id, type, ownerId: owner });
+    }
+    await engine.createElement(collaboration.id, {
+      id: 'BoundaryEvent_1',
+      type: 'bpmn:BoundaryEvent',
+      ownerId: owner,
+      properties: { attachTo: 'Task_1' }
+    });
+    await engine.connect(collaboration.id, 'StartEvent_1', 'Task_1');
+    const upper = await engine.addLane(
+      collaboration.id,
+      pool.id,
+      'Upper',
+      ['StartEvent_1', 'Task_1'],
+      'top'
+    );
+    const lower = await engine.addLane(collaboration.id, pool.id, 'Lower', ['Task_2'], 'bottom');
+
+    // Stand in for a ranked layout that pushed the host onto the divider: the
+    // boundary event then straddles it, half of it drawn in the lower lane.
+    const requested = engine.getProcess(collaboration.id).document;
+    const laidOut = await hoistOntoDivider(engine, collaboration.id, upper.id);
+    await engine.applyLayoutXml(collaboration.id, laidOut, requested);
+
+    const xml = await engine.exportXml(collaboration.id);
+    const shapes = await renderedShapes(xml);
+    expect(contains(shapes.get(upper.id)!, shapes.get('BoundaryEvent_1')!)).toBe(true);
+    expect(overlaps(shapes.get(lower.id)!, shapes.get('BoundaryEvent_1')!)).toBe(false);
+    expect(contains(shapes.get(upper.id)!, shapes.get('Task_1')!)).toBe(true);
+    expect(overlaps(shapes.get(upper.id)!, shapes.get(lower.id)!)).toBe(false);
+
+    const report = await validateBpmnGeometry(xml);
+    expect(unrelatedToLaneMembership(report.diagnostics)).toEqual([]);
+  });
 });
+
+/**
+ * Push the last member of a lane down so its bottom edge lands on the band's
+ * bottom edge, and hand back the resulting XML as if a layout engine had
+ * produced it.
+ */
+async function hoistOntoDivider(
+  engine: SimpleBpmnEngine,
+  processId: string,
+  laneId: string
+): Promise<string> {
+  const xml = await engine.exportXml(processId);
+  const definitions = (await new BpmnModdle().fromXML(xml)).rootElement as any;
+  const planeElements = definitions.diagrams[0].plane.planeElement;
+  const shapeFor = (id: string): any => planeElements.find(
+    (item: any) => item.$type === 'bpmndi:BPMNShape' && item.bpmnElement?.id === id
+  );
+  const band = shapeFor(laneId).bounds;
+  const host = shapeFor('Task_1').bounds;
+  const shift = band.y + band.height - (host.y + host.height);
+  host.y += shift;
+  const boundary = shapeFor('BoundaryEvent_1').bounds;
+  boundary.y += shift;
+  return (await new BpmnModdle().toXML(definitions)).xml as string;
+}
+
+/**
+ * Every diagnostic except the one the geometry model cannot express yet: a
+ * boundary event is never listed in its host lane's `flowNodeRef`, so the
+ * oracle reads a correctly drawn one as a stray shape overlapping the band.
+ * Tracked separately - the fix is lane membership, which auto-layout is
+ * forbidden to change.
+ */
+function unrelatedToLaneMembership(diagnostics: GeometryDiagnostic[]): GeometryDiagnostic[] {
+  return diagnostics.filter(item => !item.ids.some(id => id.startsWith('BoundaryEvent_')));
+}
+
+async function renderedShapes(xml: string): Promise<Map<string, Bounds>> {
+  const definitions = (await new BpmnModdle().fromXML(xml)).rootElement as any;
+  return new Map(definitions.diagrams[0].plane.planeElement
+    .filter((item: any) => item.$type === 'bpmndi:BPMNShape')
+    .map((item: any) => [item.bpmnElement.id as string, plainBounds(item.bounds)]));
+}
 
 function plainBounds(bounds: any): Bounds {
   return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };

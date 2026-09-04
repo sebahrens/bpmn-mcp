@@ -698,8 +698,8 @@ describe('BpmnValidator', () => {
 
       const syntaxResult = await handler.handleRequest('validate', { level: 'syntax' });
       const fullResult = await handler.handleRequest('validate', { level: 'full' });
-      const syntax = JSON.parse((syntaxResult.content[0] as { text: string }).text);
-      const full = JSON.parse((fullResult.content[0] as { text: string }).text);
+      const syntax = (syntaxResult.structuredContent as Record<string, any>);
+      const full = (fullResult.structuredContent as Record<string, any>);
 
       expect(syntax).toMatchObject({ level: 'syntax', issues: [] });
       expect(issueCodes(full)).toEqual(expect.arrayContaining([
@@ -777,6 +777,44 @@ describe('BpmnValidator', () => {
       expect(result.errors).toEqual([]);
     });
 
+    it('does not ask activities inside an ad-hoc subprocess for sequence flows', async () => {
+      const result = await validator.validate(adHocSubprocess, 'full');
+      const offenders = result.issues.filter(issue =>
+        ['Task_AdHocA', 'Task_AdHocB'].includes(issue.elementId || ''));
+
+      expect(offenders).toEqual([]);
+    });
+
+    it('still asks activities inside an ordinary subprocess for sequence flows', async () => {
+      const plain = definitions(`
+        <bpmn:process id="Process_PlainInner" isExecutable="true">
+          <bpmn:startEvent id="Start_PlainInner" />
+          <bpmn:subProcess id="SubProcess_PlainInner">
+            <bpmn:startEvent id="Start_Inner" />
+            <bpmn:task id="Task_InnerA" />
+            <bpmn:endEvent id="End_Inner" />
+            <bpmn:sequenceFlow id="Flow_Inner"
+              sourceRef="Start_Inner" targetRef="End_Inner" />
+          </bpmn:subProcess>
+          <bpmn:endEvent id="End_PlainInner" />
+          <bpmn:sequenceFlow id="Flow_Inner1"
+            sourceRef="Start_PlainInner" targetRef="SubProcess_PlainInner" />
+          <bpmn:sequenceFlow id="Flow_Inner2"
+            sourceRef="SubProcess_PlainInner" targetRef="End_PlainInner" />
+        </bpmn:process>`);
+
+      const result = await validator.validate(plain, 'full');
+      const flagged = result.issues
+        .filter(issue => issue.elementId === 'Task_InnerA')
+        .map(issue => issue.code)
+        .sort();
+
+      expect(flagged).toEqual([
+        'BPMN_PROFILE_MISSING_INCOMING_FLOW',
+        'BPMN_PROFILE_MISSING_OUTGOING_FLOW'
+      ]);
+    });
+
     it('still asks an ordinary disconnected subprocess for incoming and outgoing flows',
       async () => {
         const plain = definitions(`
@@ -830,6 +868,96 @@ describe('BpmnValidator', () => {
         'BPMN_PROFILE_MISSING_START_EVENT'
       ]);
     });
+  });
+
+  describe('compensation handlers', () => {
+    // The pattern the tool surface advertises: a compensation boundary event on
+    // "Reserve stock", joined by an Association to the "Release stock" handler.
+    // The handler sits outside the sequence flow on purpose — asking it, or the
+    // boundary event, for sequence flows asks for BPMN the spec forbids.
+    const compensationModel = (handler: string, boundary: string): string => definitions(`
+      <bpmn:process id="Process_Compensation" isExecutable="true">
+        <bpmn:startEvent id="Start_Compensation" />
+        <bpmn:task id="Task_Reserve" name="Reserve stock" />
+        <bpmn:endEvent id="End_Compensation" />
+        <bpmn:sequenceFlow id="Flow_Compensation1"
+          sourceRef="Start_Compensation" targetRef="Task_Reserve" />
+        <bpmn:sequenceFlow id="Flow_Compensation2"
+          sourceRef="Task_Reserve" targetRef="End_Compensation" />
+        <bpmn:boundaryEvent id="Boundary_Compensation"
+          attachedToRef="Task_Reserve" cancelActivity="false">
+          ${boundary}
+        </bpmn:boundaryEvent>
+        ${handler}
+        <bpmn:association id="Association_Compensation"
+          sourceRef="Boundary_Compensation" targetRef="Task_Release"
+          associationDirection="One" />
+      </bpmn:process>`);
+
+    const compensateDefinition = '<bpmn:compensateEventDefinition id="Compensate_Reserve" />';
+    const releaseTask = '<bpmn:task id="Task_Release" name="Release stock" />';
+
+    it('does not ask a compensation handler or its boundary event for sequence flows',
+      async () => {
+        const result = await validator.validate(
+          compensationModel(releaseTask, compensateDefinition),
+          'full'
+        );
+        const offenders = result.issues.filter(issue =>
+          ['Task_Release', 'Boundary_Compensation'].includes(issue.elementId || ''));
+
+        expect(offenders).toEqual([]);
+        expect(result.errors).toEqual([]);
+      });
+
+    it('exempts a handler marked isForCompensation even with no association', async () => {
+      const result = await validator.validate(definitions(`
+        <bpmn:process id="Process_MarkedHandler" isExecutable="true">
+          <bpmn:startEvent id="Start_Marked" />
+          <bpmn:task id="Task_Marked" />
+          <bpmn:endEvent id="End_Marked" />
+          <bpmn:sequenceFlow id="Flow_Marked1" sourceRef="Start_Marked" targetRef="Task_Marked" />
+          <bpmn:sequenceFlow id="Flow_Marked2" sourceRef="Task_Marked" targetRef="End_Marked" />
+          <bpmn:task id="Task_Undo" isForCompensation="true" />
+        </bpmn:process>`), 'full');
+      const offenders = result.issues.filter(issue => issue.elementId === 'Task_Undo');
+
+      expect(offenders).toEqual([]);
+    });
+
+    it('still asks a task associated with a non-compensation boundary event for its flows',
+      async () => {
+        const result = await validator.validate(
+          compensationModel(releaseTask, '<bpmn:errorEventDefinition id="Error_Reserve" />'),
+          'full'
+        );
+        const flagged = result.issues
+          .filter(issue => issue.elementId === 'Task_Release')
+          .map(issue => issue.code)
+          .sort();
+
+        expect(flagged).toEqual([
+          'BPMN_PROFILE_MISSING_INCOMING_FLOW',
+          'BPMN_PROFILE_MISSING_OUTGOING_FLOW'
+        ]);
+      });
+
+    it('still asks a disconnected task alongside a compensation handler for its flows',
+      async () => {
+        const result = await validator.validate(
+          compensationModel(`${releaseTask}<bpmn:task id="Task_Stranded" />`, compensateDefinition),
+          'full'
+        );
+        const flagged = result.issues
+          .filter(issue => issue.elementId === 'Task_Stranded')
+          .map(issue => issue.code)
+          .sort();
+
+        expect(flagged).toEqual([
+          'BPMN_PROFILE_MISSING_INCOMING_FLOW',
+          'BPMN_PROFILE_MISSING_OUTGOING_FLOW'
+        ]);
+      });
   });
 
   describe('subprocess scope resolution', () => {

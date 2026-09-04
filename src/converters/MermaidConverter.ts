@@ -25,7 +25,6 @@ const MAX_MERMAID_DIAGNOSTIC_MESSAGE_LENGTH = 240;
 
 interface FormattedMermaidDiagnostics {
   all: string[];
-  errors: string[];
   warnings: string[];
 }
 
@@ -68,40 +67,12 @@ function formatMermaidDiagnostics(parseResult: ParseResult): FormattedMermaidDia
 
   return {
     all: entries.map(entry => entry.text),
-    errors: entries.filter(entry => entry.severity === 'error').map(entry => entry.text),
     warnings: entries.filter(entry => entry.severity === 'warning').map(entry => entry.text)
   };
 }
 
 export interface ConversionOptions {
   autoLayout?: boolean;
-  validateOutput?: boolean;
-}
-
-export interface ValidationResult {
-  valid: boolean;
-  errors: string[];
-  warnings: string[];
-  suggestions?: string[];
-  supportedFeatures?: string[];
-  unsupportedFeatures?: string[];
-}
-
-export interface AnalysisResult {
-  nodeCount: number;
-  edgeCount: number;
-  subgraphCount: number;
-  warnings: string[];
-  complexity: 'simple' | 'medium' | 'complex';
-  estimatedBpmnElements: {
-    tasks: number;
-    subprocesses: number;
-    dataObjects: number;
-    gateways: number;
-    events: number;
-    pools: number;
-    flows: number;
-  };
 }
 
 /** How each Mermaid direction maps onto the two layout orientations. */
@@ -209,17 +180,7 @@ export class MermaidConverter {
       result.warnings.push(...layout.warnings.map(formatBpmnLayoutDiagnostic));
     }
     result.warnings.push(...warnings);
-    
-    if (options.validateOutput) {
-      // Basic validation
-      if (!result.xml.includes('startEvent') && ast.nodes.some(n => n.type === 'start')) {
-        result.warnings.push('Start event may not be properly converted');
-      }
-      if (!result.xml.includes('endEvent') && ast.nodes.some(n => n.type === 'end')) {
-        result.warnings.push('End event may not be properly converted');
-      }
-    }
-    
+
     // Add stats for compatibility
     result.stats = {
       nodeCount: ast.nodes.length,
@@ -228,86 +189,6 @@ export class MermaidConverter {
     
     return result;
   }
-
-  async canConvert(mermaidCode: string): Promise<ValidationResult> {
-    try {
-      const parseResult = this.parser.parse(mermaidCode);
-      const diagnostics = formatMermaidDiagnostics(parseResult);
-      
-      if (!parseResult.ast) {
-        return {
-          valid: false,
-          errors: diagnostics.errors,
-          warnings: diagnostics.warnings,
-          suggestions: [
-            'Check Mermaid syntax',
-            'Ensure all nodes are properly defined',
-            'Verify edge connections'
-          ]
-        };
-      }
-
-      const supportedFeatures = this.identifySupportedFeatures(parseResult.ast);
-      const unsupportedFeatures = this.identifyUnsupportedFeatures(mermaidCode);
-
-      return {
-        valid: true,
-        errors: [],
-        warnings: diagnostics.warnings,
-        supportedFeatures,
-        unsupportedFeatures,
-        suggestions: unsupportedFeatures.length > 0 
-          ? [`Note: The following features will be approximated: ${unsupportedFeatures.join(', ')}`]
-          : undefined
-      };
-    } catch (error) {
-      return {
-        valid: false,
-        errors: [error instanceof Error ? error.message : 'Unknown error'],
-        warnings: [],
-        suggestions: ['Ensure valid Mermaid flowchart syntax']
-      };
-    }
-  }
-
-  async analyze(mermaidCode: string): Promise<AnalysisResult> {
-    const parseResult = this.parser.parse(mermaidCode);
-    const diagnostics = formatMermaidDiagnostics(parseResult);
-    
-    if (!parseResult.ast) {
-      throw this.parseFailure(diagnostics.all);
-    }
-
-    const ast = parseResult.ast;
-    const nodeCount = ast.nodes.length;
-    const edgeCount = ast.edges.length;
-    const subgraphCount = ast.subgraphs.length;
-
-    const decisionNodes = ast.nodes.filter(n => n.type === 'decision').length;
-    const complexity = this.calculateComplexity(nodeCount, edgeCount, decisionNodes);
-
-    return {
-      nodeCount,
-      edgeCount,
-      subgraphCount,
-      warnings: diagnostics.warnings,
-      complexity,
-      estimatedBpmnElements: {
-        // Final parser types are mutually exclusive, so every node contributes
-        // to at most one semantic category.
-        tasks: ast.nodes.filter(n => n.type === 'process').length,
-        subprocesses: ast.nodes.filter(n => n.type === 'subprocess').length,
-        dataObjects: ast.nodes.filter(n => n.type === 'data').length,
-        gateways: decisionNodes,
-        events: ast.nodes.filter(n => ['start', 'end', 'terminator'].includes(n.type)).length,
-        pools: subgraphCount,
-        flows: edgeCount
-      }
-    };
-  }
-
-
-
 
   private generateProcessName(ast: MermaidAST): string {
     // The start label is used verbatim. Stripping "start"/"begin" out of it
@@ -322,44 +203,5 @@ export class MermaidConverter {
 
   private parseFailure(errors: readonly string[]): Error {
     return new Error(`Failed to parse Mermaid diagram:\n${errors.join('\n')}`);
-  }
-
-
-  private calculateComplexity(
-    nodeCount: number,
-    edgeCount: number,
-    decisionCount: number
-  ): 'simple' | 'medium' | 'complex' {
-    const score = nodeCount + (edgeCount * 0.5) + (decisionCount * 2);
-    
-    if (score < 10) return 'simple';
-    if (score < 20) return 'medium';
-    return 'complex';
-  }
-
-  private identifySupportedFeatures(ast: MermaidAST): string[] {
-    const features: string[] = [];
-    
-    if (ast.nodes.some(n => n.type === 'process')) features.push('Tasks');
-    if (ast.nodes.some(n => n.type === 'subprocess')) features.push('Subprocesses');
-    if (ast.nodes.some(n => n.type === 'data')) features.push('Data objects');
-    if (ast.nodes.some(n => n.type === 'decision')) features.push('Gateways');
-    if (ast.nodes.some(n => ['start', 'end', 'terminator'].includes(n.type))) features.push('Events');
-    if (ast.subgraphs.length > 0) features.push('Pools');
-    if (ast.edges.some(e => e.label)) features.push('Labeled flows');
-    
-    return features;
-  }
-
-  private identifyUnsupportedFeatures(mermaidCode: string): string[] {
-    const unsupported: string[] = [];
-    
-    if (mermaidCode.includes('linkStyle')) unsupported.push('Link styles');
-    if (mermaidCode.includes('click')) unsupported.push('Click events');
-    if (mermaidCode.includes(':::')) unsupported.push('CSS classes');
-    if (mermaidCode.includes('style ')) unsupported.push('Inline styles');
-    if (mermaidCode.includes('-.->')) unsupported.push('Dotted edge styles');
-    
-    return unsupported;
   }
 }

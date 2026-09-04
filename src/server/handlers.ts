@@ -500,6 +500,12 @@ export class BpmnRequestHandler {
         elementId: element.id,
         type: element.type,
         ...(element.name === undefined ? {} : { name: element.name }),
+        // A :::class suffix can add an event definition without changing the
+        // element type, so the preview has to report it or the steering is
+        // invisible in exactly the case the author is checking.
+        ...(typeof element.properties.eventDefinition === 'string'
+          ? { eventDefinition: element.properties.eventDefinition }
+          : {}),
         ownerId: element.ownerId
       }));
     const flows = Array.from(preview.connections.values())
@@ -528,7 +534,12 @@ export class BpmnRequestHandler {
       pools,
       warnings: conversion.warnings
     };
-    return textToolResult('preview_mermaid', result, compactJson(result));
+    return textToolResult('preview_mermaid', result, pageSummary(
+      `Preview of "${result.processName}": ${result.nodeCount} element(s), `
+      + `${result.flowCount} flow(s), ${pools.length} pool(s)`,
+      nodes.map(node => `${node.mermaidId} -> ${node.elementId} (${node.type})`),
+      conversion.warnings
+    ));
   }
 
   // File operations
@@ -547,8 +558,9 @@ export class BpmnRequestHandler {
       ...(replacedDiagram ? { replacedDiagram } : {}),
       revision: context.revision,
       elementCount: context.elements.size,
-      connectionCount: context.connections.size
-    }, `Opened BPMN diagram "${context.name}" from ${filename}\nExtension profile: ${context.extensionProfile}\nElements: ${context.elements.size}, Connections: ${context.connections.size}`
+      connectionCount: context.connections.size,
+      laneCount: context.document.lanes.size
+    }, `Opened BPMN diagram "${context.name}" from ${filename}\nExtension profile: ${context.extensionProfile}\nFlow nodes and pools: ${context.elements.size}, Connections: ${context.connections.size}, Lanes: ${context.document.lanes.size}\nlist_elements also counts lanes and associations, so its count is higher`
       + replacedDiagramText(replacedDiagram));
   }
 
@@ -957,21 +969,25 @@ export class BpmnRequestHandler {
   }
 
   private async addLane(args: ToolArguments<'add_lane'>): Promise<CallToolResult> {
-    const { poolId, name, flowNodeIds, position = 'bottom', expectedRevision } = args;
+    const { poolId, laneId, name, flowNodeIds, position = 'bottom', expectedRevision } = args;
     const context = diagramContext.getCurrent();
     const beforeRevision = context.revision;
     const lane = await this.engine.addLane(
-      context.id, poolId, name, flowNodeIds, position, expectedRevision
+      context.id, poolId, name, flowNodeIds, position, expectedRevision, laneId
     );
 
     return textToolResult('add_lane', {
       laneId: lane.id,
       poolId,
+      created: laneId === undefined,
       assignedFlowNodeCount: lane.flowNodeRefs.length,
       filename: activeFilename(context),
       beforeRevision,
       afterRevision: context.revision
-    }, `Added lane "${name}" with ID: ${lane.id}; assigned ${lane.flowNodeRefs.length} flow node(s)`);
+    }, laneId === undefined
+      ? `Added lane "${lane.name}" with ID: ${lane.id}; assigned ${flowNodeIds.length} flow node(s)`
+      : `Added ${flowNodeIds.length} flow node(s) to lane "${lane.name}" (${lane.id}), `
+        + `which now holds ${lane.flowNodeRefs.length}`);
   }
 
   // Query and manipulation methods
@@ -1052,7 +1068,12 @@ export class BpmnRequestHandler {
       elements: elementList,
       revision: context.revision
     };
-    return textToolResult('list_elements', result, compactJson(result));
+    return textToolResult('list_elements', result, pageSummary(
+      `${elementList.length} of ${filteredElements.length} element(s)`
+      + `${result.hasMore ? `, more from offset ${offset + elementList.length}` : ''}`,
+      elementList.map(element => `${element.id} ${element.type}`
+        + ('name' in element && element.name ? ` "${element.name}"` : ''))
+    ));
   }
 
   private async getElement(args: ToolArguments<'get_element'>): Promise<CallToolResult> {
@@ -1062,7 +1083,8 @@ export class BpmnRequestHandler {
     const connection = context.connections.get(elementId);
     if (connection?.type === 'bpmn:Association') {
       const result = { ...associationQueryView(connection), revision: context.revision };
-      return textToolResult('get_element', result, compactJson(result));
+      return textToolResult('get_element', result, `${result.id} ${result.type}`
+        + ` from ${result.sourceId} to ${result.targetId}`);
     }
     if (connection) {
       throw new ToolError(
@@ -1133,7 +1155,10 @@ export class BpmnRequestHandler {
       revision: context.revision
     };
 
-    return textToolResult('get_element', details, compactJson(details));
+    return textToolResult('get_element', details, `${details.id} ${details.type}`
+      + (details.name ? ` "${details.name}"` : '')
+      + ` in ${details.scopeId}; ${details.incoming.length} incoming, `
+      + `${details.outgoing.length} outgoing`);
   }
 
   private async listConnections(
@@ -1176,7 +1201,12 @@ export class BpmnRequestHandler {
       connections,
       revision: context.revision
     };
-    return textToolResult('list_connections', result, compactJson(result));
+    return textToolResult('list_connections', result, pageSummary(
+      `${connections.length} of ${filtered.length} connection(s)`
+      + `${result.hasMore ? `, more from offset ${offset + connections.length}` : ''}`,
+      connections.map(connection => `${connection.id} ${connection.type} `
+        + `${connection.sourceId} -> ${connection.targetId}`)
+    ));
   }
 
   private async getConnection(
@@ -1197,7 +1227,8 @@ export class BpmnRequestHandler {
       ...connectionQueryView(context, connection, edge),
       revision: context.revision
     };
-    return textToolResult('get_connection', result, compactJson(result));
+    return textToolResult('get_connection', result, `${result.id} ${result.type}`
+      + ` from ${result.sourceId} to ${result.targetId}`);
   }
 
   private async updateElement(args: ToolArguments<'update_element'>): Promise<CallToolResult> {
@@ -1247,7 +1278,7 @@ export class BpmnRequestHandler {
     return textToolResult(
       'update_connection',
       structuredResult,
-      compactJson(structuredResult)
+      `Updated connection ${structuredResult.connectionId}`
     );
   }
 
@@ -1269,7 +1300,7 @@ export class BpmnRequestHandler {
     return textToolResult(
       'update_element_geometry',
       structuredResult,
-      compactJson(structuredResult)
+      geometrySummary(`element ${structuredResult.elementId}`, structuredResult)
     );
   }
 
@@ -1297,7 +1328,7 @@ export class BpmnRequestHandler {
     return textToolResult(
       'update_connection_geometry',
       structuredResult,
-      compactJson(structuredResult)
+      geometrySummary(`connection ${structuredResult.connectionId}`, structuredResult)
     );
   }
 
@@ -1320,7 +1351,11 @@ export class BpmnRequestHandler {
     return textToolResult(
       'apply_geometry_patch',
       structuredResult,
-      compactJson(structuredResult)
+      geometrySummary(
+        `${structuredResult.elements.length} element(s) and `
+        + `${structuredResult.connections.length} connection(s)`,
+        structuredResult
+      )
     );
   }
 
@@ -1366,7 +1401,11 @@ export class BpmnRequestHandler {
     return textToolResult(
       'route_connection',
       structuredResult,
-      compactJson(structuredResult)
+      `${structuredResult.applied ? 'Applied' : 'Proposed'} a route for `
+      + `${structuredResult.connectionId}: `
+      + `${structuredResult.proposedWaypoints?.length ?? 0} waypoint(s), `
+      + `score ${structuredResult.scoreBreakdown?.total ?? 'n/a'}`
+      + diagnosticsSummary(structuredResult.introducedDiagnostics)
     );
   }
 
@@ -1398,6 +1437,9 @@ export class BpmnRequestHandler {
         name: node.name,
         properties: {
           ...(node.eventDefinition ? { eventDefinition: node.eventDefinition } : {}),
+          ...(node.eventDefinitionPayload
+            ? { eventDefinitionPayload: node.eventDefinitionPayload }
+            : {}),
           ...(node.attachTo ? { attachTo: node.attachTo } : {}),
           ...(node.cancelActivity !== undefined ? { cancelActivity: node.cancelActivity } : {})
         }
@@ -1428,7 +1470,11 @@ export class BpmnRequestHandler {
       beforeRevision,
       afterRevision: context.revision
     };
-    return textToolResult('build_process', structured, compactJson(structured));
+    return textToolResult('build_process', structured, pageSummary(
+      `Created ${structured.elementCount} element(s) and `
+      + `${structured.connectionCount} connection(s)`,
+      structured.elements.map(element => `${element.ref} -> ${element.elementId} (${element.type})`)
+    ));
   }
 
   private async deleteElement(args: ToolArguments<'delete_element'>): Promise<CallToolResult> {
@@ -1617,7 +1663,11 @@ export class BpmnRequestHandler {
       summary: result.summary
     };
     const structuredResult = { ...compact, filename: activeFilename(context) };
-    return textToolResult('validate', structuredResult, compactJson(compact));
+    return textToolResult('validate', structuredResult, pageSummary(
+      result.summary,
+      result.issues.map(issue => `${issue.severity} ${issue.code}`
+        + (issue.elementId ? ` (${issue.elementId})` : '') + `: ${issue.message}`)
+    ));
   }
 
   private async analyzeGeometry(
@@ -1649,7 +1699,12 @@ export class BpmnRequestHandler {
     return textToolResult(
       'analyze_geometry',
       structuredResult,
-      compactJson(structuredResult)
+      pageSummary(
+        `${structuredResult.valid ? 'No geometry problems' : 'Geometry problems'}: `
+        + `${structuredResult.summary.errors} error(s), `
+        + `${structuredResult.summary.warnings} warning(s)`,
+        structuredResult.diagnostics.map(item => `${item.severity} ${item.code}: ${item.message}`)
+      )
     );
   }
 
@@ -1721,7 +1776,11 @@ export class BpmnRequestHandler {
       diagrams: page.diagrams,
       path: this.engine.getDiagramsPath()
     };
-    return textToolResult('list_diagrams', result, compactJson(result));
+    return textToolResult('list_diagrams', result, pageSummary(
+      `${page.diagrams.length} of ${result.count} diagram(s) in ${result.path}`
+      + `${result.hasMore ? `, more from offset ${offset + page.diagrams.length}` : ''}`,
+      page.diagrams.map(diagram => `${diagram.filename} "${diagram.name}" (${diagram.processId})`)
+    ));
   }
 
   private async deleteDiagramFile(
@@ -1800,6 +1859,37 @@ function textToolResult<Name extends ToolName>(
  * 2-space indented, which doubled the cost of the larger listings for no
  * reader: agents parse it. It stays complete and parseable, just compact.
  */
+/**
+ * A readable summary instead of a second copy of the payload.
+ *
+ * The text block exists for clients that do not read structuredContent, so it
+ * has to say something useful; it does not have to repeat the whole object.
+ * Serializing the payload into both fields made every query cost twice its
+ * size in an agent's context (mcp-bpmn-8u0.25).
+ */
+function pageSummary(headline: string, lines: string[], warnings: string[] = []): string {
+  const body = lines.length === 0 ? [] : lines;
+  const tail = warnings.length === 0
+    ? []
+    : ['', `Warnings:`, ...warnings.map(warning => `- ${warning}`)];
+  return [headline, ...body.map(line => `- ${line}`), ...tail].join('\n');
+}
+
+/** Geometry results share one shape: what moved, and what it introduced. */
+function geometrySummary(
+  subject: string,
+  result: { dryRun?: boolean; introducedDiagnostics?: GeometryDiagnostic[] }
+): string {
+  return `${result.dryRun ? 'Checked' : 'Updated'} geometry for ${subject}`
+    + diagnosticsSummary(result.introducedDiagnostics);
+}
+
+function diagnosticsSummary(diagnostics: GeometryDiagnostic[] | undefined): string {
+  if (!diagnostics || diagnostics.length === 0) return '; no new diagnostics';
+  return `; introduced ${diagnostics.length} diagnostic(s): `
+    + diagnostics.map(item => item.code).join(', ');
+}
+
 function compactJson(value: unknown): string {
   return JSON.stringify(value);
 }
@@ -1864,6 +1954,23 @@ const ERROR_CLASSIFIERS: ReadonlyArray<{
     code: 'connection_not_found',
     recovery: 'List connections with list_connections and use an id from that result.',
     details: match => ({ connectionId: match[1] })
+  },
+  {
+    pattern: /^Lane(?: member)? "([^"]+)" not found/,
+    code: 'element_not_found',
+    recovery: 'List elements with list_elements and use an id from that result.',
+    details: match => ({ elementId: match[1] })
+  },
+  {
+    pattern: /^Lane member ([^\s]+) is a (\S+), which is not a flow node/,
+    code: 'wrong_object_kind',
+    recovery: 'A lane holds flow nodes only. Pass the ids of tasks, events and gateways.',
+    details: match => ({ elementId: match[1], elementType: match[2] })
+  },
+  {
+    pattern: /requires eventDefinitionPayload|Boundary events require attachTo|event definition requires/i,
+    code: 'invalid_arguments',
+    recovery: 'Supply the missing field named in the message; see the inputSchema in tools/list.'
   },
   {
     pattern: /^(?:Associated element|Source element|Target element|Element) "?([^"\s]+)"? not found/,

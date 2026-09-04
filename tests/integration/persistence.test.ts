@@ -110,7 +110,7 @@ describe('transactional diagram persistence', () => {
     await expectActiveFileMatchesContext();
 
     const listed = await handler.handleRequest('list_diagrams', {});
-    const listing = JSON.parse(textOf(listed));
+    const listing = (listed.structuredContent as Record<string, any>);
     const listedFilenames = listing.diagrams
       .map((diagram: { filename: string }) => diagram.filename);
     expect(listedFilenames).toEqual(expect.arrayContaining(['active-copy.bpmn']));
@@ -567,7 +567,7 @@ describe('transactional diagram persistence', () => {
   it('exposes stable query revisions and before/after mutation revisions', async () => {
     const created = await handler.handleRequest('new_bpmn', { name: 'Revision contract' });
     const createdRevision = (created.structuredContent as { revision: string }).revision;
-    expect(createdRevision).toMatch(/^sha256:[a-f0-9]{64}:v1$/);
+    expect(createdRevision).toMatch(/^sha256:[a-f0-9]{32}:v1$/);
 
     const firstCurrent = await handler.handleRequest('current', {});
     const secondCurrent = await handler.handleRequest('current', {});
@@ -581,7 +581,7 @@ describe('transactional diagram persistence', () => {
     });
     expect(added.structuredContent).toMatchObject({
       beforeRevision: createdRevision,
-      afterRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}:v2$/)
+      afterRevision: expect.stringMatching(/^sha256:[a-f0-9]{32}:v2$/)
     });
     const afterRevision = (added.structuredContent as any).afterRevision;
     expect((await handler.handleRequest('list_elements', {})).structuredContent)

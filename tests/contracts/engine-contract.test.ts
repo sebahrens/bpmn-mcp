@@ -332,7 +332,7 @@ describe('live engine contract', () => {
     await handler.handleRequest('connect', { sourceId: 'Task_1', targetId: 'ExclusiveGateway_1' });
     await handler.handleRequest('connect', { sourceId: 'ExclusiveGateway_1', targetId: 'EndEvent_1' });
 
-    const listed = JSON.parse(textOf(await handler.handleRequest('list_elements', {})));
+    const listed = ((await handler.handleRequest('list_elements', {})).structuredContent as Record<string, any>);
     expect(listed.elements.map((element: any) => element.type)).toEqual([
       'bpmn:DataObjectReference',
       'bpmn:EndEvent',
@@ -340,21 +340,21 @@ describe('live engine contract', () => {
       'bpmn:StartEvent',
       'bpmn:Task'
     ]);
-    const connections = JSON.parse(textOf(await handler.handleRequest('list_connections', {})));
+    const connections = ((await handler.handleRequest('list_connections', {})).structuredContent as Record<string, any>);
     expect(connections.connections).toHaveLength(3);
-    expect(JSON.parse(textOf(await handler.handleRequest('get_connection', {
+    expect(((await handler.handleRequest('get_connection', {
       connectionId: connections.connections[0].id
-    })))).toMatchObject(connections.connections[0]);
+    })).structuredContent as Record<string, any>)).toMatchObject(connections.connections[0]);
 
     await handler.handleRequest('update_element', {
       elementId: 'Task_1',
       name: 'Updated work'
     });
-    expect(JSON.parse(textOf(await handler.handleRequest('get_element', {
+    expect(((await handler.handleRequest('get_element', {
       elementId: 'Task_1'
-    }))).name).toBe('Updated work');
+    })).structuredContent as Record<string, any>).name).toBe('Updated work');
 
-    const validation = JSON.parse(textOf(await handler.handleRequest('validate', { level: 'full' })));
+    const validation = ((await handler.handleRequest('validate', { level: 'full' })).structuredContent as Record<string, any>);
     expect(validation.valid).toBe(true);
     expect((await handler.handleRequest('auto_layout', { algorithm: 'horizontal' })).isError).toBeUndefined();
 
@@ -577,13 +577,13 @@ describe('live engine contract', () => {
       conditionLanguage: 'FEEL'
     });
 
-    const syntax = JSON.parse(textOf(await handler.handleRequest('validate', {
+    const syntax = ((await handler.handleRequest('validate', {
       level: 'syntax'
-    })));
-    const semantic = JSON.parse(textOf(await handler.handleRequest('validate', {
+    })).structuredContent as Record<string, any>);
+    const semantic = ((await handler.handleRequest('validate', {
       level: 'semantic'
-    })));
-    const full = JSON.parse(textOf(await handler.handleRequest('validate', { level: 'full' })));
+    })).structuredContent as Record<string, any>);
+    const full = ((await handler.handleRequest('validate', { level: 'full' })).structuredContent as Record<string, any>);
 
     expect(syntax).toMatchObject({ level: 'syntax', issues: [] });
     expect(semantic.level).toBe('semantic');

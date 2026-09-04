@@ -683,19 +683,29 @@ function moveOut(point: Position, side: Side, distance: number): Position {
   return { x: point.x - distance, y: point.y };
 }
 
+/**
+ * Whether a segment touches a rectangle at all.
+ *
+ * The geometry oracle counts a segment that runs exactly along a shape's edge
+ * as a collision, so the router has to as well: a router that scores such a
+ * route as clean picks it, and the diagram then fails analyze_geometry. The
+ * case is not hypothetical - the side anchor of a boundary event sits exactly
+ * on its host's outline, so every horizontal exit from one grazes the shapes
+ * that share that edge coordinate.
+ */
 function segmentIntersectsBounds(start: Position, end: Position, bounds: Bounds): boolean {
   const epsilon = 0.001;
   if (start.x === end.x) {
-    return start.x > bounds.x + epsilon
-      && start.x < bounds.x + bounds.width - epsilon
-      && Math.max(start.y, end.y) > bounds.y + epsilon
-      && Math.min(start.y, end.y) < bounds.y + bounds.height - epsilon;
+    return start.x > bounds.x - epsilon
+      && start.x < bounds.x + bounds.width + epsilon
+      && Math.max(start.y, end.y) > bounds.y - epsilon
+      && Math.min(start.y, end.y) < bounds.y + bounds.height + epsilon;
   }
   if (start.y === end.y) {
-    return start.y > bounds.y + epsilon
-      && start.y < bounds.y + bounds.height - epsilon
-      && Math.max(start.x, end.x) > bounds.x + epsilon
-      && Math.min(start.x, end.x) < bounds.x + bounds.width - epsilon;
+    return start.y > bounds.y - epsilon
+      && start.y < bounds.y + bounds.height + epsilon
+      && Math.max(start.x, end.x) > bounds.x - epsilon
+      && Math.min(start.x, end.x) < bounds.x + bounds.width + epsilon;
   }
   return true;
 }

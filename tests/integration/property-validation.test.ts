@@ -99,8 +99,12 @@ describe('typed activity property validation', () => {
     const updateSchema = tools.find(tool => tool.name === 'update_element')!.inputSchema as any;
     expect(addSchema.properties.properties.additionalProperties).toBe(false);
     expect(updateSchema.properties.properties.additionalProperties).toBe(false);
+    // isForCompensation and triggeredByEvent were added so a compensation
+    // handler and an event subprocess can be authored at all; the engine
+    // supported both but no tool accepted them (mcp-bpmn-9sv.18, mcp-bpmn-9sv.20).
     expect(Object.keys(addSchema.properties.properties.properties).sort()).toEqual([
-      'assignee', 'calledElement', 'candidateGroups', 'dueDate', 'isExpanded', 'multiInstance'
+      'assignee', 'calledElement', 'candidateGroups', 'dueDate', 'isExpanded',
+      'isForCompensation', 'multiInstance', 'triggeredByEvent'
     ]);
     expect(updateSchema.properties.properties.properties.assignee.anyOf)
       .toEqual(expect.arrayContaining([
@@ -134,7 +138,7 @@ describe('typed activity property validation', () => {
   async function getElement(elementId: string): Promise<Record<string, any>> {
     const result = await handler.handleRequest('get_element', { elementId });
     await expectSuccess(Promise.resolve(result));
-    return JSON.parse(result.content[0].text);
+    return result.structuredContent as Record<string, any>;
   }
 });
 

@@ -1,5 +1,5 @@
 import { MermaidParser } from '../../../src/converters/MermaidParser.js';
-import type { NodeType } from '../../../src/converters/ASTTypes.js';
+import type { NodeSubtype, NodeType } from '../../../src/converters/ASTTypes.js';
 
 describe('MermaidParser event inference', () => {
   const parser = new MermaidParser();
@@ -1264,5 +1264,232 @@ describe('MermaidParser implicit parallel splits (mcp-bpmn-j21.8)', () => {
 
     expect(result.errors).toEqual([]);
     expect(result.warnings.map(warning => warning.code)).not.toContain('IMPLICIT_PARALLEL_SPLIT');
+  });
+});
+
+describe('MermaidParser diagnostics after a failed line (mcp-bpmn-j21.13)', () => {
+  const parser = new MermaidParser();
+
+  const format = (diagnostic: { line: number; column: number; code: string }): string =>
+    `${diagnostic.line}:${diagnostic.column} [${diagnostic.code}]`;
+
+  it('reports only the unsupported shape, not the nodes its line took down with it', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      '  subgraph cust ["Customer"]',
+      '    A([Start]) --> B[Place order]',
+      '  end',
+      '  subgraph shop ["Shop"]',
+      '    C[Receive] --> D((Done))',
+      '  end',
+      '  B --> C'
+    ].join('\n'));
+
+    // B is declared inside cust on line 3 and has an incoming edge from A. Only
+    // A's stadium shape is wrong; the ownership and connectivity analyses used
+    // to report B twice at line 8, where nothing is wrong at all.
+    expect(result.errors.map(format)).toEqual(['3:6 [UNSUPPORTED_SHAPE]']);
+    expect(result.warnings.map(format)).toEqual([]);
+    expect(result.ast).toBeUndefined();
+  });
+
+  it('withholds start/end, connectivity and split advice while a line is malformed', () => {
+    const result = parser.parse('flowchart TD\n  A((Start)) --> B[Missing close');
+
+    expect(result.errors.map(format)).toEqual(['2:19 [MALFORMED_NODE]']);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('still reports faults computed from what did parse', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      '  subgraph one[One]',
+      '    A((Start)) -.-> B[[Record]]',
+      '  end',
+      '  C([Broken])'
+    ].join('\n'));
+
+    // The dotted-edge style and the data-object endpoint are properties of an
+    // edge that parsed, so they survive the suppression; only the whole-graph
+    // analyses stand down.
+    expect(result.errors.map(format))
+      .toEqual(['3:16 [UNSUPPORTED_EDGE_ENDPOINT]', '5:4 [UNSUPPORTED_SHAPE]']);
+    expect(result.warnings.map(format)).toEqual(['3:16 [UNSUPPORTED_EDGE_STYLE]']);
+  });
+
+  it('runs every analysis once the whole document parses', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      '  subgraph cust ["Customer"]',
+      '    A((Start)) --> B[Place order]',
+      '  end',
+      '  subgraph shop ["Shop"]',
+      '    C[Receive] --> D((Done))',
+      '  end',
+      '  B --> C'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toEqual([]);
+    expect(result.ast?.nodes.map(node => node.type)).toEqual(['start', 'process', 'process', 'end']);
+  });
+});
+
+describe('MermaidParser BPMN subtype classes (mcp-bpmn-j21.12)', () => {
+  const parser = new MermaidParser();
+
+  const subtypeOf = (source: string, nodeId: string): NodeSubtype | undefined =>
+    parser.parse(source).ast?.nodes.find(node => node.id === nodeId)?.subtype;
+
+  it.each([
+    ['user', 'A[Approve]:::user'],
+    ['service', 'A[Charge]:::service'],
+    ['script', 'A[Compute]:::script'],
+    ['businessRule', 'A[Score]:::businessRule'],
+    ['manual', 'A[Pack]:::manual'],
+    ['receive', 'A[Await reply]:::receive'],
+    ['send', 'A[Notify]:::send']
+  ] as Array<[NodeSubtype, string]>)('refines a task as %s', (subtype, node) => {
+    expect(subtypeOf(`flowchart TD\n  ${node}`, 'A')).toBe(subtype);
+  });
+
+  it.each([
+    ['parallel', 'G{Split}:::parallel'],
+    ['inclusive', 'G{Some}:::inclusive'],
+    ['eventBased', 'G{Race}:::eventBased'],
+    ['complex', 'G{Odd}:::complex']
+  ] as Array<[NodeSubtype, string]>)('refines a gateway as %s', (subtype, node) => {
+    expect(subtypeOf(`flowchart TD\n  ${node}`, 'G')).toBe(subtype);
+  });
+
+  it.each([
+    ['message', 'flowchart TD\n  E((Order placed)):::message --> T[Work]'],
+    ['timer', 'flowchart TD\n  E((Every night)):::timer --> T[Work]'],
+    ['signal', 'flowchart TD\n  E((Alarm)):::signal --> T[Work]'],
+    ['conditional', 'flowchart TD\n  E((Stock low)):::conditional --> T[Work]'],
+    ['error', 'flowchart TD\n  T[Work] --> E((Failed)):::error'],
+    ['escalation', 'flowchart TD\n  T[Work] --> E((Escalated)):::escalation'],
+    ['cancel', 'flowchart TD\n  T[Work] --> E((Cancelled)):::cancel'],
+    ['terminate', 'flowchart TD\n  T[Work] --> E((Halt)):::terminate'],
+    ['compensation', 'flowchart TD\n  T[Work] --> E((Undo)):::compensation']
+  ] as Array<[NodeSubtype, string]>)('refines an event with the %s definition', (subtype, source) => {
+    const result = parser.parse(source);
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.nodes.find(node => node.id === 'E')?.subtype).toBe(subtype);
+  });
+
+  it.each(['businessRule', 'business-rule', 'BUSINESS_RULE', 'businessrule'])(
+    'accepts %p as one spelling of the same class',
+    name => {
+      expect(subtypeOf(`flowchart TD\n  A[Score]:::${name}`, 'A')).toBe('businessRule');
+    }
+  );
+
+  it.each([
+    ['a task', 'flowchart TD\n  A[Work]:::task', 'A'],
+    ['a gateway', 'flowchart TD\n  G{Which?}:::exclusive', 'G']
+  ])('accepts the class that names the default already carried by %s', (_name, source, nodeId) => {
+    const result = parser.parse(source);
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.nodes.find(node => node.id === nodeId)?.subtype).toBeUndefined();
+  });
+
+  it.each([
+    [
+      'a task subtype on a gateway',
+      'flowchart TD\n  G{Which?}:::user',
+      'The BPMN subtype class ":::user" cannot refine Mermaid node G, which is a gateway; '
+        + 'it applies to a task.'
+    ],
+    [
+      'a gateway subtype on a task',
+      'flowchart TD\n  A[Work]:::parallel',
+      'The BPMN subtype class ":::parallel" cannot refine Mermaid node A, which is a task; '
+        + 'it applies to a gateway.'
+    ],
+    [
+      'a timer on an end event',
+      'flowchart TD\n  A[Work] --> E((Done)):::timer',
+      'The BPMN subtype class ":::timer" cannot refine Mermaid node E, which is an end event; '
+        + 'it applies to a start event or an intermediate event.'
+    ],
+    [
+      'an error on a start event',
+      'flowchart TD\n  E((Start)):::error --> A[Work]',
+      'The BPMN subtype class ":::error" cannot refine Mermaid node E, which is a start event; '
+        + 'it applies to an end event.'
+    ],
+    [
+      'the default class of the wrong shape',
+      'flowchart TD\n  A[Work]:::exclusive',
+      'The BPMN subtype class ":::exclusive" cannot refine Mermaid node A, which is a task; '
+        + 'it applies to a gateway.'
+    ]
+  ])('rejects %s against the author\'s own Mermaid', (_name, source, message) => {
+    const result = parser.parse(source);
+
+    expect(result.errors.map(error => ({ code: error.code, message: error.message }))).toEqual([
+      { code: 'INVALID_NODE_SUBTYPE', message }
+    ]);
+    expect(result.ast).toBeUndefined();
+  });
+
+  it('reports the subtype failure at the ":::" itself', () => {
+    const result = parser.parse('flowchart TD\n  G{Which?}:::user');
+
+    expect(result.errors.map(error => [error.line, error.column])).toEqual([[2, 12]]);
+  });
+
+  it('rejects two different subtype classes on the same node', () => {
+    const result = parser.parse('flowchart TD\n  A[Work]:::user --> B[Next]\n  A:::service --> C[Other]');
+
+    expect(result.errors.map(error => ({ code: error.code, message: error.message }))).toEqual([{
+      code: 'INVALID_NODE_SUBTYPE',
+      message: 'Mermaid node A is already refined as ":::user", so ":::service" conflicts with it; '
+        + 'give a node one BPMN subtype class.'
+    }]);
+  });
+
+  it('accepts the same subtype class repeated on the same node', () => {
+    const result = parser.parse('flowchart TD\n  A[Work]:::user --> B[Next]\n  A:::user --> C[Other]');
+
+    expect(result.errors).toEqual([]);
+    expect(result.ast?.nodes.find(node => node.id === 'A')?.subtype).toBe('user');
+  });
+
+  it('still ignores a styling class with a warning, and never refines with it', () => {
+    const result = parser.parse('flowchart TD\n  A((Start)):::brand --> B[Work] --> C((End))');
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings.map(warning => ({
+      code: warning.code,
+      line: warning.line,
+      column: warning.column,
+      message: warning.message
+    }))).toEqual([{
+      code: 'UNSUPPORTED_DIRECTIVE',
+      line: 2,
+      column: 13,
+      message: 'Unsupported Mermaid CSS class "brand"; ignored'
+    }]);
+    expect(result.ast?.nodes.find(node => node.id === 'A')?.subtype).toBeUndefined();
+  });
+
+  it('leaves classDef and class directives ignored with a warning', () => {
+    const result = parser.parse([
+      'flowchart TD',
+      '  A((Start)) --> B[Approve]:::user --> C((End))',
+      '  classDef user fill:#eef',
+      '  class B user'
+    ].join('\n'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings.map(warning => warning.message)).toEqual([
+      'Unsupported Mermaid directive "classDef"; ignored',
+      'Unsupported Mermaid directive "class"; ignored'
+    ]);
+    expect(result.ast?.nodes.find(node => node.id === 'B')?.subtype).toBe('user');
   });
 });
