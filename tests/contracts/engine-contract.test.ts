@@ -18,6 +18,8 @@ type ToolContract = {
 const TOOL_CONTRACTS: Record<string, ToolContract> = {
   new_bpmn: { owner: 'engine', caseId: 'C1' },
   new_from_mermaid: { owner: 'converter-and-engine', caseId: 'C7' },
+  // Converter-only: the preview never reaches the engine or the file system.
+  preview_mermaid: { owner: 'handler', caseId: 'C7' },
   open_bpmn: { owner: 'engine', caseId: 'C5' },
   open_mermaid_file: { owner: 'converter-and-engine', caseId: 'C7' },
   save: { owner: 'handler', caseId: 'C6' },

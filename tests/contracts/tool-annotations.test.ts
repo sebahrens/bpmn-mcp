@@ -56,6 +56,7 @@ const DESTRUCTIVE_NON_IDEMPOTENT: ReviewedAnnotations = {
 const EXPECTED_ANNOTATIONS = {
   new_bpmn: ADDITIVE,
   new_from_mermaid: ADDITIVE,
+  preview_mermaid: READ_ONLY,
   open_bpmn: IDEMPOTENT_UPDATE,
   open_mermaid_file: ADDITIVE,
   save: DESTRUCTIVE_UPDATE,
@@ -160,6 +161,7 @@ describe('MCP tool behavior annotations', () => {
 
     const probes: Array<[ToolName, Record<string, unknown>]> = [
       ['current', {}],
+      ['preview_mermaid', { mermaidCode: 'flowchart TD\n  A[Alpha] --> B[Beta]' }],
       ['list_elements', {}],
       ['get_element', { elementId: added.elementId }],
       ['list_connections', {}],

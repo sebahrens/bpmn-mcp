@@ -1,16 +1,19 @@
 import {
   ActivityType,
   BpmnFlowNodeType,
-  EventDefinitionType,
   EventType,
   GatewayType
 } from '../types/index.js';
 
 export class TypeMappings {
   /**
-   * Map event type and definition to BPMN element type
+   * Map an event type to its BPMN element type.
+   *
+   * The event definition does not take part: BPMN puts the definition inside
+   * the event rather than changing the element type, so a timer start event is
+   * still a `bpmn:StartEvent`. The engine attaches the definition separately.
    */
-  static mapEventType(eventType: EventType, _eventDefinition?: EventDefinitionType): BpmnFlowNodeType {
+  static mapEventType(eventType: EventType): BpmnFlowNodeType {
     const baseTypes: Record<EventType, BpmnFlowNodeType> = {
       'start': 'bpmn:StartEvent',
       'end': 'bpmn:EndEvent',
@@ -19,8 +22,6 @@ export class TypeMappings {
       'boundary': 'bpmn:BoundaryEvent'
     };
 
-    // Currently just returning base type, but eventDefinition can be used
-    // for future enhancements like specialized event types
     return baseTypes[eventType];
   }
 

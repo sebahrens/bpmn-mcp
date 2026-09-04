@@ -20,6 +20,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { MermaidConverter } from '../converters/MermaidConverter.js';
 import { diagramContext } from '../core/DiagramContext.js';
 import { BpmnValidator } from '../core/BpmnValidator.js';
+import { BpmnDocumentSerializer } from '../core/BpmnDocument.js';
 import { validateBpmnGeometry } from '../core/BpmnGeometry.js';
 import type { GeometryDiagnostic } from '../core/BpmnGeometry.js';
 import {
@@ -120,6 +121,8 @@ export class BpmnRequestHandler {
   private readonly workspace: WorkspaceSession;
   private mermaidConverter: MermaidConverter;
   private validator: BpmnValidator;
+  /** Reads back a preview conversion so the mapping can be reported per node. */
+  private readonly previewSerializer = new BpmnDocumentSerializer();
   private svgRenderer: DiagramArtifactRenderer;
   private resourceLimits: ResourceLimits;
   private requestQueue: Promise<void> = Promise.resolve();
@@ -129,6 +132,7 @@ export class BpmnRequestHandler {
   private readonly dispatchers: ToolDispatchers = {
     new_bpmn: args => this.newBpmn(args),
     new_from_mermaid: args => this.newFromMermaid(args),
+    preview_mermaid: args => this.previewMermaid(args),
     open_bpmn: args => this.openBpmn(args),
     open_mermaid_file: args => this.openMermaidFile(args),
     save: args => this.save(args),
@@ -383,6 +387,7 @@ export class BpmnRequestHandler {
     switch (request.name) {
       case 'new_bpmn': return this.dispatchers.new_bpmn(request.args);
       case 'new_from_mermaid': return this.dispatchers.new_from_mermaid(request.args);
+      case 'preview_mermaid': return this.dispatchers.preview_mermaid(request.args);
       case 'open_bpmn': return this.dispatchers.open_bpmn(request.args);
       case 'open_mermaid_file': return this.dispatchers.open_mermaid_file(request.args);
       case 'save': return this.dispatchers.save(request.args);
@@ -468,6 +473,62 @@ export class BpmnRequestHandler {
       flowCount: conversionResult.stats.edgeCount,
       warnings: conversionResult.warnings
     }, `Created new BPMN diagram "${name}" from Mermaid\nExtension profile: ${context.extensionProfile}\nElements: ${conversionResult.stats.nodeCount} nodes, ${conversionResult.stats.edgeCount} flows${replacedDiagramText(replacedDiagram)}${this.conversionWarningText(conversionResult.warnings)}`);
+  }
+
+  /**
+   * Classify Mermaid input without committing to it.
+   *
+   * new_from_mermaid was the only way to find out how a flowchart maps onto
+   * BPMN, and it replaces the current diagram to tell you. This runs the same
+   * conversion in memory and reports the mapping, so the agent can fix an
+   * ambiguous node before anything is created. Layout is skipped: the preview
+   * answers "what did each node become", not "where does it sit".
+   */
+  private async previewMermaid(
+    args: ToolArguments<'preview_mermaid'>
+  ): Promise<CallToolResult> {
+    const { mermaidCode } = args;
+    this.assertMermaidByteLimit(mermaidCode);
+    const conversion = await this.mermaidConverter.convert(mermaidCode, { autoLayout: false });
+    const preview = await this.previewSerializer.parse(conversion.xml, config.bpmnImportLimits);
+
+    const nodes = Array.from(preview.elements.values())
+      .filter(element => element.kind !== 'participant')
+      .sort((left, right) => compareStableText(left.id, right.id))
+      .map(element => ({
+        mermaidId: mermaidNodeId(element.id),
+        elementId: element.id,
+        type: element.type,
+        ...(element.name === undefined ? {} : { name: element.name }),
+        ownerId: element.ownerId
+      }));
+    const flows = Array.from(preview.connections.values())
+      .filter((connection): connection is BpmnDocumentConnection & {
+        type: 'bpmn:SequenceFlow' | 'bpmn:MessageFlow';
+      } => connection.type !== 'bpmn:Association')
+      .sort((left, right) => compareStableText(left.id, right.id))
+      .map(connection => ({
+        connectionId: connection.id,
+        type: connection.type,
+        sourceId: connection.source,
+        targetId: connection.target,
+        ...(connection.label === undefined ? {} : { label: connection.label })
+      }));
+    const pools = Array.from(preview.elements.values())
+      .filter(element => element.kind === 'participant')
+      .sort((left, right) => compareStableText(left.id, right.id))
+      .map(element => ({ elementId: element.id, name: element.name ?? '' }));
+
+    const result = {
+      processName: preview.name,
+      nodeCount: conversion.stats.nodeCount,
+      flowCount: conversion.stats.edgeCount,
+      nodes,
+      flows,
+      pools,
+      warnings: conversion.warnings
+    };
+    return textToolResult('preview_mermaid', result, compactJson(result));
   }
 
   // File operations
@@ -656,7 +717,7 @@ export class BpmnRequestHandler {
     } = args;
     const context = diagramContext.getCurrent();
     
-    const bpmnType = TypeMappings.mapEventType(eventType, eventDefinition);
+    const bpmnType = TypeMappings.mapEventType(eventType);
     const elementDef = {
       type: bpmnType,
       name,
@@ -1741,6 +1802,16 @@ function textToolResult<Name extends ToolName>(
  */
 function compactJson(value: unknown): string {
   return JSON.stringify(value);
+}
+
+/**
+ * Recover the Mermaid node id from the BPMN id the generator derived from it.
+ * The generator builds `${prefix}_${mermaidId}` from a fixed prefix vocabulary
+ * that contains no underscore, so the first underscore is the boundary.
+ */
+function mermaidNodeId(elementId: string): string {
+  const separator = elementId.indexOf('_');
+  return separator === -1 ? elementId : elementId.slice(separator + 1);
 }
 
 function sameWaypoints(left: Position[], right: Position[]): boolean {

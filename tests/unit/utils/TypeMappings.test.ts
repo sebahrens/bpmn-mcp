@@ -17,9 +17,12 @@ describe('TypeMappings', () => {
       });
     });
 
-    it('should accept optional event definition parameter', () => {
-      const result = TypeMappings.mapEventType('start', 'timer');
-      expect(result).toBe('bpmn:StartEvent');
+    it('maps by event type alone, since the definition lives inside the event', () => {
+      // A timer start event is still a bpmn:StartEvent; the engine attaches the
+      // timer definition to it rather than choosing a different element type.
+      expect(TypeMappings.mapEventType('start')).toBe('bpmn:StartEvent');
+      expect(TypeMappings.mapEventType('intermediate-catch'))
+        .toBe('bpmn:IntermediateCatchEvent');
     });
   });
 

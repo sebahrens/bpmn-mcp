@@ -17,6 +17,7 @@ import { IdGenerator } from '../../src/utils/IdGenerator.js';
 const validArguments = {
   new_bpmn: { name: 'Validated process' },
   new_from_mermaid: { name: 'Validated Mermaid', mermaidCode: 'flowchart TD\nA-->B' },
+  preview_mermaid: { mermaidCode: 'flowchart TD\nA-->B' },
   open_bpmn: { filename: 'diagram.bpmn' },
   open_mermaid_file: { filename: 'diagram.mmd' },
   save: {},

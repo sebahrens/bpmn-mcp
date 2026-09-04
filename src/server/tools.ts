@@ -550,6 +550,30 @@ const outputSchemas = {
     flowCount: outputCount,
     warnings: z.array(z.string())
   }).strict(),
+  preview_mermaid: z.object({
+    processName: z.string(),
+    nodeCount: outputCount,
+    flowCount: outputCount,
+    nodes: z.array(z.object({
+      mermaidId: z.string().min(1),
+      elementId: outputBpmnId,
+      type: z.string().min(1),
+      name: z.string().optional(),
+      ownerId: outputBpmnId
+    }).strict()).max(MAX_INPUT_ARRAY_ITEMS),
+    flows: z.array(z.object({
+      connectionId: outputBpmnId,
+      type: z.enum(['bpmn:SequenceFlow', 'bpmn:MessageFlow']),
+      sourceId: outputBpmnId,
+      targetId: outputBpmnId,
+      label: z.string().optional()
+    }).strict()).max(MAX_INPUT_ARRAY_ITEMS),
+    pools: z.array(z.object({
+      elementId: outputBpmnId,
+      name: z.string()
+    }).strict()).max(MAX_INPUT_ARRAY_ITEMS),
+    warnings: z.array(z.string())
+  }).strict(),
   open_bpmn: outputDiagram.extend({
     elementCount: outputCount,
     connectionCount: outputCount
@@ -916,6 +940,29 @@ export const toolDefinitions = {
         .describe('Mermaid flowchart code to convert'),
       extensionProfile: extensionProfile.default('portable')
         .describe('BPMN extension profile for the authored document')
+    }).strict()
+  },
+  preview_mermaid: {
+    annotations: READ_ONLY,
+    description: 'Dry-run a Mermaid flowchart: convert it in memory and report the BPMN type '
+      + 'chosen for every node, the sequence/message classification of every edge, the pools, '
+      + 'and any diagnostics, without creating a diagram, writing a file, or replacing the '
+      + 'current context. Run it before new_from_mermaid to check the mapping. Supported '
+      + 'subset: "flowchart"/"graph" with direction TD, TB, LR, RL or BT; ID[Label] becomes '
+      + 'bpmn:Task; ID{Label} becomes bpmn:ExclusiveGateway; ID[/Label/] becomes '
+      + 'bpmn:SubProcess; ID[[Label]] becomes bpmn:DataObjectReference; ID((Label)) becomes an '
+      + 'event, resolved to bpmn:StartEvent when it has no incoming edge, bpmn:EndEvent when '
+      + 'it has no outgoing edge, and bpmn:IntermediateThrowEvent otherwise; a node labelled '
+      + 'start/begin or end/stop/finish becomes that event whatever its shape; -->, -.-> and '
+      + 'labelled edges become sequence flows, and an edge crossing subgraphs becomes a '
+      + 'message flow; each subgraph becomes a pool. Any other shape is reported as a '
+      + 'diagnostic instead of being guessed. Parallel and inclusive gateways, user and '
+      + 'service tasks, and message or timer events have no Mermaid form: import first, then '
+      + 'add or retype them with add_gateway, add_activity and add_event.',
+    outputSchema: outputSchemas.preview_mermaid,
+    schema: z.object({
+      mermaidCode: boundedTrimmedString(TOOL_INPUT_LIMITS.mermaidCode)
+        .describe('Mermaid flowchart code to classify')
     }).strict()
   },
   open_bpmn: {

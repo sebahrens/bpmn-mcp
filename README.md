@@ -265,6 +265,27 @@ edge appearance are not represented in BPMN; accepted lossy syntax returns a
 conversion warning. Text labels and subgraph names are XML-escaped and
 round-trip through BPMN unchanged.
 
+#### `preview_mermaid`
+Dry-run the same conversion and report what each node and edge became, without
+creating a diagram, writing a file, or replacing the current context. Use it to
+check an ambiguous node before committing to `new_from_mermaid`.
+
+```javascript
+{
+  mermaidCode: "flowchart TD\n  A((Start)) --> B[Review] --> C{Approved?}"
+}
+```
+
+The result lists every node as `{ mermaidId, elementId, type, name, ownerId }`,
+every edge as `{ connectionId, type, sourceId, targetId, label }` with its
+sequence- or message-flow classification, the pools each subgraph produced, and
+the conversion warnings. Layout is skipped: the preview answers what each node
+became, not where it will sit.
+
+Mermaid has no form for parallel or inclusive gateways, user or service tasks,
+or message and timer events. Import first, then create or adjust those with
+`add_gateway`, `add_activity`, and `add_event`.
+
 ### File Operations
 
 #### `open_bpmn`

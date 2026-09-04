@@ -3,6 +3,7 @@
   "toolNames": [
     "new_bpmn",
     "new_from_mermaid",
+    "preview_mermaid",
     "open_bpmn",
     "open_mermaid_file",
     "save",
@@ -42,7 +43,7 @@
     "get_workspace",
     "select_workspace"
   ],
-  "contractFingerprint": "7839a479ef699b4ea5ec692b725b12908b56029c757578328b7877c40aed25db",
+  "contractFingerprint": "271c92416511423a0f340b46d5bb5c52fa7145dcaacd1997718b788b5f80ba12",
   "schemaFingerprints": {
     "new_bpmn": {
       "input": "7e7d0607064fe25f15a494cadd85375c728be12777672e2d3f780a82e1961875",
@@ -51,6 +52,10 @@
     "new_from_mermaid": {
       "input": "209ec250e4ea00210e07257865e56b64f48dfd33a6e77cd0035be2740bad2f7c",
       "output": "9697598cf6271b2cd09e279502cb6d9cd4a5db7f12e3a37174f2311c36c3f1aa"
+    },
+    "preview_mermaid": {
+      "input": "6f3d2fd57a6e9d4ba9e67c5aac1d47ccf0045dabd56b6e121a29143e2ce8b51c",
+      "output": "7c2f5ea60d77af93cbd8299210aac2d6ae89a8938ac225aa5f32fa0f5d49cc56"
     },
     "open_bpmn": {
       "input": "7587abc15d187397b8d68fe03f16befb84d338d6c996c9698ed095c172575e33",

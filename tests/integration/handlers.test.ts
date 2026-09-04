@@ -104,6 +104,62 @@ describe('BpmnRequestHandler Integration Tests', () => {
       expect(created.structuredContent).not.toHaveProperty('replacedDiagram');
     });
 
+    it('previews the Mermaid mapping without touching the current diagram', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Untouched' });
+      const before = diagramContext.getCurrent();
+
+      const preview = await handler.handleRequest('preview_mermaid', {
+        mermaidCode: [
+          'flowchart TD',
+          '  Begin((Start)) --> Review[Review request]',
+          '  Review --> Decide{Approved?}',
+          '  Decide -->|yes| Pay[/Settle payment/]',
+          '  Decide -->|no| Reject[Reject]',
+          '  Pay --> Done((End))',
+          '  Reject --> Done'
+        ].join('\n')
+      });
+
+      expect(preview.isError).toBeUndefined();
+      const mapping = preview.structuredContent as {
+        nodeCount: number;
+        flowCount: number;
+        nodes: Array<{ mermaidId: string; type: string; name?: string }>;
+        flows: Array<{ type: string; sourceId: string; targetId: string; label?: string }>;
+      };
+      expect(mapping.nodeCount).toBe(6);
+      expect(mapping.flowCount).toBe(6);
+      expect(mapping.nodes.map(node => [node.mermaidId, node.type]).sort()).toEqual([
+        ['Begin', 'bpmn:StartEvent'],
+        ['Decide', 'bpmn:ExclusiveGateway'],
+        ['Done', 'bpmn:EndEvent'],
+        ['Pay', 'bpmn:SubProcess'],
+        ['Reject', 'bpmn:Task'],
+        ['Review', 'bpmn:Task']
+      ]);
+      expect(mapping.flows.every(flow => flow.type === 'bpmn:SequenceFlow')).toBe(true);
+      expect(mapping.flows.map(flow => flow.label).filter(Boolean).sort())
+        .toEqual(['no', 'yes']);
+      expect(JSON.parse(preview.content[0].text as string)).toEqual(mapping);
+
+      // Nothing was created, opened, or replaced.
+      expect(diagramContext.getCurrent()).toBe(before);
+      expect(diagramContext.getCurrentInfo()?.name).toBe('Untouched');
+    });
+
+    it('previews a failing Mermaid conversion as an error, still without changing context',
+      async () => {
+        await handler.handleRequest('new_bpmn', { name: 'Untouched' });
+        const before = diagramContext.getCurrent();
+
+        const preview = await handler.handleRequest('preview_mermaid', {
+          mermaidCode: 'flowchart TD\n  A[(Database)] --> B[Task]'
+        });
+
+        expect(preview.isError).toBe(true);
+        expect(diagramContext.getCurrent()).toBe(before);
+      });
+
     it('should create a collaboration', async () => {
       const result = await handler.handleRequest('new_bpmn', {
         name: 'Test Collaboration',

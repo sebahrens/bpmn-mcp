@@ -279,8 +279,15 @@ function assertDiagnosticCodes(result, expectedErrors, expectedWarnings, label) 
 
 function assertValidation(result, expectedErrors, expectedWarnings, label) {
   const structured = requireToolSuccess(result, label);
-  const errors = structured.errors?.map(issue => issue.code).sort();
-  const warnings = structured.warnings?.map(issue => issue.code).sort();
+  // validate returns one issues list; each issue carries its own severity,
+  // rather than the errors/warnings copies it used to duplicate alongside it.
+  const issues = structured.issues ?? [];
+  const codesOfSeverity = severity => issues
+    .filter(issue => issue.severity === severity)
+    .map(issue => issue.code)
+    .sort();
+  const errors = codesOfSeverity('error');
+  const warnings = codesOfSeverity('warning');
   if (JSON.stringify(errors) !== JSON.stringify([...expectedErrors].sort())
     || JSON.stringify(warnings) !== JSON.stringify([...expectedWarnings].sort())) {
     throw new Error(

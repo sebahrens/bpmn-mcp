@@ -9,6 +9,9 @@ pre-1.0 policy described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning-changel
 
 ### Added
 
+- `preview_mermaid` converts Mermaid text and reports the elements,
+  connections and pools it would create, with the Mermaid id beside each BPMN
+  id, without touching the active diagram or any file.
 - `auto_layout` takes a `direction`: `left-to-right` (the default) or
   `top-to-bottom`. A vertical layout reflects the ranked result across the
   diagonal, so pools become vertical bands, containers keep their contents, and
@@ -31,7 +34,12 @@ pre-1.0 policy described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning-changel
 - `save_as` takes `overwrite`, and reports `previousFilename` and
   `removedPreviousFile`.
 - Every failed tool call carries a machine-readable `code` from a closed set and,
-  where one exists, a `recovery` sentence naming the next action.
+  where one exists, a `recovery` sentence naming the next action. A geometry
+  rejection now says whether `collisionPolicy` can waive it, and an owner or
+  scope error names the argument to pass and the ids that would be accepted.
+- Seeded property suites fuzz the Mermaid parser and the BPMN import path, and a
+  performance suite bounds element counts, bytes per element and byte growth on
+  doubling. `npm run test:performance` adds a wall-clock backstop.
 - `npm run test:ralph` runs `ralph-loop/tests/loop_test.sh`, which no script or
   workflow previously invoked; `npm run test:all` now includes it.
 - `npm run test:package` fails if `package-lock.json` and `npm-shrinkwrap.json`
@@ -41,6 +49,17 @@ pre-1.0 policy described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning-changel
 
 ### Changed
 
+- `validate` returns one `issues` list instead of also duplicating it as
+  `errors` and `warnings`; every issue carries its own severity. Query and
+  geometry results no longer repeat their structured payload as pretty-printed
+  text, and `list_elements` labels every row with its `kind`.
+- `new_bpmn`, `open_bpmn`, `open_mermaid_file`, `new_from_mermaid` and
+  `delete_diagram_file` say in their result when they replaced or closed the
+  diagram that was active.
+- `route_connection` is no longer advertised as destructive: it proposes routes
+  and only mutates when `apply` is true.
+- `get_diagrams_path` points at `get_workspace` and `select_workspace` instead
+  of telling the agent to set an environment variable.
 - Overlapping SVG or PNG exports queue instead of failing. Only a wait list
   longer than the renderer's queue limit is rejected.
 - `update_connection` no longer requires a revision, so a label change is one
@@ -73,6 +92,21 @@ pre-1.0 policy described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning-changel
 
 ### Fixed
 
+- `update_element` with no changed value writes nothing and leaves the revision
+  alone, and a call that names no field at all is rejected rather than accepted
+  as a no-op.
+- A malformed repository `.mcp-bpmn.json` no longer kills the server at
+  startup. The session falls back to the launch directory, carries the reason,
+  and reports it when a workspace switch is attempted.
+- Filenames that are Windows reserved device names, or that carry Unicode
+  control or format characters, are rejected.
+- A Mermaid diagram with a node whose id ends in `_2` alongside a repeated edge
+  is no longer rejected as a duplicate edge.
+- The validator no longer warns about missing flows on event subprocesses or
+  missing start and end events in an ad-hoc subprocess, and now requires an
+  event definition on boundary and intermediate catch events.
+- Import accepts `bpmn:dataObjectReference` without a `dataObjectRef`, and one
+  whose `bpmn:DataObject` is declared in an enclosing scope.
 - `auto_layout` that reproduces the geometry a diagram already has is no longer
   committed. It returns `changed: false`, leaves the revision alone, and does
   not rewrite the file.
@@ -111,8 +145,12 @@ pre-1.0 policy described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning-changel
   extra subprocesses on every `npm test`; the shipped layout path is still
   exercised over the whole fixture corpus.
 - Dead code with no production caller: the layout barrels and unused layout-model
-  converters, and the uncalled property-payload limit helpers whose limits were
-  never enforced.
+  converters, the uncalled property-payload limit helpers whose limits were
+  never enforced, three `TypeMappings` helpers whose rules contradicted the live
+  engine, a duplicate id generator, and the phantom Mermaid conversion options
+  and AST fields that were declared but never read or populated.
+- Stray root-level debug scripts and the bpmn-js upstream documentation copied
+  into `docs/`, neither referenced by anything that ships.
 - Stale `jest.config.js` coverage-ignore entries for files that no longer exist.
 
 ## 0.3.0 - 2026-09-04

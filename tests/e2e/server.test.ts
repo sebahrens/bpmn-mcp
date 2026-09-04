@@ -847,6 +847,7 @@ describe('MCP Server End-to-End Tests', () => {
             if (structured.current) expect(JSON.parse(text)).toEqual(structured.diagram);
             else expect(text).toBe('No current diagram');
             return;
+          case 'preview_mermaid':
           case 'list_elements':
           case 'get_element':
           case 'list_connections':
@@ -1023,6 +1024,21 @@ describe('MCP Server End-to-End Tests', () => {
       // Caller-side refs must never become BPMN ids on the wire.
       for (const element of builtByRef.values()) expect(element.elementId).not.toBe(element.ref);
       await call('close');
+
+      const mermaidPreview = await call('preview_mermaid', {
+        mermaidCode: 'flowchart TD\n  Start[Start] --> Finish[Finish]'
+      });
+      expect(mermaidPreview.structuredContent).toMatchObject({
+        nodeCount: 2,
+        flowCount: 1,
+        nodes: [
+          expect.objectContaining({ mermaidId: 'Finish', type: 'bpmn:EndEvent' }),
+          expect.objectContaining({ mermaidId: 'Start', type: 'bpmn:StartEvent' })
+        ],
+        flows: [expect.objectContaining({ type: 'bpmn:SequenceFlow' })],
+        pools: [],
+        warnings: []
+      });
 
       const mermaidCreation = await call('new_from_mermaid', {
         name: 'Structured Mermaid',
