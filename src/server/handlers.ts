@@ -10,6 +10,7 @@ import {
   connectionSemanticState
 } from '../core/SimpleBpmnEngine.js';
 import { LayoutPinningError } from '../core/layout/LayoutPinning.js';
+import { ScopedLayoutError } from '../core/layout/ScopedLayout.js';
 import { BpmnSvgRenderer, type PngRenderResult } from '../core/BpmnSvgRenderer.js';
 import { config } from '../config/index.js';
 import type { ResourceLimits } from '../config/index.js';
@@ -283,6 +284,15 @@ export class BpmnRequestHandler {
     } catch (error: unknown) {
       // The pinning pass refuses rather than committing overlapping shapes,
       // and the ids it names are the actionable part for the caller.
+      // A scoped layout refuses rather than committing a merge that overlaps,
+      // and the ids it names are the actionable part for the caller.
+      if (error instanceof ScopedLayoutError) {
+        return toolErrorResult(new ToolError('geometry_rejected', error.message, {
+          recovery: 'Name an expanded subprocess or a pool with a process, or lay '
+            + 'the whole diagram out without scopeId.',
+          details: { reason: error.code, elementIds: error.elementIds }
+        }));
+      }
       if (error instanceof LayoutPinningError) {
         return toolErrorResult(new ToolError('geometry_rejected', error.message, {
           recovery: 'Drop the pin, move the pinned element clear of the ranked '
@@ -1724,6 +1734,7 @@ export class BpmnRequestHandler {
       direction = 'left-to-right',
       spacing = 1,
       pinnedElementIds = [],
+      scopeId,
       expectedRevision
     } = args;
     const context = diagramContext.getCurrent();
@@ -1736,7 +1747,7 @@ export class BpmnRequestHandler {
       context.id,
       expectedRevision,
       direction,
-      { spacing, pinnedElementIds }
+      { spacing, pinnedElementIds, scopeId }
     );
     const warningText = layout.warnings.length === 0
       ? ''
@@ -1752,6 +1763,7 @@ export class BpmnRequestHandler {
       direction,
       spacing,
       pinnedElementIds,
+      ...(scopeId ? { scopeId } : {}),
       changed: layout.changed,
       elementCount,
       connectionCount,

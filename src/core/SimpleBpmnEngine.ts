@@ -67,6 +67,7 @@ import { BpmnDocumentLayoutAdapter } from './layout/adapters/BpmnDocumentLayoutA
 import { applyCollaborationLayoutPolicy } from './layout/CollaborationLayoutPolicy.js';
 import { restoreDroppedLayoutEdges } from './layout/LayoutEdgeRestoration.js';
 import { applyPinnedElements } from './layout/LayoutPinning.js';
+import { applyScopedLayout, ScopedLayoutError } from './layout/ScopedLayout.js';
 import {
   applyLayoutSpacing,
   assertLayoutSpacing,
@@ -115,6 +116,12 @@ export interface AutoLayoutOptions {
    * rather than being dropped.
    */
   pinnedElementIds?: string[];
+  /**
+   * Lay out one expanded subprocess or one pool on its own. The rest of the
+   * plane keeps the geometry it has, apart from the siblings the resized
+   * container runs into, which are pushed just far enough to clear it.
+   */
+  scopeId?: string;
 }
 
 /** Every coordinate a layout is allowed to move, in comparison order. */
@@ -2447,6 +2454,24 @@ export class SimpleBpmnEngine {
     const spacing = options.spacing ?? DEFAULT_LAYOUT_SPACING;
     assertLayoutSpacing(spacing);
     const pinnedElementIds = options.pinnedElementIds ?? [];
+    const scopeId = options.scopeId;
+    if (scopeId !== undefined) {
+      if (typeof scopeId !== 'string' || scopeId.trim() === '') {
+        throw new ScopedLayoutError(
+          'scopeId must be the id of an expanded subprocess or of a pool'
+        );
+      }
+      if (pinnedElementIds.length > 0) {
+        // Pinning repairs the whole plane around the bounds it restores, which
+        // is exactly what a scoped layout promises not to do.
+        throw new ScopedLayoutError(
+          'scopeId and pinnedElementIds cannot be combined: pinning repairs the whole plane '
+          + 'around the pinned bounds, while a scoped layout moves nothing outside the scope '
+          + 'except the siblings it displaces',
+          [scopeId, ...pinnedElementIds]
+        );
+      }
+    }
     const snapshot = await this.withProcessLock(processId, async () => {
       const context = this.getProcess(processId);
       const xml = await this.serializer.serialize(this.cloneDocument(context.document), true);
@@ -2468,6 +2493,13 @@ export class SimpleBpmnEngine {
     );
     if (snapshot.document.collaborations.has(snapshot.document.diagram.planeElementId)
       && !hasWhiteBoxParticipant) {
+      if (scopeId !== undefined) {
+        throw new ScopedLayoutError(
+          `Scope ${scopeId} cannot be laid out on its own: every pool in this collaboration is `
+          + 'a black box, and a black-box pool draws no contents',
+          [scopeId]
+        );
+      }
       const context = this.getProcess(processId);
       const preview = this.cloneDocument(context.document);
       applyCollaborationLayoutPolicy(this.cloneDocument(context.document), preview);
@@ -2506,10 +2538,25 @@ export class SimpleBpmnEngine {
     // The gaps come last: they are stretched around whatever the ranking, the
     // collaboration policy and the reflection settled on.
     applyLayoutSpacing(laidOut.document, spacing);
-    // Pinning is last: it puts hand-placed bounds back and repairs the ranked
-    // result around them, so it has to see the geometry everything else agreed.
+    // Pinning and scoping are last: both put geometry the caller already had
+    // back into the ranked result, so they have to see what everything else
+    // agreed on. They are mutually exclusive, guarded above.
     if (pinnedElementIds.length > 0) {
       applyPinnedElements(snapshot.document, laidOut.document, pinnedElementIds);
+    }
+    if (scopeId !== undefined) {
+      const displaced = applyScopedLayout(snapshot.document, laidOut.document, scopeId);
+      if (displaced.length > 0) {
+        // The agent asked for one scope and got a slightly wider change; say so
+        // rather than letting it discover the moved siblings by re-reading.
+        result.warnings = [...result.warnings, {
+          code: 'SCOPED_LAYOUT_DISPLACED',
+          message: `Laying out ${scopeId} moved ${displaced.length} element(s) outside it `
+            + 'aside to make room',
+          elementId: scopeId,
+          relatedElementIds: displaced
+        }];
+      }
     }
 
     const current = this.getProcess(processId);

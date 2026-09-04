@@ -920,6 +920,7 @@ const outputSchemas = {
     direction: z.enum(['left-to-right', 'top-to-bottom']),
     spacing: z.number().finite().positive(),
     pinnedElementIds: z.array(outputBpmnId),
+    scopeId: outputBpmnId.optional(),
     changed: z.boolean(),
     elementCount: outputCount,
     connectionCount: outputCount,
@@ -1743,6 +1744,14 @@ export const toolDefinitions = {
       spacing: z.number().finite().min(0.5).max(4).default(1).describe(
         'Multiplier for the gaps between ranks; 1 keeps the layout engine\'s own spacing'
       ),
+      scopeId: bpmnId().optional().describe(
+        'Lay out only the contents of this expanded subprocess or pool, leaving '
+        + 'the rest of the diagram in place. The container is resized to fit the '
+        + 'result and the siblings it then collides with are pushed clear; '
+        + 'nothing else moves. Accepts a subprocess or transaction id that is '
+        + 'expanded, or a pool id with a process. Cannot be combined with '
+        + 'pinnedElementIds.'
+      ),
       pinnedElementIds: withJsonSchemaMetadata(
         z.array(bpmnId())
           .max(TOOL_INPUT_LIMITS.laneFlowNodeIds.maxItems)
@@ -1759,7 +1768,19 @@ export const toolDefinitions = {
         }
       ),
       ...expectedRevisionField
-    }).strict()
+    }).strict().superRefine((args, context) => {
+      // Pinning repairs the whole plane around the restored bounds, which is
+      // exactly what a scoped layout promises not to do.
+      if (args.scopeId !== undefined && args.pinnedElementIds.length > 0) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['scopeId'],
+          message: 'scopeId cannot be combined with pinnedElementIds: a scoped '
+            + 'layout leaves everything outside the scope alone, while pinning '
+            + 'repairs the whole plane around the pinned bounds'
+        });
+      }
+    })
   },
   list_diagrams: {
     annotations: READ_ONLY,

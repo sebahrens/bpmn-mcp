@@ -3561,6 +3561,55 @@ describe('BpmnRequestHandler Integration Tests', () => {
     });
   });
 
+  describe('scoped auto_layout at the tool boundary', () => {
+    it('lays out one subprocess and refuses to combine a scope with pins', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Scoped' });
+      const sub = await handler.handleRequest('add_activity', {
+        activityType: 'subProcess',
+        name: 'Handle claim',
+        properties: { isExpanded: true }
+      });
+      const subId = (sub.structuredContent as { elementId: string }).elementId;
+      await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Assess', scopeId: subId
+      });
+      await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Decide', scopeId: subId
+      });
+      await handler.handleRequest('auto_layout', {});
+
+      const scoped = await handler.handleRequest('auto_layout', { scopeId: subId });
+      expect(scoped.isError).toBeUndefined();
+      expect(scoped.structuredContent).toMatchObject({ scopeId: subId });
+
+      // The two options describe incompatible promises: a scoped layout leaves
+      // everything outside the scope alone, pinning repairs the whole plane.
+      const combined = await handler.handleRequest('auto_layout', {
+        scopeId: subId,
+        pinnedElementIds: [subId]
+      });
+      expect(combined.isError).toBe(true);
+      expect((combined.structuredContent as { message: string }).message)
+        .toContain('cannot be combined with pinnedElementIds');
+    }, 30_000);
+
+    it('refuses a scope that is not a subprocess or pool, naming what is accepted', async () => {
+      await handler.handleRequest('new_bpmn', { name: 'Bad scope' });
+      const task = await handler.handleRequest('add_activity', {
+        activityType: 'task', name: 'Plain'
+      });
+      const taskId = (task.structuredContent as { elementId: string }).elementId;
+
+      const rejected = await handler.handleRequest('auto_layout', { scopeId: taskId });
+
+      expect(rejected.isError).toBe(true);
+      expect(rejected.structuredContent).toMatchObject({
+        code: 'geometry_rejected',
+        reason: 'SCOPE_NOT_APPLIED'
+      });
+    }, 30_000);
+  });
+
   describe('lane membership after the fact', () => {
     it('adds a node to an existing lane instead of creating a duplicate', async () => {
       // add_lane with an existing name silently made a second lane with the

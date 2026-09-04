@@ -29,6 +29,14 @@ unsupported shape or connector.
   laid out top to bottom, `LR` and `RL` left to right; `BT` and `RL` read back
   to front, which BPMN cannot express, so they are laid out forwards and say so
   in the conversion warnings.
+- `auto_layout` takes a `scopeId`: lay out the contents of one expanded
+  subprocess or one pool and leave the rest of the diagram in place. The
+  container is resized to fit the result, the siblings it then collides with
+  are pushed clear and reported as a `SCOPED_LAYOUT_DISPLACED` warning, and
+  nothing else moves. A merge that would leave overlapping shapes is refused
+  with the ids rather than committed, so a rejected scope leaves the diagram
+  byte-identical. It cannot be combined with `pinnedElementIds`, which repairs
+  the whole plane by design.
 - `save_png` takes a `scale` from 1 to 4, applied as the browser's device pixel
   ratio, and reports `width`, `height`, `scale` and `downscaled` so a diagram
   reduced to stay inside the renderer pixel limits no longer shrinks silently.
