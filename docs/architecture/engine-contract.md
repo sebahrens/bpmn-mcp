@@ -168,7 +168,7 @@ ever revisited.
 ## Runtime dependency audit (`mcp-bpmn-iqa.3`)
 
 First audited on 2026-08-22 after the engine and layout decisions, and refreshed
-for the 0.3.0 release. Every one of the nine direct production dependencies in
+for the 0.4.0 release. Every one of the nine direct production dependencies in
 `package.json` has a live source ownership path:
 
 | Dependency | Runtime import / ownership path |

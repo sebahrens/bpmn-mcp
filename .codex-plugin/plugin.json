@@ -1,6 +1,6 @@
 {
   "name": "mcp-bpmn",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Create, inspect, edit, validate, lay out, and export BPMN diagrams with a bundled local MCP server.",
   "author": {
     "name": "Sebastian Ahrens",

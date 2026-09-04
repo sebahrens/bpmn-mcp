@@ -7,14 +7,37 @@ pre-1.0 policy described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning-changel
 
 ## Unreleased
 
+No changes since 0.4.0.
+
+## 0.4.0 - 2026-09-04
+
+The first release published from this repository, which is a hard fork. The
+package is now `bpmn-mcp`; `package.json`, `.claude-plugin/plugin.json`,
+`.codex-plugin/plugin.json` and the lockfiles all declare `0.4.0`, and the
+maintainer creates the matching `v0.4.0` tag when the release is published.
 Under the pre-1.0 policy in
-[CONTRIBUTING.md](CONTRIBUTING.md#versioning-changelog-and-releases) the six
-compatibility breaks marked below make the next release a minor bump rather
-than a patch. They affect a client that reads `validate` results or
-`list_elements` rows, one that reads `get_workspace`'s `startupBoundary` or
-relies on `select_workspace` creating a directory, one that calls
-`update_element` with no field set, and Mermaid input that used an
+[CONTRIBUTING.md](CONTRIBUTING.md#versioning-changelog-and-releases) the seven
+compatibility breaks marked below make this a minor bump rather than a patch.
+They affect a client that reads `validate` results or `list_elements` rows, one
+that reads `get_workspace`'s `startupBoundary` or relies on `select_workspace`
+creating a directory, one that calls `update_element` with no field set, one
+that launched the previous executable name, and Mermaid input that used an
 unsupported shape or connector.
+
+The entries below are traceable to
+[`09e25f8`](https://github.com/sebahrens/bpmn-mcp/commit/09e25f8),
+[`234636a`](https://github.com/sebahrens/bpmn-mcp/commit/234636a),
+[`71462a9`](https://github.com/sebahrens/bpmn-mcp/commit/71462a9),
+[`219bb95`](https://github.com/sebahrens/bpmn-mcp/commit/219bb95),
+[`bcd2699`](https://github.com/sebahrens/bpmn-mcp/commit/bcd2699),
+[`b17d126`](https://github.com/sebahrens/bpmn-mcp/commit/b17d126),
+[`65de95e`](https://github.com/sebahrens/bpmn-mcp/commit/65de95e),
+[`5ca9dc7`](https://github.com/sebahrens/bpmn-mcp/commit/5ca9dc7), and
+[`c2d0e5e`](https://github.com/sebahrens/bpmn-mcp/commit/c2d0e5e).
+
+This release closes every issue raised by a pre-release review of the whole
+repository, together with those found by driving the built server as an agent
+and modelling with it. No tracked issue remains open.
 
 ### Added
 
