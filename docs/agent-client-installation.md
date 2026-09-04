@@ -37,7 +37,7 @@ The Make installer sets up both pieces for each detected supported client.
 On macOS or Linux, clone into a user-owned directory and run:
 
 ```sh
-git clone https://github.com/oisee/mcp-bpmn.git
+git clone https://github.com/sebahrens/bpmn-mcp.git
 cd mcp-bpmn
 npm ci
 make install

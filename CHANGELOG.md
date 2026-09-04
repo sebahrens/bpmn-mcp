@@ -159,6 +159,15 @@ unsupported shape or connector.
 - Chrome starts under uid 0, where every containerised agent runtime lost SVG
   and PNG output, and the browser process is reused across exports.
 
+### Changed
+
+- This repository is a hard fork. `LICENSE` keeps its MIT terms and the upstream
+  copyright line, and carries the fork author's copyright alongside it. The
+  author, repository, bugs and homepage metadata, the clone commands in the
+  README, CONTRIBUTING and the installation guide, and the issues link now name
+  this repository rather than the one it was forked from. Commit links in the
+  released sections still point upstream, where those commits live, and say so.
+
 ### Removed
 
 - The duplicate `bpmn-auto-layout-alpha` dev alias of the production
@@ -183,7 +192,8 @@ release is published. Under the pre-1.0 policy in
 [CONTRIBUTING.md](CONTRIBUTING.md#versioning-changelog-and-releases) the two
 compatibility breaks marked below make this a minor bump rather than a patch.
 
-The package-facing entries are traceable to
+The package-facing entries are traceable to the following commits, which live
+in the upstream repository this project was forked from:
 [`eab3fb6`](https://github.com/oisee/mcp-bpmn/commit/eab3fb68735b998c3e358c0636a3fdf7d709675a),
 [`cc5a2ab`](https://github.com/oisee/mcp-bpmn/commit/cc5a2ab),
 [`3a1c4dd`](https://github.com/oisee/mcp-bpmn/commit/3a1c4dd),
@@ -304,7 +314,9 @@ The package-facing entries are traceable to
 
 ## Untagged repository history
 
-The commits below predate 0.3.0 and were never released under a Git tag. No
+The commits below predate 0.3.0 and were never released under a Git tag. They
+link to the upstream repository this project was forked from, which is where
+they live. No
 `0.2.0` release is reconstructed for them: `package.json` carried that version
 without a matching tag, so there is no artifact those notes could describe.
 

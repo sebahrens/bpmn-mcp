@@ -43,7 +43,7 @@ Two rules exist because both have already caused a regression:
 ## Set up a development checkout
 
 ```bash
-git clone https://github.com/oisee/mcp-bpmn.git
+git clone https://github.com/sebahrens/bpmn-mcp.git
 cd mcp-bpmn
 npm ci
 npm run build

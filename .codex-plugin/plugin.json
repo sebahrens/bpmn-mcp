@@ -3,12 +3,12 @@
   "version": "0.3.0",
   "description": "Create, inspect, edit, validate, lay out, and export BPMN diagrams with a bundled local MCP server.",
   "author": {
-    "name": "Alice V.",
-    "email": "ooisee@gmail.com",
-    "url": "https://github.com/oisee"
+    "name": "Sebastian Ahrens",
+    "email": "platon2001@icloud.com",
+    "url": "https://github.com/sebahrens"
   },
-  "homepage": "https://github.com/oisee/mcp-bpmn#readme",
-  "repository": "https://github.com/oisee/mcp-bpmn",
+  "homepage": "https://github.com/sebahrens/bpmn-mcp#readme",
+  "repository": "https://github.com/sebahrens/bpmn-mcp",
   "license": "MIT",
   "keywords": [
     "bpmn",
@@ -29,7 +29,7 @@
       "Read",
       "Write"
     ],
-    "websiteURL": "https://github.com/oisee/mcp-bpmn",
+    "websiteURL": "https://github.com/sebahrens/bpmn-mcp",
     "defaultPrompt": [
       "Create and validate a BPMN diagram for this workflow.",
       "Review the current BPMN diagram for modeling problems.",

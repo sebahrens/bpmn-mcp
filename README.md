@@ -76,7 +76,7 @@ with no extra arguments at all.
 ### Install for Codex and Claude Code
 
 ```bash
-git clone https://github.com/oisee/mcp-bpmn.git
+git clone https://github.com/sebahrens/bpmn-mcp.git
 cd mcp-bpmn
 npm ci
 make install
@@ -1344,7 +1344,7 @@ decision.
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/oisee/mcp-bpmn/issues)
+- **Issues**: [GitHub Issues](https://github.com/sebahrens/bpmn-mcp/issues)
 - **Documentation**: See `/docs` folder for detailed guides
 
 ## 🙏 Acknowledgments

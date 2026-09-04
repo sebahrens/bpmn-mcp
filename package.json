@@ -62,24 +62,24 @@
     "model-context-protocol"
   ],
   "author": {
-    "name": "Alice V.",
-    "email": "ooisee@gmail.com",
-    "url": "https://github.com/oisee"
+    "name": "Sebastian Ahrens",
+    "email": "platon2001@icloud.com",
+    "url": "https://github.com/sebahrens"
   },
   "maintainers": [
     {
-      "name": "Alice V.",
-      "email": "ooisee@gmail.com",
-      "url": "https://github.com/oisee"
+      "name": "Sebastian Ahrens",
+      "email": "platon2001@icloud.com",
+      "url": "https://github.com/sebahrens"
     }
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/oisee/mcp-bpmn.git"
+    "url": "git+https://github.com/sebahrens/bpmn-mcp.git"
   },
-  "homepage": "https://github.com/oisee/mcp-bpmn#readme",
+  "homepage": "https://github.com/sebahrens/bpmn-mcp#readme",
   "bugs": {
-    "url": "https://github.com/oisee/mcp-bpmn/issues"
+    "url": "https://github.com/sebahrens/bpmn-mcp/issues"
   },
   "license": "MIT",
   "dependencies": {

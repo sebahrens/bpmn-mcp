@@ -107,24 +107,24 @@ const license = readFileSync(join(projectRoot, 'LICENSE'), 'utf8');
 
 const expectedProvenance = {
   author: {
-    name: 'Alice V.',
-    email: 'ooisee@gmail.com',
-    url: 'https://github.com/oisee'
+    name: 'Sebastian Ahrens',
+    email: 'platon2001@icloud.com',
+    url: 'https://github.com/sebahrens'
   },
   maintainers: [
     {
-      name: 'Alice V.',
-      email: 'ooisee@gmail.com',
-      url: 'https://github.com/oisee'
+      name: 'Sebastian Ahrens',
+      email: 'platon2001@icloud.com',
+      url: 'https://github.com/sebahrens'
     }
   ],
   repository: {
     type: 'git',
-    url: 'git+https://github.com/oisee/mcp-bpmn.git'
+    url: 'git+https://github.com/sebahrens/bpmn-mcp.git'
   },
-  homepage: 'https://github.com/oisee/mcp-bpmn#readme',
+  homepage: 'https://github.com/sebahrens/bpmn-mcp#readme',
   bugs: {
-    url: 'https://github.com/oisee/mcp-bpmn/issues'
+    url: 'https://github.com/sebahrens/bpmn-mcp/issues'
   },
   license: 'MIT'
 };
@@ -176,12 +176,14 @@ for (const claim of forbiddenReadmeClaims) {
   }
 }
 
+// This repository is a hard fork; its own URLs are what a reader should be
+// sent to. The assertion is kept so a stale upstream link cannot creep back in.
 const repositoryUrls = [...readme.matchAll(
-  /https:\/\/github\.com\/([^/\s)]+)\/mcp-bpmn(?:\.git)?(?=[\s/)])/g
+  /https:\/\/github\.com\/([^/\s)]+)\/(?:bpmn-mcp|mcp-bpmn)(?:\.git)?(?=[\s/)])/g
 )];
 if (repositoryUrls.length === 0
-  || repositoryUrls.some(([, owner]) => owner !== 'oisee')) {
-  throw new Error('README repository links must target github.com/oisee/mcp-bpmn');
+  || repositoryUrls.some(([, owner]) => owner !== 'sebahrens')) {
+  throw new Error('README repository links must target github.com/sebahrens/bpmn-mcp');
 }
 
 for (const requiredText of [
