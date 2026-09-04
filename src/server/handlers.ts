@@ -9,6 +9,7 @@ import {
   connectionGeometryRevision,
   connectionSemanticState
 } from '../core/SimpleBpmnEngine.js';
+import { LayoutPinningError } from '../core/layout/LayoutPinning.js';
 import { BpmnSvgRenderer, type PngRenderResult } from '../core/BpmnSvgRenderer.js';
 import { config } from '../config/index.js';
 import type { ResourceLimits } from '../config/index.js';
@@ -280,6 +281,15 @@ export class BpmnRequestHandler {
     try {
       return await this.dispatch(request);
     } catch (error: unknown) {
+      // The pinning pass refuses rather than committing overlapping shapes,
+      // and the ids it names are the actionable part for the caller.
+      if (error instanceof LayoutPinningError) {
+        return toolErrorResult(new ToolError('geometry_rejected', error.message, {
+          recovery: 'Drop the pin, move the pinned element clear of the ranked '
+            + 'layout, or lay the diagram out without pinnedElementIds.',
+          details: { reason: error.code, elementIds: error.elementIds }
+        }));
+      }
       if (error instanceof DocumentRevisionConflictError) {
         return {
           content: [{ type: 'text', text: `Error: ${error.message}` }],
@@ -1712,6 +1722,8 @@ export class BpmnRequestHandler {
     const {
       algorithm = 'horizontal',
       direction = 'left-to-right',
+      spacing = 1,
+      pinnedElementIds = [],
       expectedRevision
     } = args;
     const context = diagramContext.getCurrent();
@@ -1720,7 +1732,12 @@ export class BpmnRequestHandler {
     const elementCount = context.elements.size;
     const connectionCount = context.connections.size;
 
-    const layout = await this.engine.applyAutoLayout(context.id, expectedRevision, direction);
+    const layout = await this.engine.applyAutoLayout(
+      context.id,
+      expectedRevision,
+      direction,
+      { spacing, pinnedElementIds }
+    );
     const warningText = layout.warnings.length === 0
       ? ''
       : `\n\nWarnings:\n${layout.warnings.map(formatBpmnLayoutDiagnostic).join('\n')}`;
@@ -1733,6 +1750,8 @@ export class BpmnRequestHandler {
     return textToolResult('auto_layout', {
       algorithm,
       direction,
+      spacing,
+      pinnedElementIds,
       changed: layout.changed,
       elementCount,
       connectionCount,

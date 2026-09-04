@@ -84,9 +84,13 @@ describe('lane semantics', () => {
     expect(process.laneSets[0].lanes.map((lane: any) => [
       lane.name,
       lane.flowNodeRef.map((node: any) => node.id)
+    // A boundary event joins its host's lane, the way bpmn-js records it: the
+    // geometry oracle reads lane ancestry from flowNodeRef, and without the
+    // membership the event's unavoidable overlap with the band it is drawn in
+    // reads as an error no layout can clear (mcp-bpmn-3g8.17).
     ])).toEqual([
       ['Sales', ['StartEvent_1']],
-      ['Operations', ['UserTask_1']]
+      ['Operations', ['UserTask_1', 'BoundaryEvent_1']]
     ]);
 
     const participantBounds = shapeFor(definitions, 'Participant_1').bounds;
@@ -118,7 +122,7 @@ describe('lane semantics', () => {
     definitions = await exportDefinitions();
     process = definitions.rootElements.find((root: any) => root.id === 'Participant_1_Process');
     expect(process.laneSets[0].lanes[1].flowNodeRef.map((node: any) => node.id))
-      .toEqual(['UserTask_1']);
+      .toEqual(['UserTask_1', 'BoundaryEvent_1']);
     expect(process.flowElements.find((node: any) => node.id === 'UserTask_1').name)
       .toBe('Review reopened');
     expect(shapeFor(definitions, 'Lane_2')).toBeDefined();

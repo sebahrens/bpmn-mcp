@@ -2581,6 +2581,10 @@ export class SimpleBpmnEngine {
   ): Promise<void> {
     const context = this.getProcess(processId);
     await this.commitMutation(context, working => {
+      // The adapter's plane never carries boundary events in a lane, while the
+      // live document does (mcp-bpmn-3g8.17). Reconcile before the guard, which
+      // compares lane membership and rightly forbids layout from changing it.
+      this.synchronizeBoundaryEventLanes(laidOut);
       this.assertLayoutSemanticsUnchanged(working.document, laidOut.document);
       // A layout engine only renders what it ranks. Anything it left without a
       // BPMNEdge - an association anchored on a boundary event, for one - is
@@ -2743,6 +2747,7 @@ export class SimpleBpmnEngine {
       };
 
       const value = await mutation(working);
+      this.synchronizeBoundaryEventLanes(working);
       const xml = await this.serializer.serialize(working.document);
       if (dryRun) return value;
       // Only when this commit is not rebasing onto a different disk version:
@@ -3248,6 +3253,43 @@ export class SimpleBpmnEngine {
       x: closest.x - size.width / 2,
       y: closest.y - size.height / 2
     };
+  }
+
+  /**
+   * Put every boundary event in the lane of the activity it is attached to.
+   *
+   * A boundary event is drawn on its host's outline, so if the host sits in a
+   * lane band the event overlaps that band no matter where a layout puts it.
+   * The geometry oracle derives a shape's ancestry from lane flowNodeRef, so
+   * without this the overlap reads as an error that no layout can clear
+   * (mcp-bpmn-3g8.17). bpmn-js records the same membership on save.
+   */
+  private synchronizeBoundaryEventLanes(context: ProcessContext): void {
+    const lanes = Array.from(context.document.lanes.values());
+    if (lanes.length === 0) return;
+
+    const laneByMember = new Map<string, BpmnLane>();
+    for (const lane of lanes) {
+      for (const memberId of lane.flowNodeRefs) laneByMember.set(memberId, lane);
+    }
+
+    for (const element of context.elements.values()) {
+      if (element.type !== 'bpmn:BoundaryEvent') continue;
+      const hostId = element.properties.attachTo;
+      if (typeof hostId !== 'string') continue;
+      const hostLane = laneByMember.get(hostId);
+      const currentLane = laneByMember.get(element.id);
+      if (currentLane === hostLane) continue;
+      if (currentLane) {
+        currentLane.flowNodeRefs = currentLane.flowNodeRefs.filter(id => id !== element.id);
+      }
+      if (hostLane) {
+        hostLane.flowNodeRefs = [...hostLane.flowNodeRefs, element.id];
+        laneByMember.set(element.id, hostLane);
+      } else {
+        laneByMember.delete(element.id);
+      }
+    }
   }
 
   private repositionBoundaryEvents(context: ProcessContext): void {

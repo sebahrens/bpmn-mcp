@@ -345,10 +345,10 @@ function inspectRoute(
         contacts.shapeCollisions.add(shape.id);
         continue;
       }
-      if (segmentIntersectsBounds(start, end, shape)) {
+      if (segmentTouchesBounds(start, end, shape)) {
         contacts.shapeCollisions.add(shape.id);
       } else if (clearance > 0
-        && segmentIntersectsBounds(start, end, expandBounds(shape, clearance))) {
+        && segmentEntersBounds(start, end, expandBounds(shape, clearance))) {
         contacts.clearanceFailures.add(shape.id);
       }
     }
@@ -684,28 +684,50 @@ function moveOut(point: Position, side: Side, distance: number): Position {
 }
 
 /**
- * Whether a segment touches a rectangle at all.
+ * Whether a segment touches a rectangle at all, its border included.
  *
- * The geometry oracle counts a segment that runs exactly along a shape's edge
- * as a collision, so the router has to as well: a router that scores such a
- * route as clean picks it, and the diagram then fails analyze_geometry. The
- * case is not hypothetical - the side anchor of a boundary event sits exactly
- * on its host's outline, so every horizontal exit from one grazes the shapes
- * that share that edge coordinate.
+ * This is the collision test, and it is inclusive because the geometry oracle
+ * is: a segment running exactly along a shape's edge is an EDGE_SHAPE_COLLISION
+ * there, so a router that scored it clean would keep picking routes that fail
+ * analyze_geometry. The case is not hypothetical - the side anchor of a
+ * boundary event sits exactly on its host's outline, so every horizontal exit
+ * from one grazes whatever shares that edge coordinate.
  */
-function segmentIntersectsBounds(start: Position, end: Position, bounds: Bounds): boolean {
-  const epsilon = 0.001;
+function segmentTouchesBounds(start: Position, end: Position, bounds: Bounds): boolean {
+  return segmentMeetsBounds(start, end, bounds, -0.001);
+}
+
+/**
+ * Whether a segment reaches into a rectangle's interior, its border excluded.
+ *
+ * This is the clearance test, and it has to be exclusive: a route leaves its
+ * source exactly `clearance` away from the border, which puts that point
+ * precisely on the clearance ring of its own endpoints. Counting the ring
+ * itself as a violation would score every candidate as failing its own docks
+ * and leave route_connection with nothing clean to propose. Grazing the ring is
+ * exactly the clearance being met, not missed.
+ */
+function segmentEntersBounds(start: Position, end: Position, bounds: Bounds): boolean {
+  return segmentMeetsBounds(start, end, bounds, 0.001);
+}
+
+function segmentMeetsBounds(
+  start: Position,
+  end: Position,
+  bounds: Bounds,
+  inset: number
+): boolean {
   if (start.x === end.x) {
-    return start.x > bounds.x - epsilon
-      && start.x < bounds.x + bounds.width + epsilon
-      && Math.max(start.y, end.y) > bounds.y - epsilon
-      && Math.min(start.y, end.y) < bounds.y + bounds.height + epsilon;
+    return start.x > bounds.x + inset
+      && start.x < bounds.x + bounds.width - inset
+      && Math.max(start.y, end.y) > bounds.y + inset
+      && Math.min(start.y, end.y) < bounds.y + bounds.height - inset;
   }
   if (start.y === end.y) {
-    return start.y > bounds.y - epsilon
-      && start.y < bounds.y + bounds.height + epsilon
-      && Math.max(start.x, end.x) > bounds.x - epsilon
-      && Math.min(start.x, end.x) < bounds.x + bounds.width + epsilon;
+    return start.y > bounds.y + inset
+      && start.y < bounds.y + bounds.height - inset
+      && Math.max(start.x, end.x) > bounds.x + inset
+      && Math.min(start.x, end.x) < bounds.x + bounds.width - inset;
   }
   return true;
 }

@@ -523,9 +523,7 @@ describe('MCP server process lifecycle', () => {
         await launch.ready;
         await initializeServer(launch, `mcp-bpmn-${signal.toLowerCase()}-e2e`);
         await callTool(launch, 2, 'new_bpmn', { name: `${signal} drain` });
-        const listing = JSON.parse(textContent(
-          await callTool(launch, 3, 'list_diagrams', {})
-        )) as { diagrams: Array<{ filename: string }> };
+        const listing = ((await callTool(launch, 3, 'list_diagrams', {})).structuredContent as Record<string, any>) as { diagrams: Array<{ filename: string }> };
         const filename = listing.diagrams[0]?.filename;
         expect(filename).toEqual(expect.any(String));
 
@@ -687,9 +685,7 @@ describe('MCP server process lifecycle', () => {
       await launch.ready;
       await initializeServer(launch, 'mcp-bpmn-forced-shutdown-e2e');
       await callTool(launch, 2, 'new_bpmn', { name: 'Forced shutdown' });
-      const listing = JSON.parse(textContent(
-        await callTool(launch, 3, 'list_diagrams', {})
-      )) as { diagrams: Array<{ filename: string }> };
+      const listing = ((await callTool(launch, 3, 'list_diagrams', {})).structuredContent as Record<string, any>) as { diagrams: Array<{ filename: string }> };
       const filename = listing.diagrams[0]?.filename;
       expect(filename).toEqual(expect.any(String));
 
@@ -860,14 +856,13 @@ describe('MCP Server End-to-End Tests', () => {
           case 'apply_geometry_patch':
           case 'route_connection':
           case 'build_process':
-            expect(JSON.parse(text)).toEqual(structured);
+          case 'validate':
+            // These used to repeat structuredContent verbatim, which cost an
+            // agent the payload twice (mcp-bpmn-8u0.25). The text is now a
+            // summary: it must say something, and must not be the copy.
+            expect(text.length).toBeGreaterThan(0);
+            expect(() => JSON.parse(text)).toThrow();
             return;
-          case 'validate': {
-            const legacy = { ...structured };
-            delete legacy.filename;
-            expect(JSON.parse(text)).toEqual(legacy);
-            return;
-          }
           case 'export':
             expect(structured).toMatchObject({ format: 'xml', mimeType: 'application/xml' });
             expect(Buffer.byteLength(text, 'utf8')).toBe(structured.byteLength);
@@ -1798,14 +1793,11 @@ describe('MCP Server End-to-End Tests', () => {
       expect(expectProtocolSuccess(slowCreate, 2).isError).not.toBe(true);
       expect(expectProtocolSuccess(fastCreate, 3).isError).not.toBe(true);
 
-      const currentAfterCreates = JSON.parse(textContent(
-        await callTool(launch, 4, 'current', {})
-      )) as { name: string };
-      expect(currentAfterCreates.name).toBe('Fast create');
+      const currentAfterCreates = (await callTool(launch, 4, 'current', {}))
+        .structuredContent as { diagram?: { name: string } };
+      expect(currentAfterCreates.diagram?.name).toBe('Fast create');
 
-      const listing = JSON.parse(textContent(
-        await callTool(launch, 5, 'list_diagrams', {})
-      )) as { diagrams: Array<{ filename: string; name: string }> };
+      const listing = ((await callTool(launch, 5, 'list_diagrams', {})).structuredContent as Record<string, any>) as { diagrams: Array<{ filename: string; name: string }> };
       const slowFile = listing.diagrams.find(diagram => diagram.name === 'Slow create')?.filename;
       const fastFile = listing.diagrams.find(diagram => diagram.name === 'Fast create')?.filename;
       expect(slowFile).toEqual(expect.any(String));
@@ -1868,10 +1860,9 @@ describe('MCP Server End-to-End Tests', () => {
       });
       expect(expectProtocolSuccess(recoveredMutation, 11).isError).not.toBe(true);
 
-      const finalCurrent = JSON.parse(textContent(
-        await callTool(launch, 12, 'current', {})
-      )) as { name: string };
-      expect(finalCurrent.name).toBe('Slow create');
+      const finalCurrent = (await callTool(launch, 12, 'current', {}))
+        .structuredContent as { diagram?: { name: string } };
+      expect(finalCurrent.diagram?.name).toBe('Slow create');
 
       const exportRequest = sendRequest(launch, {
         jsonrpc: '2.0',
@@ -2008,9 +1999,7 @@ describe('MCP Server End-to-End Tests', () => {
         name: 'Order approved'
       });
 
-      const listing = JSON.parse(textContent(
-        await callTool(launch, 8, 'list_elements', {})
-      )) as { elements: Array<{ id: string; name: string; type: string }> };
+      const listing = ((await callTool(launch, 8, 'list_elements', {})).structuredContent as Record<string, any>) as { elements: Array<{ id: string; name: string; type: string }> };
       const elements = listing.elements;
       const start = elements.find(element => element.name === 'Order received');
       const task = elements.find(element => element.name === 'Review order');
@@ -2030,9 +2019,7 @@ describe('MCP Server End-to-End Tests', () => {
         label: 'approve'
       });
 
-      const validationBeforeLayout = JSON.parse(textContent(
-        await callTool(launch, 11, 'validate', { level: 'full' })
-      )) as { valid: boolean; summary: string };
+      const validationBeforeLayout = ((await callTool(launch, 11, 'validate', { level: 'full' })).structuredContent as Record<string, any>) as { valid: boolean; summary: string };
       expect(validationBeforeLayout).toEqual(expect.objectContaining({
         valid: true,
         summary: expect.stringContaining('Validation passed')
@@ -2052,9 +2039,7 @@ describe('MCP Server End-to-End Tests', () => {
       expect(textContent(unsupportedLayout)).toContain('algorithm: Invalid enum value');
       expect(textContent(unsupportedLayout)).not.toContain('Only horizontal layout algorithm');
 
-      const validationAfterLayout = JSON.parse(textContent(
-        await callTool(launch, 14, 'validate', { level: 'full' })
-      )) as { valid: boolean; summary: string };
+      const validationAfterLayout = ((await callTool(launch, 14, 'validate', { level: 'full' })).structuredContent as Record<string, any>) as { valid: boolean; summary: string };
       expect(validationAfterLayout).toEqual(expect.objectContaining({
         valid: true,
         summary: expect.stringContaining('Validation passed')

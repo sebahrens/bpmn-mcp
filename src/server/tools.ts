@@ -918,6 +918,8 @@ const outputSchemas = {
   auto_layout: z.object({
     algorithm: z.literal('horizontal'),
     direction: z.enum(['left-to-right', 'top-to-bottom']),
+    spacing: z.number().finite().positive(),
+    pinnedElementIds: z.array(outputBpmnId),
     changed: z.boolean(),
     elementCount: outputCount,
     connectionCount: outputCount,
@@ -1725,7 +1727,7 @@ export const toolDefinitions = {
   },
   auto_layout: {
     annotations: DESTRUCTIVE_UPDATE,
-    description: 'Apply deterministic automatic layout. Collaboration processes are ranked independently; requested pool/lane sizes are lower bounds, manual coordinates are replaced, disconnected nodes stay in their owner, and message flows route after non-overlapping pool placement. A layout that reproduces the current geometry is not committed and returns changed false with the revision unchanged.',
+    description: 'Apply deterministic automatic layout. Collaboration processes are ranked independently; requested pool/lane sizes are lower bounds, manual coordinates are replaced unless pinned, disconnected nodes stay in their owner, and message flows route after non-overlapping pool placement. A layout that reproduces the current geometry is not committed and returns changed false with the revision unchanged.',
     outputSchema: outputSchemas.auto_layout,
     schema: z.object({
       algorithm: z.enum(['horizontal'])
@@ -1738,6 +1740,24 @@ export const toolDefinitions = {
           + 'layout across the diagonal, so pools become vertical bands and '
           + 'flows run downward'
         ),
+      spacing: z.number().finite().min(0.5).max(4).default(1).describe(
+        'Multiplier for the gaps between ranks; 1 keeps the layout engine\'s own spacing'
+      ),
+      pinnedElementIds: withJsonSchemaMetadata(
+        z.array(bpmnId())
+          .max(TOOL_INPUT_LIMITS.laneFlowNodeIds.maxItems)
+          .refine(
+            values => new Set(values).size === values.length,
+            'Pinned element IDs must be unique'
+          )
+          .default([]),
+        {
+          description: 'Elements whose current position and size auto_layout must keep. '
+            + 'Not supported in a collaboration, and not on pools or expanded subprocesses. '
+            + 'A pin that cannot be honoured fails the call rather than being dropped.',
+          uniqueItems: true
+        }
+      ),
       ...expectedRevisionField
     }).strict()
   },
