@@ -7,6 +7,15 @@ pre-1.0 policy described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning-changel
 
 ## Unreleased
 
+Under the pre-1.0 policy in
+[CONTRIBUTING.md](CONTRIBUTING.md#versioning-changelog-and-releases) the six
+compatibility breaks marked below make the next release a minor bump rather
+than a patch. They affect a client that reads `validate` results or
+`list_elements` rows, one that reads `get_workspace`'s `startupBoundary` or
+relies on `select_workspace` creating a directory, one that calls
+`update_element` with no field set, and Mermaid input that used an
+unsupported shape or connector.
+
 ### Added
 
 - `preview_mermaid` converts Mermaid text and reports the elements,
@@ -49,10 +58,15 @@ pre-1.0 policy described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning-changel
 
 ### Changed
 
-- `validate` returns one `issues` list instead of also duplicating it as
-  `errors` and `warnings`; every issue carries its own severity. Query and
-  geometry results no longer repeat their structured payload as pretty-printed
-  text, and `list_elements` labels every row with its `kind`.
+- **Compatibility:** `validate` returns one `issues` list and no longer also
+  duplicates it as `errors` and `warnings`; every issue carries its own
+  `severity`, so a client that read the two removed fields must partition
+  `issues` by severity instead.
+- **Compatibility:** `list_elements` rows carry a `kind` on every row, and omit
+  `position` and `size` when the row already carries DI `bounds`. A client that
+  read `position` or `size` unconditionally must read `bounds` first.
+  `get_element` still returns all three. Query and geometry results no longer
+  repeat their structured payload as pretty-printed text.
 - `new_bpmn`, `open_bpmn`, `open_mermaid_file`, `new_from_mermaid` and
   `delete_diagram_file` say in their result when they replaced or closed the
   diagram that was active.
@@ -65,13 +79,20 @@ pre-1.0 policy described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning-changel
 - `update_connection` no longer requires a revision, so a label change is one
   call instead of a `get_connection` round trip. The optimistic guards remain
   available.
-- The Mermaid subset is much wider: quoted labels, the `---`, `==>`, `===`,
-  `-.-` and inline-label edge forms, `&` endpoint lists, and all four `subgraph`
-  declaration forms. Shapes and connectors outside the subset are now rejected
-  by name with the supported replacement, instead of being approximated.
-- The configured workspace, not the launch directory, is the containment
-  boundary. `select_workspace` no longer creates directory trees; the directory
-  must already exist.
+- **Compatibility:** the Mermaid subset is much wider — quoted labels, the
+  `---`, `==>`, `===`, `-.-` and inline-label edge forms, `&` endpoint lists,
+  and all four `subgraph` declaration forms — but shapes and connectors outside
+  the subset are now rejected by name with the supported replacement instead of
+  being approximated. Input that silently produced a Task with delimiter
+  characters in its name now fails with `UNSUPPORTED_SHAPE` or
+  `UNSUPPORTED_CONNECTOR`.
+- **Compatibility:** the configured workspace, not the launch directory, is the
+  containment boundary, so `get_workspace` reports a different
+  `startupBoundary` for a session configured by `.mcp-bpmn.json` or by
+  `MCP_BPMN_DIAGRAMS_PATH`.
+- **Compatibility:** `select_workspace` no longer creates directory trees. The
+  target must already exist, and a path that does not is rejected as
+  `file_not_found` rather than being created.
 - Persistence failures name the file, the workspace and the cause instead of a
   bare "Unable to save BPMN file". Read failures stay path-free by design.
 - Message flows are routed out of their own pool rather than across a foreign
@@ -92,9 +113,9 @@ pre-1.0 policy described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning-changel
 
 ### Fixed
 
-- `update_element` with no changed value writes nothing and leaves the revision
-  alone, and a call that names no field at all is rejected rather than accepted
-  as a no-op.
+- **Compatibility:** `update_element` with no changed value writes nothing and
+  leaves the revision alone, and a call that names no field at all is now
+  rejected during request validation rather than accepted as a no-op.
 - A malformed repository `.mcp-bpmn.json` no longer kills the server at
   startup. The session falls back to the launch directory, carries the reason,
   and reports it when a workspace switch is attempted.
